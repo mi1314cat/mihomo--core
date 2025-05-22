@@ -77,6 +77,7 @@ pidfile="/run/$SERVICE_NAME.pid"
 output_log="$INSTALL_DIR/mihomo.log"
 error_log="$INSTALL_DIR/error-mihomo.log"
 name="Mihomo"
+command_background=true
 EOF
 
     sudo chmod +x "$SERVICE_FILE"
