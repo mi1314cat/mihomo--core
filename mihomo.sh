@@ -9,7 +9,7 @@ CONFIG_FILE="$INSTALL_DIR/config.yaml"
 echo "📦 安装路径: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
-# 检测发行版
+# 检测系统类型
 detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -22,7 +22,7 @@ detect_distro() {
 DISTRO=$(detect_distro)
 echo "🧭 检测系统: $DISTRO"
 
-# 检测平台
+# 平台和架构检测
 UNAME_S="$(uname -s)"
 case "$UNAME_S" in
     Linux*) OS="linux" ;;
@@ -30,7 +30,6 @@ case "$UNAME_S" in
     *) echo "❌ 不支持系统: $UNAME_S"; exit 1 ;;
 esac
 
-# 架构
 UNAME_M="$(uname -m)"
 case "$UNAME_M" in
     x86_64) ARCH="amd64" ;;
@@ -41,6 +40,7 @@ esac
 echo "✅ 平台: $OS, 架构: $ARCH"
 
 # 获取 Mihomo 最新版本
+echo "🌐 获取 Mihomo 最新版本..."
 LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name":' | cut -d '"' -f 4)
 if [[ -z "$LATEST_TAG" ]]; then
     echo "❌ 无法获取版本"
@@ -54,17 +54,22 @@ DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/$LATEST_TAG/
 # 下载并解压
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
-curl -L -o "$FILE_NAME" "$DOWNLOAD_URL"
-unzip -o "$FILE_NAME"
+echo "⬇️ 下载 $FILE_NAME ..."
+curl --location --retry 3 --fail -o "$FILE_NAME" "$DOWNLOAD_URL"
+
+if ! unzip -o "$FILE_NAME"; then
+    echo "❌ 解压失败，文件可能损坏"
+    exit 1
+fi
+
 mv -f mihomo "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/mihomo"
 
 echo "📁 安装成功: $INSTALL_DIR/mihomo"
 
-# 创建服务：根据系统类型
+# 创建服务
 if [[ "$DISTRO" == "alpine" ]]; then
-    echo "🛠️ 正在为 Alpine 创建 OpenRC 服务..."
-
+    echo "🛠️ 创建 OpenRC 服务（Alpine）..."
     SERVICE_FILE="/etc/init.d/$SERVICE_NAME"
 
     cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
@@ -79,11 +84,10 @@ EOF
     sudo rc-update add "$SERVICE_NAME"
     sudo rc-service "$SERVICE_NAME" restart
 
-    echo "✅ OpenRC 服务已启动 (Alpine)"
+    echo "✅ OpenRC 服务已启动（Alpine）"
 
 else
-    echo "🛠️ 正在为 Debian/Ubuntu 创建 systemd 服务..."
-
+    echo "🛠️ 创建 systemd 服务（Debian/Ubuntu）..."
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 
     cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
