@@ -74,6 +74,8 @@ if [[ "$DISTRO" == "alpine" ]]; then
 command="$INSTALL_DIR/mihomo"
 command_args="-d $INSTALL_DIR"
 pidfile="/run/$SERVICE_NAME.pid"
+output_log="/var/log/mihomo.log"
+error_log="/var/log/mihomo.log"
 name="Mihomo"
 EOF
 
