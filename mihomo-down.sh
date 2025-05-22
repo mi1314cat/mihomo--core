@@ -103,7 +103,7 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_TIME 
 Restart=always
 ExecStartPre=/usr/bin/sleep 1s
 ExecStart=$INSTALL_DIR/mihomo -d $INSTALL_DIR
-ExecReload=/bin/kill -HUP $MAINPID
+ExecReload=/bin/kill -HUP \$MAINPID
 
 [Install]
 WantedBy=multi-user.target
