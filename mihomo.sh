@@ -22,11 +22,10 @@ detect_distro() {
 DISTRO=$(detect_distro)
 echo "🧭 检测系统: $DISTRO"
 
-# 平台和架构检测
+# 平台架构
 UNAME_S="$(uname -s)"
 case "$UNAME_S" in
     Linux*) OS="linux" ;;
-    Darwin*) OS="darwin" ;;
     *) echo "❌ 不支持系统: $UNAME_S"; exit 1 ;;
 esac
 
@@ -48,24 +47,22 @@ if [[ -z "$LATEST_TAG" ]]; then
 fi
 
 echo "🔖 最新版本: $LATEST_TAG"
-FILE_NAME="mihomo-$OS-$ARCH.zip"
-DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/$LATEST_TAG/$FILE_NAME"
+GZ_FILE="mihomo-${OS}-${ARCH}-${LATEST_TAG}.gz"
+DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/${GZ_FILE}"
 
 # 下载并解压
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
-echo "⬇️ 下载 $FILE_NAME ..."
-curl --location --retry 3 --fail -o "$FILE_NAME" "$DOWNLOAD_URL"
+echo "⬇️ 下载 $GZ_FILE ..."
+curl --location --retry 3 --fail -o "$GZ_FILE" "$DOWNLOAD_URL"
 
-if ! unzip -o "$FILE_NAME"; then
-    echo "❌ 解压失败，文件可能损坏"
-    exit 1
-fi
-
-mv -f mihomo "$INSTALL_DIR/"
+echo "📦 解压..."
+gzip -d "$GZ_FILE"
+BIN_NAME="mihomo-${OS}-${ARCH}-${LATEST_TAG}"
+mv "$BIN_NAME" "$INSTALL_DIR/mihomo"
 chmod +x "$INSTALL_DIR/mihomo"
 
-echo "📁 安装成功: $INSTALL_DIR/mihomo"
+echo "✅ 已安装到 $INSTALL_DIR/mihomo"
 
 # 创建服务
 if [[ "$DISTRO" == "alpine" ]]; then
