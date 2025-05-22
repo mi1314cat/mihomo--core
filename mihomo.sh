@@ -55,7 +55,9 @@ generate_port() {
 generate_ws_path() {
     echo "/$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 10)"
 }
-
+sudo apt update && sudo apt upgrade -y
+sudo apt install ufw -y
+sudo apt install -y curl socat git cron openssl gzip
 INSTALL_DIR="/root/catmi/mihomo"
 mkdir -p $INSTALL_DIR
 
@@ -138,12 +140,16 @@ UUID=$(generate_uuid)
 WS_PATH1=$(generate_ws_path)
 
 
-key_pair=$(/root/catmi/singbox/sing-box generate reality-keypair)
-private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
-public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
 
-short_id=$(/root/catmi/singbox/sing-box generate rand --hex 8)
-hy_password=$(/root/catmi/singbox/sing-box generate rand --hex 8)
+
+openssl genpkey -algorithm X25519 -out reality_private.pem
+openssl pkey -in reality_private.pem -pubout -out reality_public.pem
+
+private_key=$(openssl pkey -in reality_private.pem -outform DER | tail -c 32 | base64)
+public_key=$(openssl pkey -in reality_private.pem -pubout -outform DER | tail -c 32 | base64)
+
+short_id=$(openssl rand -hex 8)
+hy_password=$(openssl rand -hex 16)
 
 
 
