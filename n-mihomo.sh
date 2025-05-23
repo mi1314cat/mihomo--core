@@ -59,8 +59,9 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install ufw -y
 sudo apt install -y curl socat git cron openssl gzip
 INSTALL_DIR="/root/catmi/mihomo"
+INSTALL_DIRs="/root/.config/mihomo"
 mkdir -p $INSTALL_DIR
-
+mkdir -p $INSTALL_DIRs
 
 bash <(curl -fsSL https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/mihomo-down.sh)
 
@@ -72,7 +73,8 @@ openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
     -subj "/CN=bing.com" -days 36500 && \
 
 
-
+mv $INSTALL_DIR/server.crt $INSTALL_DIRs/
+mv $INSTALL_DIR/server.key $INSTALL_DIRs/
 
 # 定义函数，返回随机选择的域名
 random_website() {
