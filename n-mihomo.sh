@@ -121,7 +121,7 @@ read -p "cdn域名: " DOMAIN_LOWER
 
 # 提示输入监听端口号
 
-PORT=${PORT:-443}
+
 read -p "请输入 reality 监听端口: " reality_port
 if [[ -z "$reality_port" ]]; then
     reality_port=$((RANDOM % 55535 + 10000))  # 生成 10000-65535 的随机端口
