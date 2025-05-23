@@ -266,7 +266,7 @@ listeners:
       alterId: 1
   ws-path: "${WS_PATH}"
  
- - name: vmess-in-1
+- name: vmess-in-1
   type: vmess
   port: 9999
   listen: 127.0.0.1
