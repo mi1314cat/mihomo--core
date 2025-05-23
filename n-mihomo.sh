@@ -357,6 +357,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     ws-opts:
       path: ${WS_PATH1}
       headers: {}
+
   - name: anytls
     type: anytls
     server: $PUBLIC_IP
