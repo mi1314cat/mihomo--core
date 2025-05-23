@@ -96,7 +96,7 @@ Description=Mihomo Service
 After=network.target
 
 [Service]
-ExecStart=$INSTALL_DIR/mihomo -d $INSTALL_DIR/config.yaml
+ExecStart=$INSTALL_DIR/mihomo -f $INSTALL_DIR/config.yaml
 Restart=on-failure
 User=root
 LimitNOFILE=65535
