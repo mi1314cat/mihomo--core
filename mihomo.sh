@@ -19,7 +19,7 @@ cat << "EOF"
                        |\__/,|   (\\
                      _.|o o  |_   ) )
        -------------(((---(((-------------------
-                   catmi.singbox
+                   catmi.mihomo
        -----------------------------------------
 EOF
 echo -e "${GREEN}System: ${PLAIN}${SYSTEM_NAME}"
@@ -185,128 +185,87 @@ fi
 # 配置文件生成
 
 cat <<EOF > $INSTALL_DIR/config.yaml
-{
-  "log": {
-    "disabled": false,
-    "level": "info",
-    "timestamp": true
-  },
-  "inbounds": [
-  
-    {
-      "type": "vmess",
-      "tag": "VMESS-WS",
-      "listen": "::",
-      "listen_port": $Vmess_port,
-      "users": [
-        {
-          "uuid": "${UUID}"
-        }
-      ],
-      "transport": {
-        "type": "ws",
-        "path": "${WS_PATH1}"
-      }
-    },
-    {
-      "sniff": true,
-      "sniff_override_destination": true,
-      "type": "vless",
-      "tag": "vless-in",
-      "listen": "::",
-      "listen_port": $reality_port,
-      "users": [
-        {
-          "uuid": "$UUID",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "$dest_server",
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "$dest_server",
-            "server_port": 443
-          },
-          "private_key": "$private_key",
-          "short_id": ["$short_id"]
-        }
-      }
-    },
-    {
-        "sniff": true,
-        "sniff_override_destination": true,
-        "type": "hysteria2",
-        "tag": "hy2-in",
-        "listen": "::",
-        "listen_port": $hysteria2_port,
-        "users": [
-            {
-                "password": "$hy_password"
-            }
-        ],
-        "tls": {
-            "enabled": true,
-            "alpn": [
-                "h3"
-            ],
-            "certificate_path": "/root/catmi/singbox/server.crt",
-            "key_path": "/root/catmi/singbox/server.key"
-        }
-    },
-    {
-            "type":"tuic",
-            "tag":"tuic",
-            "listen":"::",
-            "listen_port":$tuic_port,
-            "users":[
-                {
-                    "uuid":"$UUID",
-                    "password":"$hy_password"
-                }
-            ],
-            "congestion_control": "bbr",
-            "zero_rtt_handshake": false,
-            "tls":{
-                "enabled":true,
-                "alpn":[
-                    "h3"
-                ],
-                "certificate_path":"/root/catmi/singbox/server.crt",
-                "key_path":"/root/catmi/singbox/server.key"
-            }
-        },
-        {
-            "type":"anytls",
-            "tag":"anytls",
-            "listen":"::",
-            "listen_port":$anytls_port,
-            "users":[
-                {
-                    "password":"$UUID"
-                }
-            ],
-            "padding_scheme":[],
-            "tls":{
-                "enabled":true,
-                "certificate_path":"/root/catmi/singbox/server.crt",
-                "key_path":"/root/catmi/singbox/server.key"
-            }
-        }
-  ],
-    "outbounds": [],
-  "route": {
-    "rules": [
-      {
-        "type": "default",
-        "action": "direct"
-      }
-    ]
-  }
-}
 
+listeners:
+
+
+- name: anytls-in-1
+  type: anytls
+  port: $anytls_port
+  listen: "::"
+  users:
+    username1: $hy_password
+  certificate: $INSTALL_DIR/server.crt
+  private-key: $INSTALL_DIR/server.key
+  padding-scheme: |
+   stop=8
+   0=30-30
+   1=100-400
+   2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000
+   3=9-9,500-1000
+   4=500-1000
+   5=500-1000
+   6=500-1000
+   7=500-1000
+
+
+- name: hy-in
+  type: hysteria2
+  port: $hysteria2_port
+  listen: "::"
+  users:
+    user1: $hy_password
+  ignore-client-bandwidth: false
+  masquerade: ""
+  alpn:
+  - h3
+  certificate: $INSTALL_DIR/server.crt
+  private-key: $INSTALL_DIR/server.key
+  
+- name: reality
+  type: vless
+  port: $reality_port # 支持使用ports格式，例如200,302 or 200,204,401-429,501-503
+  listen: "::"
+  users:
+    - username: 1
+      uuid: $UUID
+      flow: xtls-rprx-vision
+  reality-config:
+    dest: $dest_server:443
+    private-key: $private_key # 可由 mihomo generate reality-keypair 命令生成
+    short-id:
+      - $short_id
+    server-names:
+      - $dest_server
+
+
+- name: tuicv5-in
+  type: tuic
+  port: $tuic_port
+  listen: "::"
+  users:
+    uuid: $UUID
+    password: $hy_password
+  certificate: $INSTALL_DIR/server.crt
+  private-key: $INSTALL_DIR/server.key
+  congestion-controller: bbr
+  max-idle-time: 15000
+  authentication-timeout: 1000
+  alpn:
+    - h3
+  max-udp-relay-packet-size: 1500
+   
+
+- name: vmess-in-1
+  type: vmess
+  port: $Vmess_port
+  listen: "::"
+  users:
+    - username: 1
+      uuid: $UUID
+      alterId: 1
+  ws-path: "${WS_PATH1}" 
+  
 
 
 
