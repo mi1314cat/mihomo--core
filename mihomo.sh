@@ -145,7 +145,7 @@ WS_PATH1=$(generate_ws_path)
 
 
 
-key_pair=$(/root/catmi/mihomo/mihomo generate reality-keypair)
+key_pair=$($INSTALL_DIR/mihomo generate reality-keypair)
 private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
 public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
 
