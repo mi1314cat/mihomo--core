@@ -297,6 +297,19 @@ sudo systemctl daemon-reload
 sudo systemctl enable mihomo
 sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
 
+
+bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/nginx.sh)
+
+{
+    echo "xray 安装完成！"
+    echo "服务器地址：${PUBLIC_IP}"
+    echo "端口：${PORT}"
+    echo "UUID：${UUID}"
+    echo "vless WS 路径：${WS_PATH}"
+    echo "vmess WS 路径：${WS_PATH1}"
+    echo "配置文件已保存到：/etc/xrayls/config.json"
+} > "/root/catmi/install_info.txt"
+
 DOMAIN_LOWER=$(grep "DOMAIN_LOWER：" "$DOMAIN_FILE" | cut -d '：' -f2)
 
 cat << EOF > $INSTALL_DIR/clash-meta.yaml
@@ -337,15 +350,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
 
 EOF
 
-{
-    echo "xray 安装完成！"
-    echo "服务器地址：${PUBLIC_IP}"
-    echo "端口：${PORT}"
-    echo "UUID：${UUID}"
-    echo "vless WS 路径：${WS_PATH}"
-    echo "vmess WS 路径：${WS_PATH1}"
-    echo "配置文件已保存到：/etc/xrayls/config.json"
-} > "/root/catmi/install_info.txt"
+
 
 
 share_link="
