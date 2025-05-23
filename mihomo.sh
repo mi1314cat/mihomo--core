@@ -146,8 +146,9 @@ WS_PATH1=$(generate_ws_path)
 openssl genpkey -algorithm X25519 -out reality_private.pem
 openssl pkey -in reality_private.pem -pubout -out reality_public.pem
 
-private_key=$(openssl pkey -in reality_private.pem -outform DER | tail -c 32 | base64)
-public_key=$(openssl pkey -in reality_private.pem -pubout -outform DER | tail -c 32 | base64)
+key_pair=$(/root/catmi/mihomo/mihomo generate reality-keypair)
+private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
+public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
 
 short_id=$(openssl rand -hex 8)
 hy_password=$(openssl rand -hex 16)
