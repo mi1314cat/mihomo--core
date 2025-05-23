@@ -297,7 +297,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable mihomo
 sudo systemctl restart mihomo || { echo "重启 singbox 服务失败"; exit 1; }
 
-
+DOMAIN_LOWER=$(grep "DOMAIN_LOWER：" "$DOMAIN_FILE" | cut -d '：' -f2)
 
 cat << EOF > $INSTALL_DIR/clash-meta.yaml
   - name: Hysteria2
@@ -331,6 +331,9 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
   - {name: "anytls", type: anytls, server: $PUBLIC_IP, port: $anytls_port, password: $UUID, client-fingerprint: chrome, udp: true, idle-session-check-interval: 30, idle-session-timeout: 30, skip-cert-verify: true }
   
   - {name: "tuic", type: tuic, server: $PUBLIC_IP, port: $tuic_port, uuid: $UUID, password: $hy_password, alpn: [h3], disable-sni: true, reduce-rtt: true, request-timeout: 8000, udp-relay-mode: native, congestion-controller: bbr, skip-cert-verify: true}
+  - {"name":"vmess-ws-tls","type":"vmess","server":"$DOMAIN_LOWER","port":443,"cipher":"auto","uuid":"$UUID","alterId":0,"tls":true,"network":"ws","ws-opts":{"path":"${WS_PATH1}","headers":{"Host":"$DOMAIN_LOWER"}},"servername":"$DOMAIN_LOWER"}
+  
+  - {"type":"vless","name":"vless-ws-tls","server":"$DOMAIN_LOWER","port":443,"uuid":"$UUID","tls":true,"skip-cert-verify":true,"network":"ws","ws-opts":{"headers":{"Host":"$DOMAIN_LOWER"},"path":"${WS_PATH}"},"servername":"$DOMAIN_LOWER"}  
 
 EOF
 
@@ -350,7 +353,8 @@ tuic://$UUID:$hy_password@$link_ip:$tuic_port?alpn=h3&congestion_control=bbr#tui
 hysteria2://$hy_password@$link_ip:$hysteria2_port??sni=bing.com&insecure=1#Hysteria2
 vless://$UUID@$link_ip:$reality_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#Reality
 vmess://$UUID@$link_ip:$Vmess_port?encryption=none&allowInsecure=1&type=ws&path=${WS_PATH1}#vmess-ws-tls
-
+vless://$UUID@$DOMAIN_LOWER:443?encryption=none&security=tls&sni=$DOMAIN_LOWER&allowInsecure=1&type=ws&host=$DOMAIN_LOWER&path=${WS_PATH}#vless-ws-tls
+vmess://$UUID@$DOMAIN_LOWER:443?encryption=none&security=tls&sni=$DOMAIN_LOWER&allowInsecure=1&type=ws&host=$DOMAIN_LOWER&path=${WS_PATH1}#vmess-ws-tls
 "
 echo "${share_link}" > $INSTALL_DIR/v2ray.txt
 
