@@ -325,7 +325,7 @@ EOF
     echo "vmess WS 路径：${WS_PATH1}"
     echo "xhttp 路径：${WS_PATH2}"
     echo "配置文件已保存到：/etc/xrayls/config.json"
-} > "$INSTALL_DIR/install_info.txt"
+} > "/root/catmi/install_info.txt"
 
 
 share_link="
