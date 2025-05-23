@@ -117,7 +117,8 @@ read -rp "请输入回落域名: " dest_server
 
 
 # 提示输入监听端口号
-
+read -p "请输入 Vless 监听端口 (默认为 443): " PORT
+PORT=${PORT:-443}
 read -p "请输入 reality 监听端口: " reality_port
 if [[ -z "$reality_port" ]]; then
     reality_port=$((RANDOM % 55535 + 10000))  # 生成 10000-65535 的随机端口
@@ -255,8 +256,7 @@ listeners:
     - h3
   max-udp-relay-packet-size: 1500
    
-
-- name: vmess-in-1
+- name: vmess-in-2
   type: vmess
   port: $Vmess_port
   listen: "::"
@@ -264,8 +264,26 @@ listeners:
     - username: 1
       uuid: $UUID
       alterId: 1
-  ws-path: "${WS_PATH1}" 
+  ws-path: "${WS_PATH}"
+ 
+ - name: vmess-in-1
+  type: vmess
+  port: 9999
+  listen: 127.0.0.1
+  users:
+    - username: 1
+      uuid: $UUID
+      alterId: 1
+  ws-path: "${WS_PATH}" 
   
+- name: vless-in-1
+  type: vless
+  port: 9998
+  listen: 127.0.0.1
+  users:
+    - username: 1
+      uuid: $UUID
+  ws-path: "WS_PATH1" # 如果不为空则开启 websocket 传输层   
 
 
 
