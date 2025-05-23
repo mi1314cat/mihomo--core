@@ -298,7 +298,7 @@ sudo systemctl enable mihomo
 sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
 
 
-bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/nginx.sh)
+
 
 {
     echo "xray 安装完成！"
@@ -309,6 +309,8 @@ bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/m
     echo "vmess WS 路径：${WS_PATH1}"
     echo "配置文件已保存到：/etc/xrayls/config.json"
 } > "/root/catmi/install_info.txt"
+
+bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/nginx.sh)
 
 DOMAIN_LOWER=$(grep "DOMAIN_LOWER：" "$DOMAIN_FILE" | cut -d '：' -f2)
 
