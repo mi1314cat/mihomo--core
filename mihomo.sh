@@ -312,7 +312,7 @@ sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
 
 bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/nginx.sh)
 
-DOMAIN_LOWER=$(awk -F '：' '/DOMAIN_LOWER/ {print $2}' "/root/catmi/DOMAIN_LOWER.txt")
+DOMAIN_LOWER=$(grep '^DOMAIN_LOWER' /root/catmi/DOMAIN_LOWER.txt | sed 's/.*[:：]//')
 
 
 cat << EOF > $INSTALL_DIR/clash-meta.yaml
