@@ -72,7 +72,7 @@ if [[ "$DISTRO" == "alpine" ]]; then
     cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
 #!/sbin/openrc-run
 command="$INSTALL_DIR/mihomo"
-command_args="-d $INSTALL_DIR"
+command_args="-d $INSTALL_DIR/config.yaml"
 pidfile="/run/$SERVICE_NAME.pid"
 output_log="$INSTALL_DIR/mihomo.log"
 error_log="$INSTALL_DIR/error-mihomo.log"
@@ -103,7 +103,7 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_TIM
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_TIME CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
 Restart=always
 ExecStartPre=/usr/bin/sleep 1s
-ExecStart=$INSTALL_DIR/mihomo -d $INSTALL_DIR
+ExecStart=$INSTALL_DIR/mihomo -d $INSTALL_DIR/config.yaml
 ExecReload=/bin/kill -HUP \$MAINPID
 
 [Install]
