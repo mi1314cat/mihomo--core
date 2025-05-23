@@ -295,7 +295,7 @@ EOF
 # 重载systemd服务配置
 sudo systemctl daemon-reload
 sudo systemctl enable mihomo
-sudo systemctl restart mihomo || { echo "重启 singbox 服务失败"; exit 1; }
+sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
 
 DOMAIN_LOWER=$(grep "DOMAIN_LOWER：" "$DOMAIN_FILE" | cut -d '：' -f2)
 
@@ -360,7 +360,7 @@ echo "${share_link}" > $INSTALL_DIR/v2ray.txt
 
 
 
-sudo systemctl status singbox
+sudo systemctl status mihomo
 
 cat $INSTALL_DIR/v2ray.txt
 cat $INSTALL_DIR/clash-meta.yaml
