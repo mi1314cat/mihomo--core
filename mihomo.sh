@@ -137,7 +137,7 @@ echo "anytls:    $anytls_port"
 echo "Vmess:    $Vmess_port"
 # 生成 UUID 和 WS 路径
 UUID=$(generate_uuid)
-
+WS_PATH=$(generate_ws_path)
 WS_PATH1=$(generate_ws_path)
 
 
