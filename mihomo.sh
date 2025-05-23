@@ -303,6 +303,7 @@ sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
 {
     echo "xray 安装完成！"
     echo "服务器地址：${PUBLIC_IP}"
+    echo "IP_CHOICE：${IP_CHOICE}"
     echo "端口：${PORT}"
     echo "UUID：${UUID}"
     echo "vless WS 路径：${WS_PATH}"
