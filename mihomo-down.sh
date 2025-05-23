@@ -92,19 +92,14 @@ else
 
     cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
 [Unit]
-Description=mihomo Daemon, Another Clash Kernel.
-After=network.target NetworkManager.service systemd-networkd.service iwd.service
+Description=Mihomo Service
+After=network.target
 
 [Service]
-Type=simple
-LimitNPROC=500
-LimitNOFILE=1000000
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_TIME CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_TIME CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
-Restart=always
-ExecStartPre=/usr/bin/sleep 1s
-ExecStart=$INSTALL_DIR/mihomo -f $INSTALL_DIR/config.yaml
-ExecReload=/bin/kill -HUP \$MAINPID
+ExecStart=$INSTALL_DIR/mihomo -d $INSTALL_DIR/config.yaml
+Restart=on-failure
+User=root
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
