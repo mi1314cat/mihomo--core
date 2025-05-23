@@ -316,6 +316,16 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
 
 EOF
 
+{
+    echo "xray 安装完成！"
+    echo "服务器地址：${PUBLIC_IP}"
+    echo "端口：${PORT}"
+    echo "UUID：${UUID}"
+    echo "vless WS 路径：${WS_PATH}"
+    echo "vmess WS 路径：${WS_PATH1}"
+    echo "xhttp 路径：${WS_PATH2}"
+    echo "配置文件已保存到：/etc/xrayls/config.json"
+} > "$INSTALL_DIR/install_info.txt"
 
 
 share_link="
