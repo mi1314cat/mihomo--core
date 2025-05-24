@@ -22,6 +22,12 @@ detect_distro() {
 DISTRO=$(detect_distro)
 echo "🧭 检测系统: $DISTRO"
 
+# 检测是否为 root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "❌ 请使用 root 用户运行此脚本"
+    exit 1
+fi
+
 # 平台架构
 UNAME_S="$(uname -s)"
 case "$UNAME_S" in
@@ -69,7 +75,7 @@ if [[ "$DISTRO" == "alpine" ]]; then
     echo "🛠️ 创建 OpenRC 服务（Alpine）..."
     SERVICE_FILE="/etc/init.d/$SERVICE_NAME"
 
-    cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
+    cat <<EOF > "$SERVICE_FILE"
 #!/sbin/openrc-run
 command="$INSTALL_DIR/mihomo"
 command_args="-f $INSTALL_DIR/config.yaml"
@@ -80,9 +86,16 @@ name="Mihomo"
 command_background=true
 EOF
 
-    sudo chmod +x "$SERVICE_FILE"
-    sudo rc-update add "$SERVICE_NAME"
-    sudo rc-service "$SERVICE_NAME" restart
+    chmod +x "$SERVICE_FILE"
+    rc-update add "$SERVICE_NAME"
+    rc-service "$SERVICE_NAME" restart
+
+    if [ -f "$SERVICE_FILE" ]; then
+        echo "✅ OpenRC 服务文件写入成功：$SERVICE_FILE"
+    else
+        echo "❌ OpenRC 服务文件写入失败，请检查权限"
+        exit 1
+    fi
 
     echo "✅ OpenRC 服务已启动（Alpine）"
 
@@ -90,7 +103,7 @@ else
     echo "🛠️ 创建 systemd 服务（Debian/Ubuntu）..."
     SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 
-    cat <<EOF | sudo tee "$SERVICE_FILE" > /dev/null
+    cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=Mihomo Service
 After=network.target
@@ -105,15 +118,14 @@ StandardError=append:$INSTALL_DIR/error-mihomo.log
 
 [Install]
 WantedBy=multi-user.target
-
 EOF
 
-    sudo systemctl daemon-reexec
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$SERVICE_NAME"
+    systemctl daemon-reexec
+    systemctl daemon-reload
+    systemctl enable --now "$SERVICE_NAME"
 
     echo "✅ systemd 服务已启动"
-    sudo systemctl status "$SERVICE_NAME" --no-pager
+    systemctl status "$SERVICE_NAME" --no-pager
 fi
 
 echo "📄 配置文件路径: $CONFIG_FILE"
