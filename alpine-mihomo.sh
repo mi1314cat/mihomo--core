@@ -19,7 +19,7 @@ cat << "EOF"
                        |\__/,|   (\\
                      _.|o o  |_   ) )
        -------------(((---(((-------------------
-                   catmi.singbox
+                   catmi.mihomo
        -----------------------------------------
 EOF
 echo -e "${GREEN}System: ${PLAIN}${SYSTEM_NAME}"
