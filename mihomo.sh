@@ -61,7 +61,7 @@ sudo apt install -y curl socat git cron openssl gzip
 INSTALL_DIR="/root/catmi/mihomo"
 INSTALL_DIRs="/root/.config/mihomo"
 mkdir -p $INSTALL_DIR
-
+mkdir -p $INSTALL_DIRs
 
 bash <(curl -fsSL https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/mihomo-down.sh)
 
