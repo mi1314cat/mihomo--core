@@ -126,7 +126,7 @@ read -rp "请输入回落域名: " dest_server
 [ -z "$dest_server" ] && dest_server=$(random_website)
 
 
-read -p "cdn域名: " DOMAIN_LOWER
+
 
 
 read -p "请输入 reality 监听端口: " reality_port
