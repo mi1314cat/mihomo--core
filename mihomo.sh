@@ -311,7 +311,7 @@ sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
     echo "UUID：${UUID}"
     echo "vless WS 路径：${WS_PATH}"
     echo "vmess WS 路径：${WS_PATH1}"
-    echo "配置文件已保存到：/etc/xrayls/config.json"
+    
 } > "/root/catmi/install_info.txt"
 
 bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/nginx.sh)
