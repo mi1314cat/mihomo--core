@@ -269,24 +269,7 @@ listeners:
       alterId: 1
   ws-path: "${WS_PATH}"
  
-- name: vmess-in-1
-  type: vmess
-  port: 9999
-  listen: 127.0.0.1
-  users:
-    - username: 1
-      uuid: $UUID
-      alterId: 1
-  ws-path: "${WS_PATH}" 
-  
-- name: vless-in-1
-  type: vless
-  port: 9998
-  listen: 127.0.0.1
-  users:
-    - username: 1
-      uuid: $UUID
-  ws-path: "${WS_PATH1}" # 如果不为空则开启 websocket 传输层   
+
 
 
 
@@ -382,33 +365,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     udp-relay-mode: native
     congestion-controller: bbr
     skip-cert-verify: true
-  - name: vmess-ws-tls
-    type: vmess
-    server: $DOMAIN_LOWER
-    port: 443
-    cipher: auto
-    uuid: $UUID
-    alterId: 0
-    tls: true
-    network: ws
-    ws-opts:
-      path: ${WS_PATH1}
-      headers:
-        Host: $DOMAIN_LOWER
-    servername: $DOMAIN_LOWER
-  - type: vless
-    name: vless-ws-tls
-    server: $DOMAIN_LOWER
-    port: 443
-    uuid: $UUID
-    tls: true
-    skip-cert-verify: true
-    network: ws
-    ws-opts:
-      headers:
-        Host: $DOMAIN_LOWER
-      path: ${WS_PATH}
-    servername: $DOMAIN_LOWER
+
 
 EOF
 
