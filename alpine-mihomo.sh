@@ -62,7 +62,7 @@ mkdir -p /root/catmi/singbox
 apk update && apk upgrade
 
 
-apk add curl socat git busybox-cron openssl gzip unzip sudo 
+apk add curl socat git cronie openssl gzip unzip sudo 
 INSTALL_DIR="/root/catmi/mihomo"
 mkdir -p $INSTALL_DIR
 
