@@ -199,8 +199,8 @@ listeners:
   listen: "::"
   users:
     username1: $hy_password
-  certificate: $INSTALL_DIR/server.crt
-  private-key: $INSTALL_DIR/server.key
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
   padding-scheme: |
    stop=8
    0=30-30
@@ -223,8 +223,8 @@ listeners:
   masquerade: ""
   alpn:
   - h3
-  certificate: $INSTALL_DIR/server.crt
-  private-key: $INSTALL_DIR/server.key
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
   
 - name: reality
   type: vless
@@ -250,8 +250,8 @@ listeners:
   users:
     uuid: $UUID
     password: $hy_password
-  certificate: $INSTALL_DIR/server.crt
-  private-key: $INSTALL_DIR/server.key
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
   congestion-controller: bbr
   max-idle-time: 15000
   authentication-timeout: 1000
