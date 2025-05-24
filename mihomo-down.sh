@@ -100,8 +100,8 @@ ExecStart=$INSTALL_DIR/mihomo -f $INSTALL_DIR/config.yaml
 Restart=on-failure
 User=root
 LimitNOFILE=65535
-StandardOutput=append:/root/catmi/mihomo/mihomo.log
-StandardError=append:/root/catmi/mihomo/error-mihomo.log
+StandardOutput=append:$INSTALL_DIR/mihomo.log
+StandardError=append:$INSTALL_DIR/error-mihomo.log
 
 [Install]
 WantedBy=multi-user.target
