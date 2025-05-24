@@ -64,7 +64,9 @@ apk update && apk upgrade
 
 apk add curl socat git cronie openssl gzip unzip sudo 
 INSTALL_DIR="/root/catmi/mihomo"
+INSTALL_DIRs="/root/.config/mihomo"
 mkdir -p $INSTALL_DIR
+mkdir -p $INSTALL_DIRs
 
 
 bash <(curl -fsSL https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/mihomo-down.sh)
@@ -78,7 +80,8 @@ openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
     -keyout $INSTALL_DIR/server.key -out $INSTALL_DIR/server.crt \
     -subj "/CN=bing.com" -days 36500 && \
 
-
+mv $INSTALL_DIR/server.crt $INSTALL_DIRs/
+mv $INSTALL_DIR/server.key $INSTALL_DIRs/
 
 
 # 定义函数，返回随机选择的域名
@@ -204,8 +207,8 @@ listeners:
   listen: "::"
   users:
     username1: $hy_password
-  certificate: $INSTALL_DIR/server.crt
-  private-key: $INSTALL_DIR/server.key
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
   padding-scheme: |
    stop=8
    0=30-30
@@ -228,8 +231,8 @@ listeners:
   masquerade: ""
   alpn:
   - h3
-  certificate: $INSTALL_DIR/server.crt
-  private-key: $INSTALL_DIR/server.key
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
   
 - name: reality
   type: vless
@@ -255,8 +258,8 @@ listeners:
   users:
     uuid: $UUID
     password: $hy_password
-  certificate: $INSTALL_DIR/server.crt
-  private-key: $INSTALL_DIR/server.key
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
   congestion-controller: bbr
   max-idle-time: 15000
   authentication-timeout: 1000
