@@ -273,24 +273,6 @@ listeners:
       alterId: 1
   ws-path: "${WS_PATH}"
  
-- name: vmess-in-1
-  type: vmess
-  port: 9999
-  listen: 127.0.0.1
-  users:
-    - username: 1
-      uuid: $UUID
-      alterId: 1
-  ws-path: "${WS_PATH}" 
-  
-- name: vless-in-1
-  type: vless
-  port: 9998
-  listen: 127.0.0.1
-  users:
-    - username: 1
-      uuid: $UUID
-  ws-path: "${WS_PATH1}" # 如果不为空则开启 websocket 传输层   
 
 
 
