@@ -117,7 +117,7 @@ read -rp "请输入回落域名: " dest_server
 [ -z "$dest_server" ] && dest_server=$(random_website)
 
 
-read -p "cdn域名: " DOMAIN_LOWER
+
 
 # 提示输入监听端口号
 
@@ -377,8 +377,7 @@ tuic://$UUID:$hy_password@$link_ip:$tuic_port?alpn=h3&congestion_control=bbr#tui
 hysteria2://$hy_password@$link_ip:$hysteria2_port??sni=bing.com&insecure=1#Hysteria2
 vless://$UUID@$link_ip:$reality_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#Reality
 vmess://$UUID@$link_ip:$Vmess_port?encryption=none&allowInsecure=1&type=ws&path=${WS_PATH1}#vmess-ws-tls
-vless://$UUID@$DOMAIN_LOWER:443?encryption=none&security=tls&sni=$DOMAIN_LOWER&allowInsecure=1&type=ws&host=$DOMAIN_LOWER&path=${WS_PATH}#vless-ws-tls
-vmess://$UUID@$DOMAIN_LOWER:443?encryption=none&security=tls&sni=$DOMAIN_LOWER&allowInsecure=1&type=ws&host=$DOMAIN_LOWER&path=${WS_PATH1}#vmess-ws-tls
+
 "
 echo "${share_link}" > $INSTALL_DIR/v2ray.txt
 
