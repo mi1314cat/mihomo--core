@@ -267,7 +267,7 @@ listeners:
     - username: 1
       uuid: $UUID
       alterId: 1
-  ws-path: "${WS_PATH}"
+  ws-path: "${WS_PATH1}"
  
 
 
@@ -292,9 +292,8 @@ sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
     echo "IP_CHOICE：${IP_CHOICE}"
     echo "端口：${PORT}"
     echo "UUID：${UUID}"
-    echo "vless WS 路径：${WS_PATH}"
     echo "vmess WS 路径：${WS_PATH1}"
-    echo "配置文件已保存到：/etc/xrayls/config.json"
+    
 } > "/root/catmi/install_info.txt"
 
 
