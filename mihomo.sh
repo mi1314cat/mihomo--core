@@ -308,9 +308,15 @@ sudo systemctl restart mihomo || { echo "重启 mihomo 服务失败"; exit 1; }
     echo "服务器地址：${PUBLIC_IP}"
     echo "IP_CHOICE：${IP_CHOICE}"
     echo "端口：${PORT}"
+    echo "reality: $reality_port"
+    echo "hysteria2: $hysteria2_port"
+    echo "tuic: $tuic_port"
+    echo "anytls: $anytls_port"
+    echo "Vmess: $Vmess_port"
     echo "UUID：${UUID}"
-    echo "vless WS 路径：${WS_PATH}"
-    echo "vmess WS 路径：${WS_PATH1}"
+    echo "vmess WS 路径：${WS_PATH}"
+    echo "vless WS 路径：${WS_PATH1}"
+    
     
 } > "/root/catmi/install_info.txt"
 
