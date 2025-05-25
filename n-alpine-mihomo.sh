@@ -358,7 +358,21 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
  
 EOF
 
-
+{
+    echo "xray 安装完成！"
+    echo "服务器地址：${PUBLIC_IP}"
+    echo "IP_CHOICE：${IP_CHOICE}"
+    echo "reality:   $reality_port"
+    echo "hysteria2: $hysteria2_port"
+    echo "tuic:      $tuic_port"
+    echo "anytls:    $anytls_port"
+    echo "Vmess:    $Vmess_port"
+    echo "UUID：${UUID}"
+    echo "vmess WS 路径：${WS_PATH}"
+    
+    
+    
+} > "/root/catmi/install_info.txt"
 
 share_link="
 tuic://$UUID:$hy_password@$link_ip:$tuic_port?alpn=h3&congestion_control=bbr#tuic
