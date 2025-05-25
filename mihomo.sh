@@ -396,12 +396,14 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
       headers:
         Host: $DOMAIN_LOWER
     servername: $DOMAIN_LOWER
-  - type: vless
-    name: vless-ws-tls
+  - name: vless-ws-tls
+    type: vless
     server: $DOMAIN_LOWER
     port: 443
     uuid: $UUID
     tls: true
+    alterId: 0
+    cipher: auto
     skip-cert-verify: true
     network: ws
     ws-opts:
