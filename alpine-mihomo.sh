@@ -364,7 +364,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     tls: false
     network: ws
     ws-opts:
-      path: ${WS_PATH1}
+      path: ${WS_PATH}
       headers: {}
 
   - name: anytls
@@ -401,7 +401,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     tls: true
     network: ws
     ws-opts:
-      path: ${WS_PATH1}
+      path: ${WS_PATH}
       headers:
         Host: $DOMAIN_LOWER
     servername: $DOMAIN_LOWER
@@ -418,7 +418,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     ws-opts:
       headers:
         Host: $DOMAIN_LOWER
-      path: ${WS_PATH}
+      path: ${WS_PATH1}
     servername: $DOMAIN_LOWER
  
 EOF
