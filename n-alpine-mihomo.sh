@@ -317,7 +317,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     uuid: $UUID
     flow: xtls-rprx-vision
     client-fingerprint: chrome
-  - name: vmess-ws-tls
+  - name: vmess
     type: vmess
     server: $PUBLIC_IP
     port: $Vmess_port
