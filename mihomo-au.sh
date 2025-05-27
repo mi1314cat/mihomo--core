@@ -45,6 +45,8 @@ install_mihomo() {
             ;;
         3)
             systemctl stop mihomo
+            rm -rf /root/catmi/install_info.txt
+            rm -rf /root/catmi/DOMAIN_LOWER.txt
             rm -rf /root/catmi/mihomo
             rm -rf /root/.config/mihomo
             rm -rf /etc/systemd/system/mihomo.service
@@ -78,6 +80,8 @@ install_alpine_mihomo() {
         3)
             rc-service mihomo stop
             rc-update del mihomo
+            rm -rf /root/catmi/install_info.txt
+            rm -rf /root/catmi/DOMAIN_LOWER.txt
             rm -rf /root/catmi/mihomo
             rm -rf /root/.config/mihomo
             rm -rf /etc/init.d/mihomo
