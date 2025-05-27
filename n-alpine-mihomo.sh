@@ -316,7 +316,7 @@ cat << EOF > $INSTALL_DIR/clash-meta.yaml
     uuid: $UUID
     flow: xtls-rprx-vision
     client-fingerprint: chrome
-  - name: vmess
+  - name: vmess-ws
     type: vmess
     server: $PUBLIC_IP
     port: $Vmess_port
@@ -377,7 +377,7 @@ share_link="
 tuic://$UUID:$hy_password@$link_ip:$tuic_port?alpn=h3&congestion_control=bbr#tuic
 hysteria2://$hy_password@$link_ip:$hysteria2_port??sni=bing.com&insecure=1#Hysteria2
 vless://$UUID@$link_ip:$reality_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#Reality
-vmess://$UUID@$link_ip:$Vmess_port?encryption=none&allowInsecure=1&type=ws&path=${WS_PATH}#vmess-ws-tls
+vmess://$UUID@$link_ip:$Vmess_port?encryption=none&allowInsecure=1&type=ws&path=${WS_PATH}#vmess-ws
 
 "
 echo "${share_link}" > $INSTALL_DIR/v2ray.txt
