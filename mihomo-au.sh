@@ -32,6 +32,7 @@ install_mihomo() {
     echo "请选择 Mihomo 安装版本："
     echo "1. mihomo"
     echo "2. mihomo-4"
+    echo "3. 删除mihomo"
     read -p "请输入对应的数字选择 [默认1]: " unmi
     unmi=${unmi:-1}
 
@@ -42,6 +43,14 @@ install_mihomo() {
         2)
             bash <(curl -fsSL "$SCRIPT_A2") || echo "❌ 下载执行失败：$SCRIPT_A2"
             ;;
+        3)
+            systemctl stop mihomo
+            rm -rf /root/catmi/mihomo
+            rm -rf /root/.config/mihomo
+            rm -rf /etc/systemd/system/mihomo.service
+            systemctl daemon-reload
+            
+            ;;    
         *)
             echo "❌ 无效选择，退出脚本"
             exit 1
@@ -55,6 +64,7 @@ install_alpine_mihomo() {
     echo "请选择 Alpine 版本的 Mihomo 安装："
     echo "1. mihomo"
     echo "2. mihomo-4"
+    echo "3. 删除mihomo"
     read -p "请输入对应的数字选择 [默认1]: " anmi
     anmi=${anmi:-1}
 
@@ -65,6 +75,14 @@ install_alpine_mihomo() {
         2)
             bash <(curl -fsSL "$SCRIPT_B2") || echo "❌ 下载执行失败：$SCRIPT_B2"
             ;;
+        3)
+            rc-service mihomo stop
+            rc-update del mihomo
+            rm -rf /root/catmi/mihomo
+            rm -rf /root/.config/mihomo
+            rm -rf /etc/init.d/mihomo
+            
+            ;;     
         *)
             echo "❌ 无效选择，退出脚本"
             exit 1
