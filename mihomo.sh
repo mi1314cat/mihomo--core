@@ -246,8 +246,7 @@ listeners:
   port: $tuic_port
   listen: "::"
   users:
-    uuid: $UUID
-    password: $hy_password
+    $UUID: $hy_password
   certificate: $INSTALL_DIRs/server.crt
   private-key: $INSTALL_DIRs/server.key
   congestion-controller: bbr
