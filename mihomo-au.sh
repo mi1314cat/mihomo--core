@@ -33,6 +33,7 @@ install_mihomo() {
     echo "1. mihomo"
     echo "2. mihomo-4"
     echo "3. 删除mihomo"
+    echo "4. 查看mihomo日志 "
     read -p "请输入对应的数字选择 [默认1]: " unmi
     unmi=${unmi:-1}
 
@@ -52,6 +53,9 @@ install_mihomo() {
             rm -rf /etc/systemd/system/mihomo.service
             systemctl daemon-reload
             
+            ;; 
+        4)
+            tail -f /root/catmi/mihomo/mihomo.log
             ;;    
         *)
             echo "❌ 无效选择，退出脚本"
@@ -67,6 +71,7 @@ install_alpine_mihomo() {
     echo "1. mihomo"
     echo "2. mihomo-4"
     echo "3. 删除mihomo"
+    echo "4. 查看mihomo日志 "
     read -p "请输入对应的数字选择 [默认1]: " anmi
     anmi=${anmi:-1}
 
@@ -86,7 +91,10 @@ install_alpine_mihomo() {
             rm -rf /root/.config/mihomo
             rm -rf /etc/init.d/mihomo
             
-            ;;     
+            ;; 
+        4)
+            tail -f /root/catmi/mihomo/mihomo.log
+            ;;       
         *)
             echo "❌ 无效选择，退出脚本"
             exit 1
