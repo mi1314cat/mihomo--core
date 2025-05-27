@@ -55,9 +55,7 @@ generate_port() {
 generate_ws_path() {
     echo "/$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 10)"
 }
-sudo apt update && sudo apt upgrade -y
-sudo apt install ufw -y
-sudo apt install -y curl socat git cron openssl gzip
+
 INSTALL_DIR="/root/catmi/mihomo"
 INSTALL_DIRs="/root/.config/mihomo"
 mkdir -p $INSTALL_DIR
