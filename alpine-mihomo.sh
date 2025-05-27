@@ -293,7 +293,9 @@ listeners:
   users:
     - username: 1
       uuid: $UUID
-  ws-path: "${WS_PATH1}" # 如果不为空则开启 websocket 传输层
+  ws-path: "${WS_PATH1}" 
+  certificate: $INSTALL_DIRs/server.crt
+  private-key: $INSTALL_DIRs/server.key
 
 
 
