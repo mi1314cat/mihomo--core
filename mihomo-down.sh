@@ -23,7 +23,7 @@ mkdir -p "$BASE_DIR"/{geodata,logs}
 
 # 主配置文件（只写 include）
 cat <<EOF > "$CONFIG_PATH"
-include: ./config.d/*.yaml
+include: ./conf/config.d/*.yaml
 EOF
 
 echo "📄 主配置文件已生成: $CONFIG_PATH"
