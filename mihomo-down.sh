@@ -15,6 +15,19 @@ SERVICE_NAME="mihomo"
 mkdir -p "$BASE_DIR"
 
 echo "📦 安装路径: $BASE_DIR"
+# -------------------------------
+# 创建目录结构（Inbound-only）
+# -------------------------------
+mkdir -p "$CONFIG_DIR/config.d"
+mkdir -p "$BASE_DIR"/{geodata,logs}
+
+# 主配置文件（只写 include）
+cat <<EOF > "$CONFIG_PATH"
+include: ./config.d/*.yaml
+EOF
+
+echo "📄 主配置文件已生成: $CONFIG_PATH"
+
 
 # -------------------------------
 # 检测系统
