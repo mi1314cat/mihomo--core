@@ -2,7 +2,7 @@
 set -e
 
 # ================================
-# Catmiup v4 · Mihomo Installer
+# Catmiup v4.2 · Mihomo Installer
 # Inbound-only 版（代理服务器专用）
 # ================================
 
@@ -12,9 +12,8 @@ CONFIG_DIR="$BASE_DIR/conf"
 CONFIG_PATH="$CONFIG_DIR/config.yaml"
 SERVICE_NAME="mihomo"
 
-mkdir -p "$BASE_DIR"
-
 echo "📦 安装路径: $BASE_DIR"
+mkdir -p "$BASE_DIR"
 
 # -------------------------------
 # 创建目录结构（Inbound-only）
@@ -75,20 +74,20 @@ fi
 echo "🔖 最新版本: $LATEST_TAG"
 
 # -------------------------------
-# 下载并解压（带校验）
+# 下载并解压（Linux 版 + 强校验）
 # -------------------------------
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
 
 DOWNLOAD_URL=$(echo "$LATEST_JSON" \
     | grep browser_download_url \
-    | grep "$ARCH" \
+    | grep "linux-$ARCH" \
     | grep ".gz" \
     | cut -d '"' -f 4 \
     | head -n 1)
 
 if [[ -z "$DOWNLOAD_URL" ]]; then
-    echo "❌ 无法匹配到适合架构的二进制"
+    echo "❌ 无法找到适合架构的 Linux 版 Mihomo"
     exit 1
 fi
 
@@ -102,9 +101,8 @@ gzip -d "$GZ_FILE"
 
 BIN_NAME=$(ls | grep "^mihomo" | head -n 1)
 
-# 校验是否为 ELF 可执行文件
-if ! file "$BIN_NAME" | grep -q "ELF"; then
-    echo "❌ 下载的文件不是 ELF 可执行文件，可能被 GitHub 限流或返回错误页"
+if ! file "$BIN_NAME" | grep -q "ELF 64-bit LSB executable"; then
+    echo "❌ 下载的不是 Linux 可执行文件（可能被限流或下载错误）"
     exit 1
 fi
 
@@ -114,7 +112,7 @@ chmod +x "$BIN_PATH"
 echo "✅ 已安装到 $BIN_PATH"
 
 # -------------------------------
-# 创建服务（固定服务名）
+# 创建 systemd/OpenRC 服务
 # -------------------------------
 if [[ "$DISTRO" == "alpine" ]]; then
     echo "🛠 创建 OpenRC 服务..."
