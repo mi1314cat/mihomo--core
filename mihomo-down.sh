@@ -3,12 +3,13 @@ set -e
 
 # ================================
 # Catmiup v4 · Mihomo Installer
-# 固定服务名：mihomo
+# Inbound-only 版（代理服务器专用）
 # ================================
 
 BASE_DIR="/root/catmi/mihomo"
 BIN_PATH="$BASE_DIR/mihomo"
-CONFIG_PATH="$BASE_DIR/config.yaml"
+CONFIG_DIR="$BASE_DIR/conf"
+CONFIG_PATH="$CONFIG_DIR/config.yaml"
 SERVICE_NAME="mihomo"
 
 mkdir -p "$BASE_DIR"
@@ -81,10 +82,17 @@ chmod +x "$BIN_PATH"
 echo "✅ 已安装到 $BIN_PATH"
 
 # -------------------------------
-# 创建目录结构
+# 创建目录结构（Inbound-only）
 # -------------------------------
-mkdir -p "$BASE_DIR"/{rules,providers,geodata,logs}
-touch "$CONFIG_PATH"
+mkdir -p "$CONFIG_DIR/config.d"
+mkdir -p "$BASE_DIR"/{geodata,logs}
+
+# 主配置文件（只写 include）
+cat <<EOF > "$CONFIG_PATH"
+include: ./config.d/*.yaml
+EOF
+
+echo "📄 主配置文件: $CONFIG_PATH"
 
 # -------------------------------
 # 创建服务（固定服务名）
@@ -115,7 +123,7 @@ else
 
     cat <<EOF > "$SERVICE_FILE"
 [Unit]
-Description=Mihomo Service
+Description=Mihomo Service (Inbound-only)
 After=network.target
 
 [Service]
@@ -140,5 +148,6 @@ EOF
 fi
 
 echo "🎉 安装完成"
-echo "📄 配置文件: $CONFIG_PATH"
+echo "📌 配置目录: $CONFIG_DIR"
+echo "📌 多配置目录: $CONFIG_DIR/config.d"
 echo "📌 使用: systemctl status $SERVICE_NAME"
