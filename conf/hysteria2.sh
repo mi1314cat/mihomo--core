@@ -29,16 +29,22 @@ print_title() {
 }
 
 # ================================
-# 基础路径
+# 基础路径（单独版本）
 # ================================
 PROTO="hysteria2"
 BASE_DIR="/root/catmi/mihomo"
-CONF_DIR="$BASE_DIR/conf/inbounds.d"
+
+# ★★★ 你要求的修改：配置文件放在 conf/ 而不是 conf/inbounds.d/ ★★★
+CONF_DIR="$BASE_DIR/conf"
+
 OUT_DIR="$BASE_DIR/out"
 CERT_DIR="$BASE_DIR/Hysteria2"
 ENV_FILE="$BASE_DIR/install_info.env"
 
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
+
+
+
 
 # ================================
 # 输入清理
@@ -182,15 +188,7 @@ generate_self_signed_cert() {
 add_config() {
     print_title "新增 Hysteria2 配置"
 
-    # ================================
-    # 1. 加载 install_info.env
-    # ================================
-    if [ ! -f "$ENV_FILE" ]; then
-        print_error "未找到 install_info.env，请先运行 mihomo-env.sh"
-        return
-    fi
-
-    source "$ENV_FILE"
+  
 
     # ================================
     # 2. 自动检测监听地址
