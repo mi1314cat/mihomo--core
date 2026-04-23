@@ -37,11 +37,37 @@ mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
 # ================================
 clean_input() { echo "$1" | tr -d '\000-\037'; }
 
-safe_read() {
-    local prompt="$1"; local default="$2"; local input
-    printf "%s (默认: %s): " "$prompt" "$default" >&2
-    read input; input=$(clean_input "$input")
-    echo "${input:-$default}"
+# ================================
+# 公网 IP 检测（带确认 + 回车默认）
+# ================================
+detect_public_ip() {
+    local ip user_ip
+
+    ip=$(
+        curl -s https://api.ipify.org ||
+        curl -s https://ifconfig.me ||
+        curl -s https://ipinfo.io/ip
+    )
+
+    if [[ -z "$ip" ]]; then
+        print_error "无法自动检测公网 IP，请手动输入"
+        printf "请输入公网 IP: " >&2
+        read ip
+        ip=$(clean_input "$ip")
+        echo "$ip"
+        return
+    fi
+
+    print_info "检测到公网 IP: $ip"
+    printf "请输入要使用的公网 IP (直接回车 = 使用检测到的 IP): " >&2
+    read user_ip
+    user_ip=$(clean_input "$user_ip")
+
+    if [[ -z "$user_ip" ]]; then
+        echo "$ip"
+    else
+        echo "$user_ip"
+    fi
 }
 
 # ================================
@@ -151,6 +177,8 @@ add_config() {
     hy_pass=$(openssl rand -hex 16)
     domain="bing.com"
 
+    PUBLIC_IP=$(detect_public_ip)
+
     generate_self_signed_cert "$domain"
 
     next=$(get_next_index); next=$((next + 1))
@@ -190,6 +218,7 @@ EOF
 echo "hysteria2://$hy_pass@$PUBLIC_IP:$hysteria_port?sni=$domain&insecure=1&alpn=h3#HY2-$index" > "$SHARE_FILE"
 
     print_ok "Hysteria2 配置生成成功"
+    echo "公网 IP: $PUBLIC_IP" >&2
     echo "入站配置: $IN_FILE" >&2
     echo "客户端配置: $OUT_FILE" >&2
     echo "分享链接: $SHARE_FILE" >&2
