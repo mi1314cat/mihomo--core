@@ -15,6 +15,7 @@ SERVICE_NAME="mihomo"
 mkdir -p "$BASE_DIR"
 
 echo "📦 安装路径: $BASE_DIR"
+
 # -------------------------------
 # 创建目录结构（Inbound-only）
 # -------------------------------
@@ -27,7 +28,6 @@ include: ./config.d/*.yaml
 EOF
 
 echo "📄 主配置文件已生成: $CONFIG_PATH"
-
 
 # -------------------------------
 # 检测系统
@@ -64,7 +64,8 @@ echo "🔧 架构: $ARCH"
 # 获取最新版本
 # -------------------------------
 echo "🌐 获取 Mihomo 最新版本..."
-LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name":' | cut -d '"' -f 4)
+LATEST_JSON=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)
+LATEST_TAG=$(echo "$LATEST_JSON" | grep '"tag_name":' | cut -d '"' -f 4)
 
 if [[ -z "$LATEST_TAG" ]]; then
     echo "❌ 无法获取版本"
@@ -74,13 +75,24 @@ fi
 echo "🔖 最新版本: $LATEST_TAG"
 
 # -------------------------------
-# 下载并解压
+# 下载并解压（带校验）
 # -------------------------------
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
 
-GZ_FILE=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep "$ARCH" | grep "$LATEST_TAG" | grep ".gz" | head -n 1 | cut -d '"' -f 4 | xargs basename)
-DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/${GZ_FILE}"
+DOWNLOAD_URL=$(echo "$LATEST_JSON" \
+    | grep browser_download_url \
+    | grep "$ARCH" \
+    | grep ".gz" \
+    | cut -d '"' -f 4 \
+    | head -n 1)
+
+if [[ -z "$DOWNLOAD_URL" ]]; then
+    echo "❌ 无法匹配到适合架构的二进制"
+    exit 1
+fi
+
+GZ_FILE=$(basename "$DOWNLOAD_URL")
 
 echo "⬇️ 下载: $GZ_FILE"
 curl --location --retry 3 --fail -o "$GZ_FILE" "$DOWNLOAD_URL"
@@ -89,23 +101,17 @@ echo "📦 解压..."
 gzip -d "$GZ_FILE"
 
 BIN_NAME=$(ls | grep "^mihomo" | head -n 1)
+
+# 校验是否为 ELF 可执行文件
+if ! file "$BIN_NAME" | grep -q "ELF"; then
+    echo "❌ 下载的文件不是 ELF 可执行文件，可能被 GitHub 限流或返回错误页"
+    exit 1
+fi
+
 mv "$BIN_NAME" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 
 echo "✅ 已安装到 $BIN_PATH"
-
-# -------------------------------
-# 创建目录结构（Inbound-only）
-# -------------------------------
-mkdir -p "$CONFIG_DIR/config.d"
-mkdir -p "$BASE_DIR"/{geodata,logs}
-
-# 主配置文件（只写 include）
-cat <<EOF > "$CONFIG_PATH"
-include: ./config.d/*.yaml
-EOF
-
-echo "📄 主配置文件: $CONFIG_PATH"
 
 # -------------------------------
 # 创建服务（固定服务名）
