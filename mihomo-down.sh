@@ -2,7 +2,7 @@
 set -e
 
 # ================================
-# Catmiup v4.2 · Mihomo Installer
+# Catmiup v4.3 · Mihomo Installer
 # Inbound-only 版（代理服务器专用）
 # ================================
 
@@ -21,9 +21,9 @@ mkdir -p "$BASE_DIR"
 mkdir -p "$CONFIG_DIR/config.d"
 mkdir -p "$BASE_DIR"/{geodata,logs}
 
-# 主配置文件（只写 include）
+# 主配置文件（修复 include 路径）
 cat <<EOF > "$CONFIG_PATH"
-include: ./conf/config.d/*.yaml
+include: ./config.d/*.yaml
 EOF
 
 echo "📄 主配置文件已生成: $CONFIG_PATH"
@@ -60,10 +60,10 @@ esac
 echo "🔧 架构: $ARCH"
 
 # -------------------------------
-# 获取最新版本
+# 获取最新版本（加 UA 防限流）
 # -------------------------------
 echo "🌐 获取 Mihomo 最新版本..."
-LATEST_JSON=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)
+LATEST_JSON=$(curl -A "Mozilla/5.0" -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)
 LATEST_TAG=$(echo "$LATEST_JSON" | grep '"tag_name":' | cut -d '"' -f 4)
 
 if [[ -z "$LATEST_TAG" ]]; then
@@ -99,7 +99,8 @@ curl --location --retry 3 --fail -o "$GZ_FILE" "$DOWNLOAD_URL"
 echo "📦 解压..."
 gzip -d "$GZ_FILE"
 
-BIN_NAME=$(ls | grep "^mihomo" | head -n 1)
+# 更稳健的二进制识别
+BIN_NAME=$(find . -maxdepth 1 -type f -name "mihomo*" | head -n 1)
 
 if ! file "$BIN_NAME" | grep -q "ELF 64-bit LSB executable"; then
     echo "❌ 下载的不是 Linux 可执行文件（可能被限流或下载错误）"
@@ -144,7 +145,6 @@ Description=Mihomo Service (Inbound-only)
 After=network.target
 
 [Service]
-WorkingDirectory=$BASE_DIR
 ExecStart=$BIN_PATH -f $CONFIG_PATH
 Restart=on-failure
 User=root
@@ -152,6 +152,8 @@ LimitNOFILE=65535
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+ExecReload=/bin/kill -HUP \$MAINPID
 
 StandardOutput=journal
 StandardError=journal
