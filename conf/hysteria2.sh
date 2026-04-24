@@ -321,8 +321,7 @@ delete_config() {
 
         print_ok "已删除 $num"
 
-        # 删除后重建合并主配置，确保 mihomo 不再加载已删除 listener
-        build_main_config
+       
     else
         print_info "已取消删除"
     fi
