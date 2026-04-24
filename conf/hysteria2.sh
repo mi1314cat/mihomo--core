@@ -103,18 +103,7 @@ get_next_index() {
     printf "%02d\n" "$i"
 }
 
-# ================================
-# 清理非法文件（只提示不删除）
-# ================================
-clean_invalid_files() {
-    shopt -s nullglob
-    for f in "$CONF_DIR"/*; do
-        name=$(basename "$f")
-        if ! [[ "$name" =~ ^$PROTO-[0-9]{2}\.yaml$ ]]; then
-            print_warn "非法文件已忽略: $name"
-        fi
-    done
-}
+
 
 # ================================
 # IP检测
@@ -331,7 +320,7 @@ delete_config() {
 # 主菜单
 # ================================
 main_menu() {
-    clean_invalid_files
+    
 
     
 
