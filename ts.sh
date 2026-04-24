@@ -70,54 +70,52 @@ uninstall_mihomo() {
 # ================================
 # 查看客户端配置文件
 # ================================
+cat_out_files() {
+    local dir="$1"
+
+    [[ -d "$dir" ]] || {
+        echo "[Info] 目录不存在: $dir"
+        return 0
+    }
+
+    echo "====== TXT 文件内容 ======"
+    echo
+
+    local txt_files=("$dir"/*.txt)
+    if ls "$dir"/*.txt >/dev/null 2>&1; then
+        for f in "${txt_files[@]}"; do
+            echo ">>> 文件：$(basename "$f")"
+            echo "----------------------------------------"
+            cat "$f"
+            echo -e "\n"
+        done
+    else
+        echo "无 TXT 文件"
+    fi
+
+    echo
+    echo "====== YAML 文件内容 ======"
+    echo
+
+    local yaml_files=("$dir"/*.yaml)
+    if ls "$dir"/*.yaml >/dev/null 2>&1; then
+        for f in "${yaml_files[@]}"; do
+            echo ">>> 文件：$(basename "$f")"
+            echo "----------------------------------------"
+            cat "$f"
+            echo -e "\n"
+        done
+    else
+        echo "无 YAML 文件"
+    fi
+}
+
 # ================================
 # 查看客户端配置文件（自动全部展开）
 # ================================
 view_client_config() {
-    print_title "查看客户端配置文件"
-
-    if [[ ! -d "$OUT_DIR" ]]; then
-        print_error "目录不存在：$OUT_DIR"
-        return
-    fi
-
-    TMP_FILE="/tmp/mihomo_client_view.txt"
-    rm -f "$TMP_FILE"
-
-    echo -e "${GREEN}====== TXT 文件内容 ======${RESET}" >> "$TMP_FILE"
-    echo >> "$TMP_FILE"
-
-    TXT_FILES=("$OUT_DIR"/*.txt)
-    if ls "$OUT_DIR"/*.txt >/dev/null 2>&1; then
-        for f in "${TXT_FILES[@]}"; do
-            echo -e "${CYAN}>>> 文件：$(basename "$f")${RESET}" >> "$TMP_FILE"
-            echo "----------------------------------------" >> "$TMP_FILE"
-            cat "$f" >> "$TMP_FILE"
-            echo -e "\n\n" >> "$TMP_FILE"
-        done
-    else
-        echo "无 TXT 文件" >> "$TMP_FILE"
-    fi
-
-    echo -e "${GREEN}====== YAML 文件内容 ======${RESET}" >> "$TMP_FILE"
-    echo >> "$TMP_FILE"
-
-    YAML_FILES=("$OUT_DIR"/*.yaml)
-    if ls "$OUT_DIR"/*.yaml >/dev/null 2>&1; then
-        for f in "${YAML_FILES[@]}"; do
-            echo -e "${CYAN}>>> 文件：$(basename "$f")${RESET}" >> "$TMP_FILE"
-            echo "----------------------------------------" >> "$TMP_FILE"
-            cat "$f" >> "$TMP_FILE"
-            echo -e "\n\n" >> "$TMP_FILE"
-        done
-    else
-        echo "无 YAML 文件" >> "$TMP_FILE"
-    fi
-
-    print_info "按 q 退出查看"
-    less "$TMP_FILE"
+    cat_out_files "/root/catmi/mihomo/out"
 }
-
 # ================================
 # 日志子菜单
 # ================================
