@@ -69,11 +69,24 @@ safe_read_port() {
 random_port() { shuf -i 10000-60000 -n 1; }
 
 # ================================
-# 自动编号
+# 编号系统
 # ================================
 get_next_index() {
-    ls "$CONF_DIR"/$PROTO-*.yaml 2>/dev/null | \
-    sed -E 's/.*-([0-9]+)\.yaml/\1/' | sort -n | tail -1
+    local used=() i=1
+    shopt -s nullglob
+    for f in "$CONF_DIR"/$PROTO-*.yaml; do
+        local base
+        base=$(basename "$f")
+        if [[ "$base" =~ ^$PROTO-([0-9]{2})\.yaml$ ]]; then
+            used+=("${BASH_REMATCH[1]}")
+        fi
+    done
+    IFS=$'\n' used=($(printf "%s\n" "${used[@]}" | sort -n))
+    for n in "${used[@]}"; do
+        [[ "$n" -ne "$i" ]] && break
+        ((i++))
+    done
+    printf "%02d\n" "$i"
 }
 
 # ================================
@@ -124,9 +137,7 @@ add_config() {
     # ================================
     # 4. 自动编号
     # ================================
-    next=$(get_next_index)
-    next=$((next + 1))
-    index=$(printf "%02d" $next)
+    index=$(get_next_index)
 
     IN_FILE="$CONF_DIR/$PROTO-$index.yaml"
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
