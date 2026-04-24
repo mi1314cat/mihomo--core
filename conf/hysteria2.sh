@@ -1,4 +1,14 @@
 #!/bin/bash
+# Hysteria2 管理脚本（合并主配置模式，删除同步）
+# 说明：
+# - 子配置保存在 conf/config.d/hysteria2-XX.yaml
+# - 主配置 conf/config.yaml 为合并后的 YAML（listeners: 下包含所有子配置的 listeners 列表项）
+# - 删除/新增后会自动重建主配置
+# - 提供简单的 YAML 校验（需要 python3 + PyYAML）
+
+set -o errexit
+set -o nounset
+set -o pipefail
 
 # ================================
 # 彩色定义
@@ -9,6 +19,7 @@ RESET="\e[0m"
 
 print_info()  { printf "${CYAN}[Info]${RESET} %s\n" "$1" >&2; }
 print_ok()    { printf "${GREEN}[OK]${RESET}  %s\n" "$1" >&2; }
+print_warn()  { printf "${YELLOW}[Warn]${RESET} %s\n" "$1" >&2; }
 print_error() { printf "${RED}[Error]${RESET} %s\n" "$1" >&2; }
 
 print_title() {
@@ -20,74 +31,44 @@ print_title() {
 }
 
 # ================================
-# 基础路径（方案 A）
+# 基础路径
 # ================================
 PROTO="hysteria2"
 BASE_DIR="/root/catmi/mihomo"
 
 CONF_ROOT="$BASE_DIR/conf"
-CONF_DIR="$BASE_DIR/conf/config.d"   # ★ 入站配置目录（方案 A）
+CONF_DIR="$CONF_ROOT/config.d"
 OUT_DIR="$BASE_DIR/out"
-CERT_DIR="$BASE_DIR/Hysteria2"
+CERT_DIR="$CONF_ROOT/certs"
 
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
 
 # ================================
-# 输入清理
+# 工具函数
 # ================================
 clean_input() { echo "$1" | tr -d '\000-\037'; }
 
-# ================================
-# 公网 IP 检测（带确认 + 回车默认）
-# ================================
-detect_public_ip() {
-    local ip user_ip
-
-    ip=$(
-        curl -s https://api.ipify.org ||
-        curl -s https://ifconfig.me ||
-        curl -s https://ipinfo.io/ip
-    )
-
-    if [[ -z "$ip" ]]; then
-        print_error "无法自动检测公网 IP，请手动输入"
-        printf "请输入公网 IP: " >&2
-        read ip
-        ip=$(clean_input "$ip")
-        echo "$ip"
-        return
-    fi
-
-    print_info "检测到公网 IP: $ip"
-    printf "请输入要使用的公网 IP (直接回车 = 使用检测到的 IP): " >&2
-    read user_ip
-    user_ip=$(clean_input "$user_ip")
-
-    if [[ -z "$user_ip" ]]; then
-        echo "$ip"
-    else
-        echo "$user_ip"
-    fi
+port_in_use() {
+    local p="$1"
+    ss -tuln 2>/dev/null | awk '{print $5}' | grep -E -q "(:|])$p$"
 }
 
-# ================================
-# 端口工具
-# ================================
-port_in_use() { ss -tuln | awk '{print $5}' | grep -E -q "(:|])$1$"; }
 random_port() { shuf -i 10000-60000 -n 1; }
 
 random_free_port() {
     while true; do
+        local port
         port=$(random_port)
         if ! port_in_use "$port"; then echo "$port"; return; fi
     done
 }
 
 safe_read_port() {
-    local default="$1"; local input
+    local default="$1" input port
     while true; do
         printf "请输入监听端口 (默认: %s): " "$default" >&2
-        read input; input=$(clean_input "$input")
+        read -r input
+        input=$(clean_input "$input")
         port="${input:-$default}"
 
         [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
@@ -99,9 +80,46 @@ safe_read_port() {
 }
 
 # ================================
-# IP 检测
+# 编号系统（核心）
 # ================================
-detect_listen_ip() {
+get_next_index() {
+    local used=() i=1
+
+    shopt -s nullglob
+    for f in "$CONF_DIR"/$PROTO-*.yaml; do
+        local base
+        base=$(basename "$f")
+        if [[ "$base" =~ ^$PROTO-([0-9]{2})\.yaml$ ]]; then
+            used+=("${BASH_REMATCH[1]}")
+        fi
+    done
+
+    IFS=$'\n' used=($(printf "%s\n" "${used[@]}" | sort -n))
+    for n in "${used[@]}"; do
+        [[ "$n" -ne "$i" ]] && break
+        ((i++))
+    done
+
+    printf "%02d\n" "$i"
+}
+
+# ================================
+# 清理非法文件（只提示不删除）
+# ================================
+clean_invalid_files() {
+    shopt -s nullglob
+    for f in "$CONF_DIR"/*; do
+        name=$(basename "$f")
+        if ! [[ "$name" =~ ^$PROTO-[0-9]{2}\.yaml$ ]]; then
+            print_warn "非法文件已忽略: $name"
+        fi
+    done
+}
+
+# ================================
+# IP检测
+# ================================
+detect_listen_ip_mode() {
     ip -4 addr show scope global | grep -q "inet " && has_ipv4=true || has_ipv4=false
     ip -6 addr show scope global | grep -q "inet6 [2-9a-fA-F]" && has_ipv6=true || has_ipv6=false
 
@@ -113,174 +131,275 @@ detect_listen_ip() {
 
 choose_listen_ip() {
     local detect="$1"
-    print_info "自动检测结果：$detect"
+    print_info "检测结果: $detect"
 
     echo "1) IPv4 (0.0.0.0)" >&2
     echo "2) IPv6 (::)" >&2
-    echo "3) 自动推荐" >&2
+    echo "3) 自动" >&2
 
-    printf "选择 (默认 1): " >&2
-    read choice; choice=$(clean_input "$choice")
+    printf "选择 (默认1): " >&2
+    read -r choice
+    choice=$(clean_input "$choice")
 
     case "$choice" in
         2) echo "::" ;;
         3)
             case "$detect" in
-                ipv4) echo "0.0.0.0" ;;
                 ipv6) echo "::" ;;
-                dual) echo "0.0.0.0" ;;
-                none) echo "0.0.0.0" ;;
+                *) echo "0.0.0.0" ;;
             esac ;;
         *) echo "0.0.0.0" ;;
     esac
 }
 
-# ================================
-# 自动编号
-# ================================
-get_next_index() {
-    ls "$CONF_DIR"/$PROTO-*.yaml 2>/dev/null |
-    sed -E 's/.*-([0-9]+)\.yaml/\1/' | sort -n | tail -1
+detect_public_ip() {
+    local ip user_ip
+
+    ip=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || true)
+
+    if [[ -z "$ip" ]]; then
+        print_error "获取公网 IP 失败"
+        read -r -p "请输入公网IP: " ip
+        echo "$(clean_input "$ip")"
+        return
+    fi
+
+    print_info "检测到 IP: $ip"
+    read -r -p "使用此IP？(回车默认): " user_ip
+    user_ip=$(clean_input "$user_ip")
+
+    echo "${user_ip:-$ip}"
 }
 
 # ================================
-# 生成证书
+# 证书
 # ================================
 generate_self_signed_cert() {
     local domain="$1"
+
     CERT_FILE="$CERT_DIR/cert-$domain.crt"
     KEY_FILE="$CERT_DIR/key-$domain.key"
 
-    [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]] && return
+    if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
+        print_info "证书已存在: $CERT_FILE"
+        return
+    fi
 
-    print_info "生成自签证书: $domain"
+    print_info "生成证书..."
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "$KEY_FILE" \
         -out "$CERT_FILE" \
         -days 365 \
-        -subj "/CN=$domain" >/dev/null 2>&1
-    print_ok "证书生成成功"
+        -subj "/CN=$domain" >/dev/null 2>&1 || {
+            print_error "openssl 生成证书失败"
+            return 1
+        }
+
+    print_ok "证书生成完成: $CERT_FILE"
+}
+
+# ================================
+# 主配置（合并 listeners 模式）
+# ================================
+# 说明：
+# - 生成 conf/config.yaml，内容为:
+#   listeners:
+#     - <来自每个子文件的 listeners 下的列表项>
+# - 仅提取每个子文件中 listeners: 之后的内容（保留原有缩进）
+# - 最后进行简单的 YAML 校验（如果 python3 + PyYAML 可用）
+build_main_config() {
+    local MAIN="$CONF_ROOT/config.yaml"
+    local TMP="$CONF_ROOT/config.tmp.yaml"
+
+    # 写入主头
+    {
+        echo "# 自动生成，请勿手动修改"
+        echo "listeners:"
+    } > "$TMP"
+
+    shopt -s nullglob
+    local files=("$CONF_DIR"/$PROTO-*.yaml)
+
+    for f in "${files[@]}"; do
+        # 提取每个子文件中 listeners: 之后的内容并追加
+        # 使用 awk：遇到第一行 "listeners:" 后开始打印剩余行
+        awk '
+            BEGIN {p=0}
+            /^[[:space:]]*listeners[[:space:]]*:/ {p=1; next}
+            p { print }
+        ' "$f" >> "$TMP"
+        # 确保每个文件之间有空行（可读性）
+        echo "" >> "$TMP"
+    done
+
+    # 清理可能的多余空行并写回 MAIN
+    # 保持文件末尾有换行
+    awk 'NF{print}' "$TMP" > "$MAIN"
+
+    # 可选：简单 YAML 校验（需要 python3 + PyYAML）
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 - <<PY 2>/dev/null
+import sys, yaml
+try:
+    yaml.safe_load(open("$MAIN"))
+except Exception as e:
+    print("YAML_ERROR:"+str(e))
+    sys.exit(1)
+PY
+        then
+            print_ok "主配置已生成并通过语法校验: $MAIN"
+        else
+            print_warn "主配置生成但 YAML 校验失败，请手动检查: $MAIN"
+        fi
+    else
+        print_ok "主配置已生成: $MAIN (未进行语法校验，缺少 python3)"
+    fi
+
+    # 清理临时文件
+    rm -f "$TMP" 2>/dev/null || true
 }
 
 # ================================
 # 新增配置
 # ================================
 add_config() {
-    print_title "新增 Hysteria2 配置"
+    print_title "新增配置"
 
-    detect=$(detect_listen_ip)
+    local detect listen_ip port password domain PUBLIC_IP index IN_FILE OUT_FILE SHARE_FILE
+
+    detect=$(detect_listen_ip_mode)
     listen_ip=$(choose_listen_ip "$detect")
 
-    default_port=$(random_free_port)
-    hysteria_port=$(safe_read_port "$default_port")
-
-    hy_pass=$(openssl rand -hex 16)
+    port=$(safe_read_port "$(random_free_port)")
+    password=$(openssl rand -hex 16)
+    # 默认 SNI/证书域名，可按需修改或改为交互式
     domain="bing.com"
-
     PUBLIC_IP=$(detect_public_ip)
 
     generate_self_signed_cert "$domain"
 
-    next=$(get_next_index); next=$((next + 1))
-    index=$(printf "%02d" $next)
+    index=$(get_next_index)
 
     IN_FILE="$CONF_DIR/$PROTO-$index.yaml"
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
-cat > "$IN_FILE" <<EOF
-inbounds:
+    cat > "$IN_FILE" <<EOF
+listeners:
   - name: hysteria2-$index
     type: hysteria2
     listen: "$listen_ip"
-    port: $hysteria_port
+    port: $port
     users:
-      user1: $hy_pass
-    alpn:
-      - h3
+      user1: $password
     certificate: $CERT_FILE
     private-key: $KEY_FILE
 EOF
 
-cat > "$OUT_FILE" <<EOF
+    cat > "$OUT_FILE" <<EOF
 proxies:
   - name: Hysteria2-$index
     type: hysteria2
     server: $PUBLIC_IP
-    port: $hysteria_port
-    password: $hy_pass
+    port: $port
+    password: $password
     sni: $domain
     skip-cert-verify: true
-    alpn:
-      - h3
 EOF
 
-echo "hysteria2://$hy_pass@$PUBLIC_IP:$hysteria_port?sni=$domain&insecure=1&alpn=h3#HY2-$index" > "$SHARE_FILE"
+    echo "hysteria2://$password@$PUBLIC_IP:$port?sni=$domain&insecure=1#HY2-$index" > "$SHARE_FILE"
 
-    print_ok "Hysteria2 配置生成成功"
-    echo "公网 IP: $PUBLIC_IP" >&2
-    echo "入站配置: $IN_FILE" >&2
-    echo "客户端配置: $OUT_FILE" >&2
-    echo "分享链接: $SHARE_FILE" >&2
+    print_ok "创建完成: $index"
+
+    # 生成合并主配置（确保 mihomo 加载最新）
+    build_main_config
 }
 
 # ================================
-# 查看配置
+# 列表
 # ================================
 list_configs() {
-    print_title "Hysteria2 配置列表"
+    print_title "配置列表"
 
     shopt -s nullglob
-    files=("$CONF_DIR"/$PROTO-*.yaml)
+    local files=("$CONF_DIR"/$PROTO-*.yaml)
 
-    [[ ${#files[@]} -eq 0 ]] && print_error "没有配置" && return
+    if [[ ${#files[@]} -eq 0 ]]; then
+        print_warn "无配置"
+        return
+    fi
+
+    IFS=$'\n' files=($(printf "%s\n" "${files[@]}" | sort))
 
     for f in "${files[@]}"; do
-        num=$(basename "$f" .yaml | sed -E 's/.*-([0-9]+)/\1/')
-        port=$(grep -E "port:" "$f" | awk '{print $2}')
-        password=$(grep -E "user1:" "$f" | awk '{print $2}')
-        printf "${GREEN}%s${RESET}) 端口:${BLUE}%s${RESET} 密码:${MAGENTA}%s${RESET}\n" "$num" "$port" "$password" >&2
+        name=$(basename "$f")
+        if [[ "$name" =~ ^$PROTO-([0-9]{2})\.yaml$ ]]; then
+            num="${BASH_REMATCH[1]}"
+        else
+            continue
+        fi
+
+        port=$(grep -E '^[[:space:]]*port:' "$f" | head -1 | awk -F: '{gsub(/ /,"",$2); print $2}')
+        pass=$(grep -E '^[[:space:]]*user1:' "$f" | head -1 | awk -F: '{gsub(/ /,"",$2); print $2}')
+
+        printf "${GREEN}%s${RESET}) 端口:${BLUE}%s${RESET} 密码:${MAGENTA}%s${RESET}\n" \
+            "$num" "${port:-N/A}" "${pass:-N/A}" >&2
     done
 }
 
 # ================================
-# 删除配置
+# 删除
 # ================================
 delete_config() {
-    print_title "删除 Hysteria2 配置"
+    print_title "删除配置"
 
     list_configs
+    read -r -p "输入编号: " num
+    num=$(printf "%02d" "$num")
 
-    printf "\n请输入要删除的编号: " >&2
-    read num; num=$(clean_input "$num")
+    IN_FILE="$CONF_DIR/$PROTO-$num.yaml"
 
-    IN_FILE="$CONF_DIR/$PROTO-$(printf "%02d" "$num").yaml"
-    OUT_FILE="$OUT_DIR/${PROTO}_client-$(printf "%02d" "$num").yaml"
-    SHARE_FILE="$OUT_DIR/${PROTO}_share-$(printf "%02d" "$num").txt"
+    if [[ ! -f "$IN_FILE" ]]; then
+        print_error "不存在: $IN_FILE"
+        return
+    fi
 
-    [[ ! -f "$IN_FILE" ]] && print_error "编号不存在" && return
+    read -r -p "确认删除? (y/N): " c
 
-    rm -f "$IN_FILE" "$OUT_FILE" "$SHARE_FILE"
+    if [[ "$c" =~ ^[yY]$ ]]; then
+        rm -f "$CONF_DIR/$PROTO-$num.yaml" \
+              "$OUT_DIR/${PROTO}_client-$num.yaml" \
+              "$OUT_DIR/${PROTO}_share-$num.txt"
 
-    print_ok "已删除配置 $num"
+        print_ok "已删除 $num"
+
+        # 删除后重建合并主配置，确保 mihomo 不再加载已删除 listener
+        build_main_config
+    else
+        print_info "已取消删除"
+    fi
 }
 
 # ================================
 # 主菜单
 # ================================
 main_menu() {
+    clean_invalid_files
+
+    # 启动时确保主配置存在（合并当前子配置）
+    build_main_config
+
     while true; do
-        print_title "Mihomo Hysteria2 管理面板"
+        print_title "Hysteria2 管理面板"
 
-        echo "1) 查看配置" >&2
-        echo "2) 新增配置" >&2
-        echo "3) 删除配置" >&2
-        echo "0) 退出" >&2
+        echo "1) 查看配置"
+        echo "2) 新增配置"
+        echo "3) 删除配置"
+        echo "0) 退出配置"
 
-        printf "请选择: " >&2
-        read c; c=$(clean_input "$c")
+        read -r -p "选择: " c
 
-        case $c in
+        case "$c" in
             1) list_configs ;;
             2) add_config ;;
             3) delete_config ;;
@@ -288,9 +407,11 @@ main_menu() {
             *) print_error "无效选项" ;;
         esac
 
-        printf "按回车继续..." >&2
-        read
+        read -r -p "回车继续..."
     done
 }
 
+# ================================
+# 入口
+# ================================
 main_menu
