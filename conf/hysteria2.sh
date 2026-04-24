@@ -333,8 +333,7 @@ delete_config() {
 main_menu() {
     clean_invalid_files
 
-    # 启动时确保主配置存在（合并当前子配置）
-    build_main_config
+    
 
     while true; do
         print_title "Hysteria2 管理面板"
