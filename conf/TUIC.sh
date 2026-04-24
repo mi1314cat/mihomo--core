@@ -273,14 +273,10 @@ proxies:
     skip-cert-verify: true  
 EOF
 
-    {
-      echo "TUICv5 #$index"
-      echo "server: $PUBLIC_IP"
-      echo "port: $tuic_port"
-      echo "uuid: $uuid"
-      echo "password: $password"
-      echo "cert: $CERT_FILE"
-    } > "$SHARE_FILE"
+   
+    
+    # 9. 写入分享链接
+echo "tuic://$uuid:$password@$PUBLIC_IP:$tuic_port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
 
     print_ok "已创建子配置: $IN_FILE"
     print_ok "客户端文件: $OUT_FILE"
