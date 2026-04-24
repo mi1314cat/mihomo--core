@@ -30,7 +30,7 @@ print_title() {
 # ================================
 PROTO="anytls"
 BASE_DIR="/root/catmi/mihomo"
-CONF_DIR="$BASE_DIR/conf/inbounds.d"
+CONF_DIR="$BASE_DIR/conf/config.d"
 OUT_DIR="$BASE_DIR/out"
 CERT_DIR="$BASE_DIR/AnyTLS"
 
