@@ -156,14 +156,19 @@ EOF
     # 8. 写入客户端配置（Clash Meta）
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: AnyTLS-$index
+  
+  - name: anytls
     type: anytls
     server: $SERVER_IP
     port: $ANYTLS_PORT
     uuid: $UUID
     password: $PASSWORD
     sni: $DOMAIN
-    skip-cert-verify: true
+    client-fingerprint: chrome
+    udp: true
+    idle-session-check-interval: 30
+    idle-session-timeout: 30
+    skip-cert-verify: true  
 EOF
 
     # 9. 写入分享链接
