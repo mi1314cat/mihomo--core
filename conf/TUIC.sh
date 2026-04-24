@@ -261,7 +261,7 @@ proxies:
     server: $PUBLIC_IP
     port: $tuic_port
     uuid: $uuid
-    password: $hy_password
+    password: $password
     alpn:
       - h3
     disable-sni: true
@@ -286,7 +286,7 @@ EOF
     print_ok "客户端文件: $OUT_FILE"
     print_ok "分享文件: $SHARE_FILE"
 
-    build_main_config
+    
 }
 
 # ================================
@@ -364,14 +364,14 @@ Commands:
   add             新增 tuicv5 配置（交互）
   list            列出配置
   delete          删除配置（交互）
-  --rebuild       仅重建主配置（非交互）
+  
   help            显示本帮助
 EOF
 }
 
 main_menu() {
     clean_invalid_files
-    build_main_config
+    
 
     while true; do
         print_title "TUICv5 管理面板"
@@ -401,7 +401,7 @@ case "${1:-menu}" in
     add) add_tuicv5 ;;
     list) list_configs ;;
     delete) delete_config ;;
-    --rebuild|--build) build_main_config ;;
+    
     help|-h|--help) print_help ;;
     *) print_help; exit 2 ;;
 esac
