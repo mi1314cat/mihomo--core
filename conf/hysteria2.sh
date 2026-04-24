@@ -207,57 +207,6 @@ generate_self_signed_cert() {
 #     - <来自每个子文件的 listeners 下的列表项>
 # - 仅提取每个子文件中 listeners: 之后的内容（保留原有缩进）
 # - 最后进行简单的 YAML 校验（如果 python3 + PyYAML 可用）
-build_main_config() {
-    local MAIN="$CONF_ROOT/config.yaml"
-    local TMP="$CONF_ROOT/config.tmp.yaml"
-
-    # 写入主头
-    {
-        echo "# 自动生成，请勿手动修改"
-        echo "listeners:"
-    } > "$TMP"
-
-    shopt -s nullglob
-    local files=("$CONF_DIR"/$PROTO-*.yaml)
-
-    for f in "${files[@]}"; do
-        # 提取每个子文件中 listeners: 之后的内容并追加
-        # 使用 awk：遇到第一行 "listeners:" 后开始打印剩余行
-        awk '
-            BEGIN {p=0}
-            /^[[:space:]]*listeners[[:space:]]*:/ {p=1; next}
-            p { print }
-        ' "$f" >> "$TMP"
-        # 确保每个文件之间有空行（可读性）
-        echo "" >> "$TMP"
-    done
-
-    # 清理可能的多余空行并写回 MAIN
-    # 保持文件末尾有换行
-    awk 'NF{print}' "$TMP" > "$MAIN"
-
-    # 可选：简单 YAML 校验（需要 python3 + PyYAML）
-    if command -v python3 >/dev/null 2>&1; then
-        if python3 - <<PY 2>/dev/null
-import sys, yaml
-try:
-    yaml.safe_load(open("$MAIN"))
-except Exception as e:
-    print("YAML_ERROR:"+str(e))
-    sys.exit(1)
-PY
-        then
-            print_ok "主配置已生成并通过语法校验: $MAIN"
-        else
-            print_warn "主配置生成但 YAML 校验失败，请手动检查: $MAIN"
-        fi
-    else
-        print_ok "主配置已生成: $MAIN (未进行语法校验，缺少 python3)"
-    fi
-
-    # 清理临时文件
-    rm -f "$TMP" 2>/dev/null || true
-}
 
 # ================================
 # 新增配置
@@ -311,8 +260,7 @@ EOF
 
     print_ok "创建完成: $index"
 
-    # 生成合并主配置（确保 mihomo 加载最新）
-    build_main_config
+   
 }
 
 # ================================
