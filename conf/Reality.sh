@@ -101,7 +101,7 @@ add_config() {
     load_env "$ENV_FILE"
 
     # 检查必要变量
-    required_vars=(UUID PRIVATE_KEY PUBLIC_KEY SHORT_ID DEST_SERVER PUBLIC_IP link_ip REALITY_PORT)
+    required_vars=(UUID PRIVATE_KEY PUBLIC_KEY SHORT_ID dest_server PUBLIC_IP link_ip REALITY_PORT)
     for v in "${required_vars[@]}"; do
         if [ -z "${!v}" ]; then
             print_error "缺少必要变量：$v"
@@ -145,12 +145,12 @@ cat > "$IN_FILE" <<EOF
     - uuid: $UUID
       flow: xtls-rprx-vision
   reality-config:
-    dest: $DEST_SERVER:443
+    dest: $dest_server:443
     private-key: $PRIVATE_KEY
     short-id:
       - $SHORT_ID
     server-names:
-      - $DEST_SERVER
+      - $dest_server
 EOF
 
     # ================================
@@ -167,7 +167,7 @@ proxies:
     tls: true
     udp: true
     flow: xtls-rprx-vision
-    servername: $DEST_SERVER
+    servername: $dest_server
     reality-opts:
       public-key: $PUBLIC_KEY
       short-id: $SHORT_ID
@@ -177,7 +177,7 @@ EOF
     # ================================
     # 7. 写 Reality 分享链接
     # ================================
-echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$DEST_SERVER&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
+echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
 
     # ================================
     # 8. 输出信息
@@ -186,7 +186,7 @@ echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision
     echo -e "编号: $index" >&2
     echo -e "端口: $REALITY_PORT" >&2
     echo -e "UUID: $UUID" >&2
-    echo -e "SNI: $DEST_SERVER" >&2
+    echo -e "SNI: $dest_server" >&2
     echo -e "入站配置: $IN_FILE" >&2
     echo -e "客户端配置: $OUT_FILE" >&2
     echo -e "分享链接: $SHARE_FILE" >&2
