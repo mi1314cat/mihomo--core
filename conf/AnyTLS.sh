@@ -186,7 +186,7 @@ proxies:
 EOF
 
     # 9. 写入分享链接
-echo "anytls://$UUID:$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$index" > "$SHARE_FILE"
+echo "anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$index" > "$SHARE_FILE"
 
     # 10. 输出信息
     print_ok "AnyTLS 配置生成成功"
