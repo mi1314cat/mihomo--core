@@ -70,6 +70,9 @@ uninstall_mihomo() {
 # ================================
 # 查看客户端配置文件
 # ================================
+# ================================
+# 查看客户端配置文件（自动全部展开）
+# ================================
 view_client_config() {
     print_title "查看客户端配置文件"
 
@@ -78,22 +81,41 @@ view_client_config() {
         return
     fi
 
-    echo -e "${GREEN}TXT 文件：${RESET}"
-    ls "$OUT_DIR"/*.txt 2>/dev/null || echo "无 TXT 文件"
-    echo
+    TMP_FILE="/tmp/mihomo_client_view.txt"
+    rm -f "$TMP_FILE"
 
-    echo -e "${GREEN}YAML 文件：${RESET}"
-    ls "$OUT_DIR"/*.yaml 2>/dev/null || echo "无 YAML 文件"
-    echo
+    echo -e "${GREEN}====== TXT 文件内容 ======${RESET}" >> "$TMP_FILE"
+    echo >> "$TMP_FILE"
 
-    read -p "请输入要查看的文件名（含后缀）: " file
-
-    if [[ -f "$OUT_DIR/$file" ]]; then
-        print_info "显示文件内容（按 q 退出）"
-        less "$OUT_DIR/$file"
+    TXT_FILES=("$OUT_DIR"/*.txt)
+    if ls "$OUT_DIR"/*.txt >/dev/null 2>&1; then
+        for f in "${TXT_FILES[@]}"; do
+            echo -e "${CYAN}>>> 文件：$(basename "$f")${RESET}" >> "$TMP_FILE"
+            echo "----------------------------------------" >> "$TMP_FILE"
+            cat "$f" >> "$TMP_FILE"
+            echo -e "\n\n" >> "$TMP_FILE"
+        done
     else
-        print_error "文件不存在：$OUT_DIR/$file"
+        echo "无 TXT 文件" >> "$TMP_FILE"
     fi
+
+    echo -e "${GREEN}====== YAML 文件内容 ======${RESET}" >> "$TMP_FILE"
+    echo >> "$TMP_FILE"
+
+    YAML_FILES=("$OUT_DIR"/*.yaml)
+    if ls "$OUT_DIR"/*.yaml >/dev/null 2>&1; then
+        for f in "${YAML_FILES[@]}"; do
+            echo -e "${CYAN}>>> 文件：$(basename "$f")${RESET}" >> "$TMP_FILE"
+            echo "----------------------------------------" >> "$TMP_FILE"
+            cat "$f" >> "$TMP_FILE"
+            echo -e "\n\n" >> "$TMP_FILE"
+        done
+    else
+        echo "无 YAML 文件" >> "$TMP_FILE"
+    fi
+
+    print_info "按 q 退出查看"
+    less "$TMP_FILE"
 }
 
 # ================================
