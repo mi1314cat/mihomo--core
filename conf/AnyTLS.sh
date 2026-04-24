@@ -32,7 +32,7 @@ PROTO="anytls"
 BASE_DIR="/root/catmi/mihomo"
 CONF_DIR="$BASE_DIR/conf/config.d"
 OUT_DIR="$BASE_DIR/out"
-CERT_DIR="$BASE_DIR/AnyTLS"
+CERT_DIR="$BASE_DIR/conf/certs"
 
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
 
@@ -46,9 +46,23 @@ clean_input() {
 # ================================
 # 自动编号
 # ================================
+
 get_next_index() {
-    ls "$CONF_DIR"/$PROTO-*.yaml 2>/dev/null | \
-    sed -E 's/.*-([0-9]+)\.yaml/\1/' | sort -n | tail -1
+    local used=() i=1
+    shopt -s nullglob
+    for f in "$CONF_DIR"/$PROTO-*.yaml; do
+        local base
+        base=$(basename "$f")
+        if [[ "$base" =~ ^$PROTO-([0-9]{2})\.yaml$ ]]; then
+            used+=("${BASH_REMATCH[1]}")
+        fi
+    done
+    IFS=$'\n' used=($(printf "%s\n" "${used[@]}" | sort -n))
+    for n in "${used[@]}"; do
+        [[ "$n" -ne "$i" ]] && break
+        ((i++))
+    done
+    printf "%02d\n" "$i"
 }
 
 # ================================
@@ -141,16 +155,16 @@ add_config() {
 
     # 7. 写入入站配置（Mihomo AnyTLS）
 cat > "$IN_FILE" <<EOF
-# 自动生成：AnyTLS 入站配置
-- name: anytls-$index
-  type: anytls
-  listen: "::"
-  port: $ANYTLS_PORT
-  users:
-    - uuid: $UUID
-      password: $PASSWORD
-  certificate: $CERT_FILE
-  private-key: $KEY_FILE
+listeners:
+  - name: anytls-$index
+    type: anytls
+    listen: "::"
+    port: $ANYTLS_PORT
+    users:
+        uuid: $UUID
+        password: $PASSWORD
+    certificate: $CERT_FILE
+    private-key: $KEY_FILE
 EOF
 
     # 8. 写入客户端配置（Clash Meta）
