@@ -136,9 +136,7 @@ add_config() {
     generate_cert "$DOMAIN"
 
     # 5. 自动编号
-    next=$(get_next_index)
-    next=$((next + 1))
-    index=$(printf "%02d" $next)
+    index=$(get_next_index)
 
     IN_FILE="$CONF_DIR/$PROTO-$index.yaml"
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
