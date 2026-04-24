@@ -76,18 +76,46 @@ main_menu() {
         case "$choice" in
             1)
                 run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/Reality.sh" "Reality"
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/synthesisconfiguration.sh" "x"
+                if ! systemctl restart mihomo.service; then
+                 print_error "重启 mihomo.service 服务失败，请运行 'journalctl -u mihomo -b --no-pager' 获取详情"
+                 systemctl status mihomo.service--no-pager || true
+                exit 1
+                fi
                 ;;
             2)
                 run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/hysteria2.sh" "Hysteria2"
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/synthesisconfiguration.sh" "x"
+                if ! systemctl restart mihomo.service; then
+                 print_error "重启 mihomo.service 服务失败，请运行 'journalctl -u mihomo -b --no-pager' 获取详情"
+                 systemctl status mihomo.service--no-pager || true
+                exit 1
+                fi
                 ;;
             3)
                 run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/TUIC.sh" "TUIC"
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/synthesisconfiguration.sh" "x"
+                if ! systemctl restart mihomo.service; then
+                 print_error "重启 mihomo.service 服务失败，请运行 'journalctl -u mihomo -b --no-pager' 获取详情"
+                 systemctl status mihomo.service--no-pager || true
+                exit 1
+                fi
                 ;;
             4)
                 run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/AnyTLS.sh" "AnyTLS"
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/synthesisconfiguration.sh" "x"
+                if ! systemctl restart mihomo.service; then
+                 print_error "重启 mihomo.service 服务失败，请运行 'journalctl -u mihomo -b --no-pager' 获取详情"
+                 systemctl status mihomo.service--no-pager || true
+                exit 1
+                fi
                 ;;
             5)
-                restart_mihomo
+                if ! systemctl restart mihomo.service; then
+                 print_error "重启 mihomo.service 服务失败，请运行 'journalctl -u mihomo -b --no-pager' 获取详情"
+                 systemctl status mihomo.service--no-pager || true
+                exit 1
+                fi
                 ;;
             0)
                 exit 0
