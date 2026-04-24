@@ -137,18 +137,22 @@ add_config() {
     # ================================
 cat > "$IN_FILE" <<EOF
 listeners:
+
   - name: reality-$index
     type: vless
     listen: "::"
     port: $REALITY_PORT
     users:
-        uuid: $UUID
+      - uuid: $UUID
         flow: xtls-rprx-vision
     reality-config:
       dest: $dest_server:443
       private-key: $PRIVATE_KEY
-      short-id: $SHORT_ID
-      server-names: $dest_server
+      short-id:
+        - $SHORT_ID
+      server-names:
+        - $dest_server
+
      
 
       
