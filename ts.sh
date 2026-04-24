@@ -164,6 +164,45 @@ restart_mihomo() {
         print_error "重启失败"
     fi
 }
+# ================================
+# 添加节点子菜单
+# ================================
+add_node_menu() {
+    while true; do
+        print_title "添加节点"
+
+        echo "1) Reality"
+        echo "2) Hysteria2"
+        echo "3) TUIC"
+        echo "4) AnyTLS"
+        echo "0) 返回主菜单"
+
+        read -p "请选择: " node_choice
+
+        case "$node_choice" in
+            1)
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/Reality.sh" "Reality"
+                ;;
+            2)
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/hysteria2.sh" "Hysteria2"
+                ;;
+            3)
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/TUIC.sh" "TUIC"
+                ;;
+            4)
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/AnyTLS.sh" "AnyTLS"
+                ;;
+            0)
+                return
+                ;;
+            *)
+                print_error "无效选项"
+                ;;
+        esac
+
+        read -p "按回车继续..."
+    done
+}
 
 # ================================
 # 系统信息
@@ -204,31 +243,27 @@ main_menu() {
         print_title "Mihomo 协议管理菜单"
 
         echo "1) 安装 Mihomo"
-        echo "2) Reality"
-        echo "3) Hysteria2"
-        echo "4) TUIC"
-        echo "5) AnyTLS"
-        echo "6) 查看客户端配置文件"
-        echo "7) 日志菜单"
-        echo "8) 重启 Mihomo"
-        echo "9) 卸载 Mihomo"
+        echo "2) 添加节点"
+        echo "3) 查看客户端配置文件"
+        echo "4) 日志菜单"
+        echo "5) 重启 Mihomo"
+        echo "6) 卸载 Mihomo"
         echo "0) 退出"
+
 
         read -p "请选择: " choice
 
         case "$choice" in
-            1) run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/mihomo-down.sh" "安装 Mihomo" ;;
-            2) run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/Reality.sh" "Reality" ;;
-            3) run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/hysteria2.sh" "Hysteria2" ;;
-            4) run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/TUIC.sh" "TUIC" ;;
-            5) run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/AnyTLS.sh" "AnyTLS" ;;
-            6) view_client_config ;;
-            7) log_menu ;;
-            8) restart_mihomo ;;
-            9) uninstall_mihomo ;;
-            0) exit 0 ;;
-            *) print_error "无效选项" ;;
-        esac
+    1) run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/mihomo-down.sh" "安装 Mihomo" ;;
+    2) add_node_menu ;;
+    3) view_client_config ;;
+    4) log_menu ;;
+    5) restart_mihomo ;;
+    6) uninstall_mihomo ;;
+    0) exit 0 ;;
+    *) print_error "无效选项" ;;
+esac
+
 
         read -p "按回车继续..."
     done
