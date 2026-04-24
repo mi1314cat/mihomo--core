@@ -261,9 +261,16 @@ proxies:
     server: $PUBLIC_IP
     port: $tuic_port
     uuid: $uuid
-    password: $password
+    password: $hy_password
+    alpn:
+      - h3
+    disable-sni: true
     sni: $domain
-    skip-cert-verify: true
+    reduce-rtt: true
+    request-timeout: 8000
+    udp-relay-mode: native
+    congestion-controller: bbr
+    skip-cert-verify: true  
 EOF
 
     {
