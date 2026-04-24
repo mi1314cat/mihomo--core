@@ -230,6 +230,7 @@ listeners:
     port: $port
     users:
       user1: $password
+    masquerade: https://bing.com  
     certificate: $CERT_FILE
     private-key: $KEY_FILE
 EOF
