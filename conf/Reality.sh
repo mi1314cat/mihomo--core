@@ -136,7 +136,7 @@ add_config() {
     # 5. 写 Reality 入站配置
     # ================================
 cat > "$IN_FILE" <<EOF
-inbounds:
+listeners:
   - name: reality-$index
     type: vless
     listen: "::"
