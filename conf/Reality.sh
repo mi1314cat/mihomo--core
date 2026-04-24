@@ -136,21 +136,22 @@ add_config() {
     # 5. 写 Reality 入站配置
     # ================================
 cat > "$IN_FILE" <<EOF
-# 自动生成：Reality 入站配置
-- name: reality-$index
-  type: vless
-  listen: "::"
-  port: $REALITY_PORT
-  users:
-    - uuid: $UUID
-      flow: xtls-rprx-vision
-  reality-config:
-    dest: $dest_server:443
-    private-key: $PRIVATE_KEY
-    short-id:
-      - $SHORT_ID
-    server-names:
-      - $dest_server
+inbounds:
+  - name: reality-$index
+    type: vless
+    listen: "::"
+    port: $REALITY_PORT
+    users:
+        uuid: $UUID
+        flow: xtls-rprx-vision
+    reality-config:
+      dest: $dest_server:443
+      private-key: $PRIVATE_KEY
+      short-id: $SHORT_ID
+      server-names: $dest_server
+     
+
+      
 EOF
 
     # ================================
