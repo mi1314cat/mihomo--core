@@ -188,14 +188,126 @@ generate_self_signed_cert() {
 }
 
 # ================================
-# 主配置（合并 listeners 模式）
-# ================================
-# 说明：
-# - 生成 conf/config.yaml，内容为:
-#   listeners:
-#     - <来自每个子文件的 listeners 下的列表项>
-# - 仅提取每个子文件中 listeners: 之后的内容（保留原有缩进）
-# - 最后进行简单的 YAML 校验（如果 python3 + PyYAML 可用）
+rebuild_client() {
+    print_title "重建 Hysteria2 客户端文件"
+
+    list_configs
+
+    printf "\n请输入要重建的编号: " >&2
+    read -r num
+    num=$(printf "%02d" "$num")
+
+    IN_FILE="$CONF_DIR/$PROTO-$num.yaml"
+    OUT_FILE="$OUT_DIR/${PROTO}_client-$num.yaml"
+    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num.txt"
+
+    if [[ ! -f "$IN_FILE" ]]; then
+        print_error "编号不存在：$num"
+        return
+    fi
+
+    # 读取配置
+    port=$(grep -E '^[[:space:]]*port:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    password=$(grep -E 'user1:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
+    domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+
+    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+
+    # 生成客户端 YAML
+cat > "$OUT_FILE" <<EOF
+proxies:
+  - name: Hysteria2-$num
+    type: hysteria2
+    server: $SERVER_IP
+    port: $port
+    password: $password
+    sni: $domain
+    skip-cert-verify: true
+EOF
+
+    # 分享链接
+    SHARE_LINK="hysteria2://$password@$SERVER_IP:$port?sni=$domain&insecure=1#HY2-$num"
+    echo "$SHARE_LINK" > "$SHARE_FILE"
+
+    # 展开输出
+    print_ok "客户端文件已重建：$num"
+
+    echo -e "\n${CYAN}===== 客户端 YAML =====${RESET}"
+    cat "$OUT_FILE"
+
+    echo -e "\n${CYAN}===== 分享链接 =====${RESET}"
+    echo "$SHARE_LINK"
+
+   
+}
+rebuild_client_silent() {
+    local num="$1"
+    num=$(printf "%02d" "$num")
+
+    IN_FILE="$CONF_DIR/$PROTO-$num.yaml"
+    OUT_FILE="$OUT_DIR/${PROTO}_client-$num.yaml"
+    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num.txt"
+
+    port=$(grep -E '^[[:space:]]*port:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    password=$(grep -E 'user1:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
+    domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+
+    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+
+cat > "$OUT_FILE" <<EOF
+proxies:
+  - name: Hysteria2-$num
+    type: hysteria2
+    server: $SERVER_IP
+    port: $port
+    password: $password
+    sni: $domain
+    skip-cert-verify: true
+EOF
+
+    echo "hysteria2://$password@$SERVER_IP:$port?sni=$domain&insecure=1#HY2-$num" > "$SHARE_FILE"
+}
+export_subscription() {
+    print_title "导出所有 Hysteria2 节点订阅（展开格式）"
+
+    SUB_FILE="$OUT_DIR/hysteria2_subscribe.yaml"
+    echo "# Hysteria2 全节点订阅（自动生成）" > "$SUB_FILE"
+    echo "proxies:" >> "$SUB_FILE"
+
+    shopt -s nullglob
+    for f in "$CONF_DIR"/$PROTO-*.yaml; do
+        num=$(basename "$f" .yaml | sed -E 's/.*-([0-9]+)/\1/')
+        num2=$(printf "%02d" "$num")
+
+        # 自动补全客户端文件
+        rebuild_client_silent "$num2"
+
+        CLIENT_FILE="$OUT_DIR/${PROTO}_client-$num2.yaml"
+        SHARE_LINK=$(cat "$OUT_DIR/${PROTO}_share-$num2.txt")
+
+        # 展开 YAML + 链接
+cat >> "$SUB_FILE" <<EOF
+
+# ============================
+# Hysteria2-$num2
+# ============================
+$(sed 's/^/  /' "$CLIENT_FILE")
+
+  $SHARE_LINK
+
+EOF
+
+    done
+
+    print_ok "订阅文件已生成：$SUB_FILE"
+
+    echo -e "\n${CYAN}===== 订阅内容预览 =====${RESET}"
+    cat "$SUB_FILE"
+
+    
+}
 
 # ================================
 # 新增配置
@@ -331,6 +443,9 @@ main_menu() {
         echo "1) 查看配置"
         echo "2) 新增配置"
         echo "3) 删除配置"
+        echo "4) 重建客户端文件"
+        echo "5) 导出所有节点订阅"
+
         echo "0) 退出配置"
 
         read -r -p "选择: " c
@@ -339,6 +454,8 @@ main_menu() {
             1) list_configs ;;
             2) add_config ;;
             3) delete_config ;;
+            4) rebuild_client ;;
+            5) export_subscription ;;
             0) exit 0 ;;
             *) print_error "无效选项" ;;
         esac
