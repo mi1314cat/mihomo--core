@@ -82,7 +82,11 @@ get_next_index() {
 
 add_config() {
     print_title "新增 Reality 配置"
-
+     DINSTALL_CATMI="/root/catmi"
+     CATMIENV_FILE="$DINSTALL_CATMI/catmi.env"
+    
+    source <(curl -fsSL "https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/A/update_env.sh")
+    update_env $CATMIENV_FILE mode mihomo
     # ================================
     # 1. 重新生成所有变量（必须）
     # ================================
