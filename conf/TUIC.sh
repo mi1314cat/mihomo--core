@@ -154,15 +154,7 @@ get_next_index() {
     printf "%02d\n" "$i"
 }
 
-clean_invalid_files() {
-    shopt -s nullglob
-    for f in "$CONF_DIR"/*; do
-        name=$(basename "$f")
-        if ! [[ "$name" =~ ^$PROTO-[0-9]{2}\.yaml$ ]]; then
-            print_warn "非法文件已忽略: $name"
-        fi
-    done
-}
+
 
 # ================================
 # 证书（自签并创建兼容链接）
@@ -366,7 +358,7 @@ EOF
 }
 
 main_menu() {
-    clean_invalid_files
+    
     
 
     while true; do
