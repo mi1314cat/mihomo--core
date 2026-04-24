@@ -14,7 +14,7 @@ set -o pipefail
 # 配置区（按需修改）
 # ================================
 PROTO="tuicv5"
-BASE_DIR="/root/catmi/tuicv5"
+BASE_DIR="/root/catmi/mihomo"
 CONF_ROOT="$BASE_DIR/conf"
 CONF_DIR="$CONF_ROOT/config.d"
 OUT_DIR="$BASE_DIR/out"
