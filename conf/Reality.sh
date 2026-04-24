@@ -87,6 +87,7 @@ add_config() {
     
     source <(curl -fsSL "https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/A/update_env.sh")
     update_env $CATMIENV_FILE mode mihomo
+    bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh)
     # ================================
     # 1. 重新生成所有变量（必须）
     # ================================
