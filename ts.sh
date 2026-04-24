@@ -81,11 +81,8 @@ cat_out_files() {
     echo "====== TXT 文件内容 ======"
     echo
 
-    local txt_files=("$dir"/*.txt)
     if ls "$dir"/*.txt >/dev/null 2>&1; then
-        for f in "${txt_files[@]}"; do
-            echo ">>> 文件：$(basename "$f")"
-            echo "----------------------------------------"
+        for f in "$dir"/*.txt; do
             cat "$f"
             echo -e "\n"
         done
@@ -97,11 +94,8 @@ cat_out_files() {
     echo "====== YAML 文件内容 ======"
     echo
 
-    local yaml_files=("$dir"/*.yaml)
     if ls "$dir"/*.yaml >/dev/null 2>&1; then
-        for f in "${yaml_files[@]}"; do
-            echo ">>> 文件：$(basename "$f")"
-            echo "----------------------------------------"
+        for f in "$dir"/*.yaml; do
             cat "$f"
             echo -e "\n"
         done
@@ -109,6 +103,7 @@ cat_out_files() {
         echo "无 YAML 文件"
     fi
 }
+
 
 # ================================
 # 查看客户端配置文件（自动全部展开）
