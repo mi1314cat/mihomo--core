@@ -1,33 +1,19 @@
 #!/bin/bash
-# tuicv5 管理脚本（完整）
-# - 子配置保存在 conf/config.d/tuicv5-XX.yaml
-# - 主配置 conf/config.yaml 为合并后的 YAML（保留原有顶层字段并合并 listeners）
-# - 支持新增、列出、删除、重建（--rebuild）
-# - 不包含导入功能
-# 依赖: bash, ss, openssl, curl (可选), python3 + PyYAML (可选用于合并校验)
+# TUICv5 管理脚本（独立子配置 + 客户端 + 订阅）
+# 子配置:   conf/config.d/tuicv5-XX.yaml
+# 客户端:   out/tuicv5_client-XX.yaml
+# 分享链接: out/tuicv5_share-XX.txt
 
 set -o errexit
 set -o nounset
 set -o pipefail
 
 # ================================
-# 配置区（按需修改）
-# ================================
-PROTO="tuicv5"
-BASE_DIR="/root/catmi/mihomo"
-CONF_ROOT="$BASE_DIR/conf"
-CONF_DIR="$CONF_ROOT/config.d"
-OUT_DIR="$BASE_DIR/out"
-CERT_DIR="$CONF_ROOT/certs"
-MANAGE_NAME="$(basename "$0")"
-
-mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
-
-# ================================
-# 颜色与输出
+# 彩色
 # ================================
 RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"
-MAGENTA="\e[35m"; CYAN="\e[36m"; BOLD="\e[1m"; RESET="\e[0m"
+MAGENTA="\e[35m"; CYAN="\e[36m"; WHITE="\e[97m"; BOLD="\e[1m"
+RESET="\e[0m"
 
 print_info()  { printf "${CYAN}[Info]${RESET} %s\n" "$1" >&2; }
 print_ok()    { printf "${GREEN}[OK]${RESET}  %s\n" "$1" >&2; }
@@ -42,11 +28,24 @@ print_title() {
     printf "${RESET}" >&2
 }
 
-# ================================
-# 工具函数
-# ================================
 clean_input() { echo "$1" | tr -d '\000-\037'; }
 
+# ================================
+# 基础路径
+# ================================
+PROTO="tuicv5"
+BASE_DIR="/root/catmi/mihomo"
+
+CONF_ROOT="$BASE_DIR/conf"
+CONF_DIR="$CONF_ROOT/config.d"
+OUT_DIR="$BASE_DIR/out"
+CERT_DIR="$CONF_ROOT/certs"
+
+mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
+
+# ================================
+# 端口工具
+# ================================
 port_in_use() {
     local p="$1"
     ss -tuln 2>/dev/null | awk '{print $5}' | grep -E -q "(:|])$p$"
@@ -79,7 +78,36 @@ safe_read_port() {
 }
 
 # ================================
-# IP 检测与选择
+# 编号系统
+# ================================
+get_next_index() {
+    local used=() i=1
+
+    shopt -s nullglob
+    for f in "$CONF_DIR"/${PROTO}-*.yaml; do
+        local base
+        base=$(basename "$f")
+        if [[ "$base" =~ ^${PROTO}-([0-9]+)\.yaml$ ]]; then
+            used+=("${BASH_REMATCH[1]}")
+        fi
+    done
+
+    if ((${#used[@]} == 0)); then
+        printf "%02d\n" 1
+        return
+    fi
+
+    IFS=$'\n' used=($(printf "%s\n" "${used[@]}" | sort -n))
+    for n in "${used[@]}"; do
+        [[ "$n" -ne "$i" ]] && break
+        ((i++))
+    done
+
+    printf "%02d\n" "$i"
+}
+
+# ================================
+# IP 检测
 # ================================
 detect_listen_ip_mode() {
     ip -4 addr show scope global | grep -q "inet " && has_ipv4=true || has_ipv4=false
@@ -134,108 +162,72 @@ detect_public_ip() {
 }
 
 # ================================
-# 编号系统
-# ================================
-get_next_index() {
-    local used=() i=1
-    shopt -s nullglob
-    for f in "$CONF_DIR"/$PROTO-*.yaml; do
-        local base
-        base=$(basename "$f")
-        if [[ "$base" =~ ^$PROTO-([0-9]{2})\.yaml$ ]]; then
-            used+=("${BASH_REMATCH[1]}")
-        fi
-    done
-    IFS=$'\n' used=($(printf "%s\n" "${used[@]}" | sort -n))
-    for n in "${used[@]}"; do
-        [[ "$n" -ne "$i" ]] && break
-        ((i++))
-    done
-    printf "%02d\n" "$i"
-}
-
-
-
-# ================================
-# 证书（自签并创建兼容链接）
+# 证书
 # ================================
 generate_self_signed_cert() {
     local domain="$1"
-    local cert_file="$CERT_DIR/cert-$domain.crt"
-    local key_file="$CERT_DIR/key-$domain.key"
-    local link_cert="$CERT_DIR/server.crt"
-    local link_key="$CERT_DIR/server.key"
 
-    if [[ -f "$cert_file" && -f "$key_file" ]]; then
-        print_info "证书已存在: $cert_file"
-    else
-        print_info "生成自签证书: $domain"
-        openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$key_file" \
-            -out "$cert_file" \
-            -days 365 \
-            -subj "/CN=$domain" >/dev/null 2>&1 || {
-                print_error "openssl 生成证书失败"
-                return 1
-            }
-        print_ok "证书生成完成: $cert_file"
+    CERT_FILE="$CERT_DIR/cert-$domain.crt"
+    KEY_FILE="$CERT_DIR/key-$domain.key"
+
+    if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
+        print_info "证书已存在: $CERT_FILE"
+        return
     fi
 
-    # 创建或更新 server.crt/server.key 的符号链接，兼容旧配置引用
-    # 使用相对链接以便移动目录时仍然有效
-    pushd "$CERT_DIR" >/dev/null 2>&1 || return
-    if [[ -e "$link_cert" || -L "$link_cert" ]]; then rm -f "$link_cert"; fi
-    if [[ -e "$link_key" || -L "$link_key" ]]; then rm -f "$link_key"; fi
-    ln -s "$(basename "$cert_file")" "$(basename "$link_cert")" 2>/dev/null || ln -s "$cert_file" "$link_cert"
-    ln -s "$(basename "$key_file")" "$(basename "$link_key")" 2>/dev/null || ln -s "$key_file" "$link_key"
-    popd >/dev/null 2>&1 || true
+    print_info "生成证书..."
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -days 365 \
+        -subj "/CN=$domain" >/dev/null 2>&1 || {
+            print_error "openssl 生成证书失败"
+            return 1
+        }
 
-    CERT_FILE="$cert_file"
-    KEY_FILE="$key_file"
+    print_ok "证书生成完成: $CERT_FILE"
 }
 
-
 # ================================
-# 新增 tuicv5 配置
+# 新增配置
 # ================================
-add_tuicv5() {
+add_config() {
     print_title "新增 tuicv5 配置"
 
-    local detect listen_ip tuic_port uuid password domain PUBLIC_IP index IN_FILE OUT_FILE SHARE_FILE
+    local detect listen_ip port domain PUBLIC_IP index IN_FILE OUT_FILE SHARE_FILE
+    local uuid pass
 
     detect=$(detect_listen_ip_mode)
     listen_ip=$(choose_listen_ip "$detect")
 
-    tuic_port=$(safe_read_port "$(random_free_port)")
+    port=$(safe_read_port "$(random_free_port)")
 
-    if command -v uuidgen >/dev/null 2>&1; then
-        uuid=$(uuidgen)
-    else
-        uuid=$(openssl rand -hex 16)
-    fi
-
-    password=$(openssl rand -hex 12)
-
-    read -r -p "证书域名 (默认: bing.com): " domain
-    domain=$(clean_input "${domain:-bing.com}")
+    printf "证书域名 (默认: bing.com): " >&2
+    read -r domain
+    domain=$(clean_input "$domain")
+    domain="${domain:-bing.com}"
 
     PUBLIC_IP=$(detect_public_ip)
 
     generate_self_signed_cert "$domain"
 
     index=$(get_next_index)
-    IN_FILE="$CONF_DIR/$PROTO-$index.yaml"
+
+    uuid=$(uuidgen)
+    pass=$(openssl rand -hex 12)
+
+    IN_FILE="$CONF_DIR/${PROTO}-$index.yaml"
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
     cat > "$IN_FILE" <<EOF
 listeners:
-  - name: tuicv5-$index
+  - name: ${PROTO}-$index
     type: tuic
-    port: $tuic_port
+    port: $port
     listen: "$listen_ip"
     users:
-      $uuid: $password
+      $uuid: $pass
     certificate: $CERT_FILE
     private-key: $KEY_FILE
     congestion-controller: bbr
@@ -251,40 +243,30 @@ proxies:
   - name: TUICv5-$index
     type: tuic
     server: $PUBLIC_IP
-    port: $tuic_port
+    port: $port
     uuid: $uuid
-    password: $password
-    alpn:
-      - h3
-    disable-sni: true
+    password: $pass
     sni: $domain
-    reduce-rtt: true
-    request-timeout: 8000
-    udp-relay-mode: native
     congestion-controller: bbr
-    skip-cert-verify: true  
+    udp-relay-mode: native
+    skip-cert-verify: true
 EOF
 
-   
-    
-    # 9. 写入分享链接
-echo "tuic://$uuid:$password@$PUBLIC_IP:$tuic_port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
 
     print_ok "已创建子配置: $IN_FILE"
     print_ok "客户端文件: $OUT_FILE"
     print_ok "分享文件: $SHARE_FILE"
-
-    
 }
 
 # ================================
 # 列表
 # ================================
 list_configs() {
-    print_title "配置列表"
+    print_title "TUICv5 配置列表"
 
     shopt -s nullglob
-    local files=("$CONF_DIR"/$PROTO-*.yaml)
+    local files=("$CONF_DIR"/${PROTO}-*.yaml)
 
     if [[ ${#files[@]} -eq 0 ]]; then
         print_warn "无配置"
@@ -295,21 +277,27 @@ list_configs() {
 
     for f in "${files[@]}"; do
         name=$(basename "$f")
-        if [[ "$name" =~ ^$PROTO-([0-9]{2})\.yaml$ ]]; then
+
+        if [[ "$name" =~ ^${PROTO}-([0-9]+)\.yaml$ ]]; then
             num="${BASH_REMATCH[1]}"
+            num2=$(printf "%02d" "$num")
         else
             continue
         fi
 
         port=$(grep -E '^[[:space:]]*port:' "$f" | head -1 | awk -F: '{gsub(/ /,"",$2); print $2}')
-        userline=$(grep -E '^[[:space:]]*users:' -n "$f" | cut -d: -f1 || true)
-        cred="N/A"
-        if [[ -n "$userline" ]]; then
-            cred=$(sed -n "$((userline+1))p" "$f" | awk -F: '{gsub(/ /,"",$1); print $1}')
-        fi
+        uuid=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$f" | awk -F: '{print $1}' | tr -d ' ')
+        pass=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$f" | awk -F: '{print $2}' | tr -d ' ')
+        cc=$(grep -E 'congestion-controller:' "$f" | awk '{print $2}')
+        cert=$(grep -E 'certificate:' "$f" | awk '{print $2}')
+        domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
-        printf "${GREEN}%s${RESET}) 端口:${BLUE}%s${RESET} 用户:${MAGENTA}%s${RESET}\n" \
-            "$num" "${port:-N/A}" "${cred:-N/A}" >&2
+        printf "${GREEN}%s${RESET}) " "$num2" >&2
+        printf "端口:${BLUE}%-6s${RESET} " "$port" >&2
+        printf "UUID:${MAGENTA}%-36s${RESET} " "$uuid" >&2
+        printf "密码:${YELLOW}%-32s${RESET} " "$pass" >&2
+        printf "CC:${CYAN}%-6s${RESET} " "${cc:-bbr}" >&2
+        printf "SNI:${WHITE}%s${RESET}\n" "$domain" >&2
     done
 }
 
@@ -317,13 +305,14 @@ list_configs() {
 # 删除
 # ================================
 delete_config() {
-    print_title "删除配置"
+    print_title "删除 tuicv5 配置"
 
     list_configs
-    read -r -p "输入编号: " num
-    num=$(printf "%02d" "$num")
+    printf "\n输入编号: " >&2
+    read -r num_raw
+    num=$(printf "%02d" "$num_raw")
 
-    IN_FILE="$CONF_DIR/$PROTO-$num.yaml"
+    IN_FILE="$CONF_DIR/${PROTO}-$num.yaml"
 
     if [[ ! -f "$IN_FILE" ]]; then
         print_error "不存在: $IN_FILE"
@@ -331,65 +320,198 @@ delete_config() {
     fi
 
     read -r -p "确认删除? (y/N): " c
+
     if [[ "$c" =~ ^[yY]$ ]]; then
-        rm -f "$IN_FILE" "$OUT_DIR/${PROTO}_client-$num.yaml" "$OUT_DIR/${PROTO}_share-$num.txt"
+        rm -f "$CONF_DIR/${PROTO}-$num.yaml" \
+              "$OUT_DIR/${PROTO}_client-$num.yaml" \
+              "$OUT_DIR/${PROTO}_share-$num.txt"
+
         print_ok "已删除 $num"
-        
     else
         print_info "已取消删除"
     fi
 }
 
 # ================================
-# CLI / 主菜单
+# 重建客户端文件（展开）
 # ================================
-print_help() {
-    cat <<EOF
-Usage: $MANAGE_NAME [command]
+rebuild_client() {
+    print_title "重建 TUICv5 客户端文件"
 
-Commands:
-  menu            交互式菜单（默认）
-  add             新增 tuicv5 配置（交互）
-  list            列出配置
-  delete          删除配置（交互）
-  
-  help            显示本帮助
+    list_configs
+
+    printf "\n请输入要重建的编号: " >&2
+    read -r num_raw
+    num=$(printf "%02d" "$num_raw")
+
+    IN_FILE="$CONF_DIR/${PROTO}-$num.yaml"
+    OUT_FILE="$OUT_DIR/${PROTO}_client-$num.yaml"
+    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num.txt"
+
+    if [[ ! -f "$IN_FILE" ]]; then
+        print_error "编号不存在：$num"
+        return
+    fi
+
+    port=$(grep -E '^[[:space:]]*port:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    uuid=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$IN_FILE" | awk -F: '{print $1}' | tr -d ' ')
+    pass=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$IN_FILE" | awk -F: '{print $2}' | tr -d ' ')
+    cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
+    domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+
+    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+
+cat > "$OUT_FILE" <<EOF
+proxies:
+  - name: TUICv5-$num
+    type: tuic
+    server: $SERVER_IP
+    port: $port
+    uuid: $uuid
+    password: $pass
+    sni: $domain
+    congestion-controller: bbr
+    udp-relay-mode: native
+    skip-cert-verify: true
 EOF
+
+    SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&congestion_control=bbr#TUICv5-$num"
+    echo "$SHARE_LINK" > "$SHARE_FILE"
+
+    print_ok "客户端文件已重建：$num"
+
+    echo -e "\n${CYAN}===== 客户端 YAML =====${RESET}"
+    cat "$OUT_FILE"
+
+    echo -e "\n${CYAN}===== 分享链接 =====${RESET}"
+    echo "$SHARE_LINK"
+
+   
 }
 
-main_menu() {
-    
-    
+# ================================
+# 静默重建（订阅用）
+# ================================
+rebuild_client_silent() {
+    local num="$1"
+    num=$(printf "%02d" "$num")
 
+    IN_FILE="$CONF_DIR/${PROTO}-$num.yaml"
+    OUT_FILE="$OUT_DIR/${PROTO}_client-$num.yaml"
+    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num.txt"
+
+    [[ -f "$IN_FILE" ]] || return 0
+
+    port=$(grep -E '^[[:space:]]*port:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    uuid=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$IN_FILE" | awk -F: '{print $1}' | tr -d ' ')
+    pass=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$IN_FILE" | awk -F: '{print $2}' | tr -d ' ')
+    cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
+    domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+
+    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+
+cat > "$OUT_FILE" <<EOF
+proxies:
+  - name: TUICv5-$num
+    type: tuic
+    server: $SERVER_IP
+    port: $port
+    uuid: $uuid
+    password: $pass
+    sni: $domain
+    congestion-controller: bbr
+    udp-relay-mode: native
+    skip-cert-verify: true
+EOF
+
+    echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&congestion_control=bbr#TUICv5-$num" > "$SHARE_FILE"
+}
+
+# ================================
+# 导出订阅（展开 YAML + 链接）
+# ================================
+export_subscription() {
+    print_title "导出所有 TUICv5 节点订阅（展开格式）"
+
+    SUB_FILE="$OUT_DIR/tuicv5_subscribe.yaml"
+    echo "# TUICv5 全节点订阅（自动生成）" > "$SUB_FILE"
+    echo "proxies:" >> "$SUB_FILE"
+
+    shopt -s nullglob
+    local files=("$CONF_DIR"/${PROTO}-*.yaml)
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        print_warn "无配置，无法导出订阅"
+        return
+    fi
+
+    IFS=$'\n' files=($(printf "%s\n" "${files[@]}" | sort))
+
+    for f in "${files[@]}"; do
+        name=$(basename "$f")
+
+        if [[ "$name" =~ ^${PROTO}-([0-9]+)\.yaml$ ]]; then
+            num="${BASH_REMATCH[1]}"
+            num2=$(printf "%02d" "$num")
+        else
+            continue
+        fi
+
+        rebuild_client_silent "$num2"
+
+        CLIENT_FILE="$OUT_DIR/${PROTO}_client-$num2.yaml"
+        [[ -f "$CLIENT_FILE" ]] || continue
+        SHARE_LINK=$(cat "$OUT_DIR/${PROTO}_share-$num2.txt")
+
+cat >> "$SUB_FILE" <<EOF
+
+# ============================
+# TUICv5-$num2
+# ============================
+$(sed 's/^/  /' "$CLIENT_FILE")
+
+  $SHARE_LINK
+
+EOF
+
+    done
+
+    print_ok "订阅文件已生成：$SUB_FILE"
+
+    echo -e "\n${CYAN}===== 订阅内容预览 =====${RESET}"
+    cat "$SUB_FILE"
+
+   
+}
+
+# ================================
+# 主菜单
+# ================================
+main_menu() {
     while true; do
         print_title "TUICv5 管理面板"
 
-        echo "1) 查看"
-        echo "2) 新增"
-        echo "3) 删除"
-        echo "0) 退出"
+        echo "1) 查看配置"
+        echo "2) 新增配置"
+        echo "3) 删除配置"
+        echo "4) 重建客户端文件"
+        echo "5) 导出所有节点订阅"
+        echo "0) 退出配置"
 
         read -r -p "选择: " c
+
         case "$c" in
             1) list_configs ;;
-            2) add_tuicv5 ;;
+            2) add_config ;;
             3) delete_config ;;
+            4) rebuild_client ;;
+            5) export_subscription ;;
             0) exit 0 ;;
             *) print_error "无效选项" ;;
         esac
-        read -r -p "回车继续..."
+
+        read -r -p "回车继续..." _
     done
 }
 
-# ================================
-# 入口解析
-# ================================
-case "${1:-menu}" in
-    menu) main_menu ;;
-    add) add_tuicv5 ;;
-    list) list_configs ;;
-    delete) delete_config ;;
-    
-    help|-h|--help) print_help ;;
-    *) print_help; exit 2 ;;
-esac
+main_menu
