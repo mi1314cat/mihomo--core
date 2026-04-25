@@ -230,62 +230,7 @@ list_configs() {
 
 
 
-rebuild_client() {
-    print_title "重建 AnyTLS 客户端文件"
 
-    list_configs
-
-    printf "\n请输入要重建的编号: " >&2
-    read num
-    num=$(clean_input "$num")
-    num2=$(printf "%02d" "$num")
-
-    IN_FILE="$CONF_DIR/$PROTO-$num2.yaml"
-    OUT_FILE="$OUT_DIR/${PROTO}_client-$num2.yaml"
-    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num2.txt"
-    
-
-    if [[ ! -f "$IN_FILE" ]]; then
-        print_error "编号不存在：$num"
-        return
-    fi
-
-    # 读取服务端配置
-    UUID=$(grep -E "uuid:" "$IN_FILE" | awk '{print $2}')
-    PASSWORD=$(grep -E "password:" "$IN_FILE" | awk '{print $2}')
-    ANYTLS_PORT=$(grep -E "port:" "$IN_FILE" | awk '{print $2}')
-    cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
-    DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
-
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
-    [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
-
-    # 生成客户端 YAML
-cat > "$OUT_FILE" <<EOF
-proxies:
-  - name: anytls-$num2
-    type: anytls
-    server: $SERVER_IP
-    port: $ANYTLS_PORT
-    uuid: $UUID
-    password: $PASSWORD
-    sni: $DOMAIN
-    client-fingerprint: chrome
-    udp: true
-    skip-cert-verify: true
-EOF
-
-    # 生成分享链接
-    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$num2"
-    echo "$SHARE_LINK" > "$SHARE_FILE"
-
-    
-
-    print_ok "客户端文件已重建：$num2"
-    echo "  $OUT_FILE"
-    echo "  $SHARE_FILE"
-    
-}
 
 
 # ================================
@@ -318,6 +263,63 @@ delete_config() {
 
     print_ok "已删除 AnyTLS 配置 $num"
 }
+
+rebuild_client() {
+    print_title "重建 AnyTLS 客户端文件"
+
+    list_configs
+
+    printf "\n请输入要重建的编号: " >&2
+    read num
+    num=$(clean_input "$num")
+    num2=$(printf "%02d" "$num")
+
+    IN_FILE="$CONF_DIR/$PROTO-$num2.yaml"
+    OUT_FILE="$OUT_DIR/${PROTO}_client-$num2.yaml"
+    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num2.txt"
+
+    if [[ ! -f "$IN_FILE" ]]; then
+        print_error "编号不存在：$num2"
+        return
+    fi
+
+    # ====== 使用与 list_configs() 完全一致的提取方式 ======
+    UUID=$(grep -E "uuid:" "$IN_FILE" | awk '{print $2}')
+    PASSWORD=$(grep -E "password:" "$IN_FILE" | awk '{print $2}')
+    ANYTLS_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | awk '{print $2}')
+
+    cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
+    DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+
+    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
+
+cat > "$OUT_FILE" <<EOF
+proxies:
+  - name: anytls-$num2
+    type: anytls
+    server: $SERVER_IP
+    port: $ANYTLS_PORT
+    uuid: $UUID
+    password: $PASSWORD
+    sni: $DOMAIN
+    client-fingerprint: chrome
+    udp: true
+    skip-cert-verify: true
+EOF
+
+    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$num2"
+    echo "$SHARE_LINK" > "$SHARE_FILE"
+
+    print_ok "客户端文件已重建：$num2"
+
+    echo -e "\n${CYAN}===== 客户端 YAML =====${RESET}"
+    cat "$OUT_FILE"
+
+    echo -e "\n${CYAN}===== 分享链接 =====${RESET}"
+    echo "$SHARE_LINK"
+}
+
 export_subscription() {
     print_title "导出所有 AnyTLS 节点订阅（展开格式）"
 
