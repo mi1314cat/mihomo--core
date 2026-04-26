@@ -252,7 +252,7 @@ proxies:
     skip-cert-verify: true
 EOF
 
-    echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
 
     print_ok "已创建子配置: $IN_FILE"
     print_ok "客户端文件: $OUT_FILE"
@@ -375,7 +375,7 @@ proxies:
     skip-cert-verify: true
 EOF
 
-    SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&congestion_control=bbr#TUICv5-$num"
+    SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$num"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     print_ok "客户端文件已重建：$num"
@@ -424,7 +424,7 @@ proxies:
     skip-cert-verify: true
 EOF
 
-    echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&congestion_control=bbr#TUICv5-$num" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$num" > "$SHARE_FILE"
 }
 
 # ================================
