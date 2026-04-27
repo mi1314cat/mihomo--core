@@ -173,7 +173,6 @@ add_config() {
     # 写 Reality 入站配置
 cat > "$IN_FILE" <<EOF
 listeners:
-
   - name: reality-$index
     type: vless
     listen: "::"
