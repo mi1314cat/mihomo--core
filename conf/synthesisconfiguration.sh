@@ -144,13 +144,23 @@ import sys, os, glob, yaml
 MAIN = sys.argv[1]
 CONF_DIR = sys.argv[2]
 
-# 读取主配置
+
+# 安全加载主配置
 existing = {}
 if os.path.isfile(MAIN):
     try:
         existing = yaml.safe_load(open(MAIN)) or {}
+        if not isinstance(existing, dict):
+            # 如果是字符串、数字、列表等 → 强制重置为空 dict
+            existing = {}
     except Exception:
         existing = {}
+
+# 确保 existing["listeners"] 是 list
+lst = existing.get("listeners")
+if not isinstance(lst, list):
+    existing["listeners"] = []
+
 
 # 收集 listeners
 listeners_from_dir = []
