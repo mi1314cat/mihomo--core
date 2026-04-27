@@ -98,17 +98,38 @@ ensure_command() {
 log "开始检测并安装缺失依赖..."
 for c in "${NEEDED_CMDS[@]}"; do ensure_command "$c" || true; done
 
+
 # ===== 2) 安装 PyYAML =====
-if command -v pip3 >/dev/null 2>&1; then
-  if python3 -c "import yaml" >/dev/null 2>&1; then
-    ok "PyYAML 已安装"
-  else
-    log "通过 pip3 安装 PyYAML..."
-    pip3 install --no-cache-dir pyyaml >/dev/null 2>&1 || warn "pip3 安装 PyYAML 失败"
-  fi
+if python3 -c "import yaml" >/dev/null 2>&1; then
+  ok "PyYAML 已安装"
 else
-  warn "pip3 不存在，无法安装 PyYAML"
+  log "尝试通过 pip3 安装 PyYAML..."
+  if command -v pip3 >/dev/null 2>&1; then
+    pip3 install --no-cache-dir pyyaml >/dev/null 2>&1 || true
+  fi
+
+  # 再次检测
+  if python3 -c "import yaml" >/dev/null 2>&1; then
+    ok "PyYAML 已通过 pip3 安装"
+  else
+    log "pip3 安装失败，尝试通过系统包安装 python3-yaml..."
+    mgr=$(detect_pkg_manager)
+    case "$mgr" in
+      apt) apt-get install -y python3-yaml ;;
+      yum|dnf) yum install -y python3-pyyaml || dnf install -y python3-pyyaml ;;
+      pacman) pacman -Sy --noconfirm python-yaml ;;
+    esac
+  fi
+
+  # 最终检测
+  if python3 -c "import yaml" >/dev/null 2>&1; then
+    ok "PyYAML 安装成功"
+  else
+    err "PyYAML 安装失败，无法继续"
+    exit 9
+  fi
 fi
+
 
 # ===== 3) 合并逻辑 =====
 log "开始合并 $CONF_DIR → $MAIN"
