@@ -1,118 +1,125 @@
 #!/bin/bash
+# Mihomo Auto Install Script (Optimized)
+# 支持自动识别 CPU 指令集，自动下载 compatible / v3 版本
 
-set -e
+set -euo pipefail
 
 INSTALL_DIR="/root/catmi/mihomo"
 SERVICE_NAME="mihomo"
-CONFIG_FILE="$INSTALL_DIR/config.yaml"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+GITHUB_API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 
-echo "📦 安装路径: $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🚀 Mihomo 自动安装脚本"
+echo "📂 安装目录: $INSTALL_DIR"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 检测系统类型
-detect_distro() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        echo "$ID"
-    else
-        echo "unknown"
-    fi
-}
-
-DISTRO=$(detect_distro)
-echo "🧭 检测系统: $DISTRO"
-
-# 检测是否为 root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "❌ 请使用 root 用户运行此脚本"
+# Root 检测
+if [ "$(id -u)" != "0" ]; then
+    echo "❌ 请使用 root 权限运行"
     exit 1
 fi
 
-# 平台架构
-UNAME_S="$(uname -s)"
-case "$UNAME_S" in
-    Linux*) OS="linux" ;;
-    *) echo "❌ 不支持系统: $UNAME_S"; exit 1 ;;
-esac
+mkdir -p "$INSTALL_DIR"
 
-UNAME_M="$(uname -m)"
-case "$UNAME_M" in
+# 检测系统
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    DISTRO=$ID
+else
+    DISTRO="unknown"
+fi
+
+# 架构检测
+ARCH_RAW=$(uname -m)
+
+case "$ARCH_RAW" in
     x86_64) ARCH="amd64" ;;
-    arm64|aarch64) ARCH="arm64" ;;
-    *) echo "❌ 不支持架构: $UNAME_M"; exit 1 ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *)
+        echo "❌ 不支持架构: $ARCH_RAW"
+        exit 1
+        ;;
 esac
 
-echo "✅ 平台: $OS, 架构: $ARCH"
+echo "🧭 系统: $DISTRO"
+echo "🖥 架构: $ARCH"
 
-# 获取 Mihomo 最新版本
+# CPU型号显示
+CPU_MODEL=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ //')
+echo "⚙ CPU: $CPU_MODEL"
+
+# x86_64 自动识别 v3 指令集
+SUFFIX=""
+
+if [ "$ARCH" = "amd64" ]; then
+    FLAGS=$(grep -m1 '^flags' /proc/cpuinfo)
+
+    if echo "$FLAGS" | grep -qw avx2 &&
+       echo "$FLAGS" | grep -qw bmi2 &&
+       echo "$FLAGS" | grep -qw fma; then
+
+        SUFFIX="-v3"
+        echo "✅ CPU支持 x86_64-v3 指令集，使用高性能版"
+
+    else
+        SUFFIX="-compatible"
+        echo "⚠ CPU不支持 v3，使用兼容版（推荐老E5/E3/VPS）"
+    fi
+fi
+
+# 获取最新版
 echo "🌐 获取 Mihomo 最新版本..."
-LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name":' | cut -d '"' -f 4)
-if [[ -z "$LATEST_TAG" ]]; then
-    echo "❌ 无法获取版本"
+
+LATEST_TAG=$(curl -fsSL "$GITHUB_API" | grep tag_name | cut -d '"' -f4)
+
+if [ -z "$LATEST_TAG" ]; then
+    echo "❌ 获取版本失败"
     exit 1
 fi
 
 echo "🔖 最新版本: $LATEST_TAG"
-GZ_FILE="mihomo-${OS}-${ARCH}-${LATEST_TAG}.gz"
-DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/${GZ_FILE}"
 
-# 下载并解压
+# 文件名
+FILE_NAME="mihomo-linux-${ARCH}${SUFFIX}-${LATEST_TAG}.gz"
+URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/${FILE_NAME}"
+
+echo "⬇ 下载文件:"
+echo "$FILE_NAME"
+
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
-echo "⬇️ 下载 $GZ_FILE ..."
-curl --location --retry 3 --fail -o "$GZ_FILE" "$DOWNLOAD_URL"
 
-echo "📦 解压..."
-gzip -d "$GZ_FILE"
-BIN_NAME="mihomo-${OS}-${ARCH}-${LATEST_TAG}"
-mv "$BIN_NAME" "$INSTALL_DIR/mihomo"
+curl -L --retry 3 --fail -o mihomo.gz "$URL"
+
+echo "📦 解压中..."
+gunzip mihomo.gz
+
+mv mihomo "$INSTALL_DIR/mihomo"
 chmod +x "$INSTALL_DIR/mihomo"
 
-echo "✅ 已安装到 $INSTALL_DIR/mihomo"
+echo "✅ 安装完成"
 
-# 创建服务
-if [[ "$DISTRO" == "alpine" ]]; then
-    echo "🛠️ 创建 OpenRC 服务（Alpine）..."
-    SERVICE_FILE="/etc/init.d/$SERVICE_NAME"
+# 创建配置目录
+mkdir -p "$INSTALL_DIR/conf"
 
-    cat <<EOF > "$SERVICE_FILE"
-#!/sbin/openrc-run
-command="$INSTALL_DIR/mihomo"
-command_args="-f $INSTALL_DIR/config.yaml"
-pidfile="/run/$SERVICE_NAME.pid"
-output_log="$INSTALL_DIR/mihomo.log"
-error_log="$INSTALL_DIR/error-mihomo.log"
-name="Mihomo"
-command_background=true
-EOF
+# 写入 systemd
+echo "🛠 配置 systemd 服务..."
 
-    chmod +x "$SERVICE_FILE"
-    rc-update add "$SERVICE_NAME"
-    rc-service "$SERVICE_NAME" restart
-
-    if [ -f "$SERVICE_FILE" ]; then
-        echo "✅ OpenRC 服务文件写入成功：$SERVICE_FILE"
-    else
-        echo "❌ OpenRC 服务文件写入失败，请检查权限"
-        exit 1
-    fi
-
-    echo "✅ OpenRC 服务已启动（Alpine）"
-
-else
-    echo "🛠️ 创建 systemd 服务（Debian/Ubuntu）..."
-    SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
-
-    cat <<EOF > "$SERVICE_FILE"
+cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Mihomo Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+Type=simple
 ExecStart=$INSTALL_DIR/mihomo -d $INSTALL_DIR/conf
-Restart=on-failure
-User=root
-LimitNOFILE=65535
+WorkingDirectory=$INSTALL_DIR
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
 StandardOutput=append:$INSTALL_DIR/mihomo.log
 StandardError=append:$INSTALL_DIR/error-mihomo.log
 
@@ -120,12 +127,25 @@ StandardError=append:$INSTALL_DIR/error-mihomo.log
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reexec
-    systemctl daemon-reload
-    systemctl enable --now "$SERVICE_NAME"
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME"
 
-    echo "✅ systemd 服务已启动"
-    systemctl status "$SERVICE_NAME" --no-pager
+echo "🚀 启动 Mihomo..."
+
+if systemctl restart "$SERVICE_NAME"; then
+    echo "✅ 启动成功"
+else
+    echo "❌ 启动失败，查看日志："
+    journalctl -u mihomo -n 30 --no-pager
 fi
 
-echo "📄 配置文件路径: $CONFIG_FILE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📂 安装目录: $INSTALL_DIR"
+echo "📄 配置目录: $INSTALL_DIR/conf"
+echo "📜 日志文件: $INSTALL_DIR/mihomo.log"
+echo "🛠 管理命令:"
+echo "systemctl status mihomo"
+echo "systemctl restart mihomo"
+echo "journalctl -u mihomo -f"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
