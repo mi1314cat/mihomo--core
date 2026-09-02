@@ -169,6 +169,7 @@ add_node_menu() {
         echo "3) TUIC"
         echo "4) AnyTLS"
         echo "5) VLESS (Reality/WS/XHTTP + ECH + ML-KEM)"
+        echo "6) Trojan (纯TLS/Reality + mTLS + smux)"
         echo "0) 返回主菜单"
 
         read -p "请选择: " node_choice
@@ -188,6 +189,9 @@ add_node_menu() {
                 ;;
             5)
                 run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/VLESS.sh" "VLESS"
+                ;;
+            6)
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/Trojan.sh" "Trojan"
                 ;;
             0)
                 return
