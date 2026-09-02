@@ -168,6 +168,7 @@ add_node_menu() {
         echo "2) Hysteria2"
         echo "3) TUIC"
         echo "4) AnyTLS"
+        echo "5) VLESS (Reality/WS/XHTTP + ECH + ML-KEM)"
         echo "0) 返回主菜单"
 
         read -p "请选择: " node_choice
@@ -184,6 +185,9 @@ add_node_menu() {
                 ;;
             4)
                 run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/AnyTLS.sh" "AnyTLS"
+                ;;
+            5)
+                run_script "https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/VLESS.sh" "VLESS"
                 ;;
             0)
                 return
