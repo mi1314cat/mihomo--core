@@ -150,6 +150,7 @@ smux_profile() {
 ask_features() {
     local yn
     VLESS_TRANSPORT=""   # ws | xhttp (二选一)
+    ACCESS_MODE="cdn"    # cdn(CF直连 0.0.0.0) | nginx(nginx转发 127.0.0.1)
     MTLS_ENABLED=false
     SMUX_PROFILE=""
     ECH_ENABLED=false
@@ -162,6 +163,16 @@ ask_features() {
     case "$(clean_input "$yn")" in
         2) VLESS_TRANSPORT="xhttp" ;;
         *) VLESS_TRANSPORT="ws" ;;
+    esac
+
+    echo "  接入方式:" >&2
+    echo "  1) CF 直连 (监听 0.0.0.0, Cloudflare Origin Rules 直接回源到端口)" >&2
+    echo "  2) Nginx 转发 (监听 127.0.0.1, 走 nginx 路径匹配统一入口)" >&2
+    printf "  选择 (默认1): " >&2
+    read -r yn
+    case "$(clean_input "$yn")" in
+        2) ACCESS_MODE="nginx" ;;
+        *) ACCESS_MODE="cdn" ;;
     esac
 
     printf "启用 smux 多路复用？(y/N): " >&2
@@ -200,11 +211,15 @@ ask_features() {
 read_features() {
     local f="$1"
     VLESS_TRANSPORT=""
+    ACCESS_MODE="cdn"
     MTLS_ENABLED=false
     SMUX_PROFILE=""
     ECH_ENABLED=false
     if grep -qE "^[[:space:]]*# transport: (ws|xhttp)" "$f"; then
         VLESS_TRANSPORT=$(grep -oE "^[[:space:]]*# transport: (ws|xhttp)" "$f" | awk '{print $3}')
+    fi
+    if grep -qE "^[[:space:]]*# access: (cdn|nginx)" "$f"; then
+        ACCESS_MODE=$(grep -oE "^[[:space:]]*# access: (cdn|nginx)" "$f" | awk '{print $3}')
     fi
     grep -qE "^[[:space:]]*# mtls: true" "$f" && MTLS_ENABLED=true
     grep -qE "^[[:space:]]*# ech: true" "$f" && ECH_ENABLED=true
@@ -229,6 +244,44 @@ render_smux() {
       max-streams: $ms"
 }
 
+# ================================
+# 生成 Nginx location 转发片段 (可选接入方式, 存文件供复制)
+# 输入: VLESS_TRANSPORT / VLESS_PORT / WS_PATH / XHTTP_PATH / ACCESS_MODE
+# 输出: Nginx 配置片段写入 NGINX_FILE (out/${PROTO}_nginx-<index>.conf)
+# ================================
+render_nginx_conf() {
+    local path idx
+    idx="${index:-$num2}"
+    NGINX_FILE="$OUT_DIR/${PROTO}_nginx-$idx.conf"
+    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
+        path="$XHTTP_PATH"
+        cat > "$NGINX_FILE" <<EOF
+# ${PROTO}-$idx (XHTTP, 端口 $VLESS_PORT)
+# 放入 nginx conf.d 站点 server{} 块内即可 (回源走 TLS)
+location $path {
+    proxy_ssl_server_name on;
+    proxy_pass https://127.0.0.1:$VLESS_PORT;
+    proxy_http_version 1.1;
+}
+EOF
+    else
+        path="$WS_PATH"
+        cat > "$NGINX_FILE" <<EOF
+# ${PROTO}-$idx (WS, 端口 $VLESS_PORT)
+# 放入 nginx conf.d 站点 server{} 块内即可 (回源走 TLS + WebSocket 升级)
+location $path {
+    proxy_ssl_server_name on;                 # 回源时 TLS SNI
+    proxy_pass https://127.0.0.1:$VLESS_PORT; # https:// -> nginx 做 TLS 回源
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;      # WebSocket 升级 (map.conf 已备)
+    proxy_set_header Connection \$connection_upgrade;
+}
+EOF
+    fi
+    print_ok "Nginx 转发片段: $NGINX_FILE"
+    echo -e "${CYAN}  ----- Nginx 配置片段 -----${RESET}" >&2
+    cat "$NGINX_FILE" >&2
+}
 # ================================
 # Cloudflare ECH 检测/开启 (可选特性)
 # 逻辑: 已有 API Key 缓存 -> 查询 zone -> GET ech setting -> 已开跳过 / 未开 PATCH 开启
@@ -462,17 +515,24 @@ add_config() {
 
     render_smux
 
-    # 10. 写入入站配置
+    # 9.5 监听地址: cdn -> 0.0.0.0, nginx -> 127.0.0.1 (仅本机经 nginx 接入)
+    LISTEN_ADDR="0.0.0.0"
+    [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
+
+    # 10. 写入入站配置 (Nginx 片段无轮何种模式都生成)
+    render_nginx_conf
+
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
 cat > "$IN_FILE" <<EOF
 # transport: xhttp
+# access: $ACCESS_MODE
 # mtls: $MTLS_ENABLED
 # ech: $ECH_ENABLED
 # smux: ${SMUX_PROFILE:-false}
 listeners:
   - name: vless-$index
     type: vless
-    listen: "0.0.0.0"
+    listen: "$LISTEN_ADDR"
     port: $VLESS_PORT
     users:
       - username: vless-$index
@@ -488,13 +548,14 @@ EOF
     else
 cat > "$IN_FILE" <<EOF
 # transport: ws
+# access: $ACCESS_MODE
 # mtls: $MTLS_ENABLED
 # ech: $ECH_ENABLED
 # smux: ${SMUX_PROFILE:-false}
 listeners:
   - name: vless-$index
     type: vless
-    listen: "0.0.0.0"
+    listen: "$LISTEN_ADDR"
     port: $VLESS_PORT
     users:
       - username: vless-$index
@@ -677,6 +738,9 @@ rebuild_client() {
     CERT_DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
     CLIENT_SNI="$CERT_DOMAIN"
     if $ECH_ENABLED; then CLIENT_SNI="cloudflare-ech.com"; fi
+    LISTEN_ADDR="0.0.0.0"
+    [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
+    render_nginx_conf
     if $MTLS_ENABLED; then
         MTLS_CLIENT_CERT=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.pem")
         MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
@@ -748,6 +812,38 @@ EOF
 # ================================
 # 静默重建（订阅用）
 # ================================
+# ================================
+# 查看所有节点的 Nginx 转发配置 (面板菜单 6)
+# ================================
+view_nginx_conf() {
+    print_title "Nginx 转发配置"
+
+    local found=false
+    local f
+    for f in "$OUT_DIR"/${PROTO}_nginx-*.conf; do
+        [[ -f "$f" ]] || continue
+        found=true
+        echo -e "\n${CYAN}===== $(basename "$f") =====${RESET}" >&2
+        cat "$f" >&2
+    done
+
+    if ! $found; then
+        print_warn "暂无生成的 Nginx 配置片段 (请先在新增配置时生成)"
+        # 尝试从 config.d 重建
+        local num nginx_file
+        for f in "$CONF_DIR"/$PROTO-*.yaml; do
+            [[ -f "$f" ]] || continue
+            num=$(basename "$f" .yaml | sed -E 's/.*-([0-9]+)/\1/')
+            nginx_file="$OUT_DIR/${PROTO}_nginx-$num.conf"
+            if [[ ! -f "$nginx_file" ]]; then
+                rebuild_client_silent "$num"
+                [[ -f "$nginx_file" ]] && { echo -e "\n${CYAN}===== $(basename "$nginx_file") =====${RESET}" >&2; cat "$nginx_file" >&2; }
+            fi
+        done
+    fi
+    echo -e "\n${YELLOW}提示: 将片段放入 nginx conf.d 里站点配置的 server{} 块中即可${RESET}" >&2
+}
+
 rebuild_client_silent() {
     local num2="$1"
 
@@ -758,7 +854,7 @@ rebuild_client_silent() {
     [[ -f "$IN_FILE" ]] || return 0
 
     VLESS_UUID=$(grep -E "uuid:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
-    VLESS_PORT=$(grep -E "port:" "$IN_FILE" | awk '{print $2}')
+    VLESS_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | awk '{print $2}')
 
     read_features "$IN_FILE"
     render_smux
@@ -773,6 +869,9 @@ rebuild_client_silent() {
     CERT_DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
     CLIENT_SNI="$CERT_DOMAIN"
     if $ECH_ENABLED; then CLIENT_SNI="cloudflare-ech.com"; fi
+    LISTEN_ADDR="0.0.0.0"
+    [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
+    render_nginx_conf
     if $MTLS_ENABLED; then
         MTLS_CLIENT_CERT=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.pem")
         MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
@@ -885,6 +984,7 @@ main_menu() {
         echo "3) 删除配置"
         echo "4) 重建客户端文件"
         echo "5) 导出所有节点订阅（Clash/Mihomo）"
+        echo "6) 查看 Nginx 转发配置"
         echo "0) 退出"
 
         printf "请选择: " >&2
@@ -897,6 +997,7 @@ main_menu() {
             3) delete_config ;;
             4) rebuild_client ;;
             5) export_subscription ;;
+            6) view_nginx_conf ;;
             0) exit 0 ;;
             *) print_error "无效选项" ;;
         esac
