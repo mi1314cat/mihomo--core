@@ -224,6 +224,8 @@ proxies:
     password: $password
     sni: $domain
     skip-cert-verify: true
+    alpn:
+      - h3
 EOF
 
     # 分享链接
@@ -265,6 +267,8 @@ proxies:
     password: $password
     sni: $domain
     skip-cert-verify: true
+    alpn:
+      - h3
 EOF
 
     echo "hysteria2://$password@$SERVER_IP:$port?sni=$domain&insecure=1#HY2-$num" > "$SHARE_FILE"
@@ -356,6 +360,8 @@ proxies:
     password: $password
     sni: $domain
     skip-cert-verify: true
+    alpn:
+      - h3
 EOF
 
     echo "hysteria2://$password@$PUBLIC_IP:$port?sni=$domain&insecure=1#HY2-$index" > "$SHARE_FILE"

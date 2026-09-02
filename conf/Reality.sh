@@ -124,6 +124,80 @@ list_configs() {
 }
 
 # ================================
+# smux 档位集中定义 (web/video/download)
+# 语义已按 sing-mux v0.3.10 源码核实 (client.go offer 逻辑):
+#   max-connections: 物理连接数上限
+#   min-streams: 新建连接的流数门槛 (活跃流数<此值时复用,不新建)
+#   max-streams: 单连接流数容量 (max-connections>0 时不参与连接决策)
+# ================================
+smux_profile() {
+    # $1 = web|video|download ; 输出 "max-connections min-streams max-streams"
+    case "$1" in
+        video)    echo "2 2 16" ;;
+        download) echo "4 4 64" ;;
+        *)        echo "1 1 32" ;; # web (默认)
+    esac
+}
+
+# ================================
+# 特性询问（smux / xudp 可选项）
+# 选择持久化到 config.d 片的注释行: # smux: <档位> / # xudp: true
+# ================================
+ask_features() {
+    local yn
+    SMUX_PROFILE=""
+    XUDP_ENABLED=false
+
+    printf "启用 smux 多路复用？(y/N): " >&2
+    read -r yn
+    if [[ "$(clean_input "$yn")" =~ ^[yY]$ ]]; then
+        echo "  smux 档位 (网页/视频/下载):" >&2
+        echo "  1) 网页党 (默认: 复用最大化, 轻量)" >&2
+        echo "  2) 视频党 (并行承载, 兼顾视频+网页)" >&2
+        echo "  3) 下载党 (多物理连接, 高吞吐)" >&2
+        printf "  选择 (默认1): " >&2
+        read -r yn
+        case "$(clean_input "$yn")" in
+            2) SMUX_PROFILE="video" ;;
+            3) SMUX_PROFILE="download" ;;
+            *) SMUX_PROFILE="web" ;;
+        esac
+    fi
+
+    printf "启用 xudp 数据包封装 (packet-encoding)? (y/N): " >&2
+    read -r yn
+    [[ "$(clean_input "$yn")" =~ ^[yY]$ ]] && XUDP_ENABLED=true
+}
+
+# 读取 config.d 片注释中的特性标记（供重建/导出时同步）
+# 兼容旧格式 "# smux: true" -> 视为 web 档
+read_features() {
+    local f="$1"
+    SMUX_PROFILE=""
+    XUDP_ENABLED=false
+    if grep -qE "^[[:space:]]*# smux: (web|video|download)" "$f"; then
+        SMUX_PROFILE=$(grep -oE "^[[:space:]]*# smux: (web|video|download)" "$f" | awk '{print $3}')
+    elif grep -qE "^[[:space:]]*# smux: true" "$f"; then
+        SMUX_PROFILE="web"
+    fi
+    grep -qE "^[[:space:]]*# xudp: true" "$f" && XUDP_ENABLED=true
+}
+
+# 渲染 smux 客户端配置块（按档位）；输出到变量 SMUX_BLOCK
+render_smux() {
+    SMUX_BLOCK=""
+    [[ -z "$SMUX_PROFILE" ]] && return
+    local mc ms mn
+    read -r mc mn ms <<< "$(smux_profile "$SMUX_PROFILE")"
+    SMUX_BLOCK="    smux:
+      enabled: true
+      protocol: smux
+      max-connections: $mc
+      min-streams: $mn
+      max-streams: $ms"
+}
+
+# ================================
 # 新增 Reality 配置
 # ================================
 add_config() {
@@ -170,12 +244,18 @@ add_config() {
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
+    # 询问可选特性 (smux / xudp)
+    ask_features
+    render_smux
+
     # 写 Reality 入站配置
 cat > "$IN_FILE" <<EOF
+# smux: ${SMUX_PROFILE:-false}
+# xudp: $XUDP_ENABLED
 listeners:
   - name: reality-$index
     type: vless
-    listen: "::"
+    listen: "0.0.0.0"
     port: $REALITY_PORT
     users:
       - uuid: $UUID
@@ -210,6 +290,8 @@ proxies:
       public-key: $PUBLIC_KEY
       short-id: $SHORT_ID
     client-fingerprint: chrome
+$SMUX_BLOCK
+$([ "$XUDP_ENABLED" = true ] && printf '    packet-encoding: xudp')
 EOF
 
     # 写 Reality 分享链接
@@ -220,6 +302,8 @@ echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision
     echo -e "端口: $REALITY_PORT" >&2
     echo -e "UUID: $UUID" >&2
     echo -e "SNI: $dest_server" >&2
+    [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
+    $XUDP_ENABLED && echo -e "xudp: 已启用" >&2
     echo -e "入站配置: $IN_FILE" >&2
     echo -e "客户端配置: $OUT_FILE" >&2
     echo -e "分享链接: $SHARE_FILE" >&2
@@ -291,6 +375,9 @@ rebuild_client() {
         print_warn "未找到对应 public-key，pbk 将为空"
     fi
 
+    read_features "$IN_FILE"
+    render_smux
+
     SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
 
 cat > "$OUT_FILE" <<EOF
@@ -309,6 +396,8 @@ proxies:
       public-key: $public_key
       short-id: $short_id
     client-fingerprint: chrome
+$SMUX_BLOCK
+$([ "$XUDP_ENABLED" = true ] && printf '    packet-encoding: xudp')
 EOF
 
     SHARE_LINK="vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num"
@@ -346,6 +435,9 @@ rebuild_client_silent() {
         public_key=$(grep -E "^PUBKEY_${num}=" "$PUB_ENV" | sed "s/^PUBKEY_${num}=//")
     fi
 
+    read_features "$IN_FILE"
+    render_smux
+
     SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
 
 cat > "$OUT_FILE" <<EOF
@@ -364,6 +456,8 @@ proxies:
       public-key: $public_key
       short-id: $short_id
     client-fingerprint: chrome
+$SMUX_BLOCK
+$([ "$XUDP_ENABLED" = true ] && printf '    packet-encoding: xudp')
 EOF
 
     echo "vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num" > "$SHARE_FILE"

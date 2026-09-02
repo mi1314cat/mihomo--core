@@ -250,6 +250,8 @@ proxies:
     congestion-controller: bbr
     udp-relay-mode: native
     skip-cert-verify: true
+    alpn:
+      - h3
 EOF
 
     echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
@@ -373,6 +375,8 @@ proxies:
     congestion-controller: bbr
     udp-relay-mode: native
     skip-cert-verify: true
+    alpn:
+      - h3
 EOF
 
     SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$num"
@@ -422,6 +426,8 @@ proxies:
     congestion-controller: bbr
     udp-relay-mode: native
     skip-cert-verify: true
+    alpn:
+      - h3
 EOF
 
     echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$num" > "$SHARE_FILE"
