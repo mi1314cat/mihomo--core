@@ -54,6 +54,25 @@ clean_input() {
 }
 
 # ================================
+# URL 编码 (分享链接 ech= 参数用)
+# ================================
+urlencode() {
+    local s="$1" i c out=""
+    for ((i=0; i<${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [a-zA-Z0-9_.~-]) out+="$c" ;;
+            *) printf -v hex '%%%02X' "'$c"; out+="$hex" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# CDN-ECH 分享链接参数: DNS 查询形式 (v2rayN/v2rayNG/edgetunnel 通用)
+# cloudflare-ech.com+https://dns.alidns.com/dns-query
+ECH_QUERY_PARAM="cloudflare-ech.com+https://dns.alidns.com/dns-query"
+
+# ================================
 # 自动编号
 # ================================
 get_next_index() {
@@ -509,8 +528,8 @@ add_config() {
     if $ECH_ENABLED; then
         print_info "ECH 已选择, 正在检查 Cloudflare 侧配置..."
         cf_ech_ensure "$CERT_DOMAIN" || true
-        # ECH 模式: TLS SNI 伪装为 cloudflare-ech.com, DOH 提供 ECH 公钥
-        CLIENT_SNI="cloudflare-ech.com"
+        # ECH 模式: SNI 保持真实域名, mihomo ech-opts 自动将外层 SNI 伪装为 cloudflare-ech.com
+        CLIENT_SNI="$CERT_DOMAIN"
     fi
 
     render_smux
@@ -571,12 +590,12 @@ EOF
     # 11. 写入客户端配置
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
 cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: SNI=cloudflare-ech.com, DNS 必须 DOH (https://dns.alidns.com/dns-query)\n')
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
   - name: vless-$index
     type: vless
-    server: $SERVER_IP
-    port: $VLESS_PORT
+    server: $CERT_DOMAIN
+    port: 443
     uuid: $UUID
     sni: $CLIENT_SNI
     client-fingerprint: chrome
@@ -595,12 +614,12 @@ $SMUX_BLOCK
 EOF
     else
 cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: SNI=cloudflare-ech.com, DNS 必须 DOH (https://dns.alidns.com/dns-query)\n')
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
   - name: vless-$index
     type: vless
-    server: $SERVER_IP
-    port: $VLESS_PORT
+    server: $CERT_DOMAIN
+    port: 443
     uuid: $UUID
     sni: $CLIENT_SNI
     client-fingerprint: chrome
@@ -619,10 +638,14 @@ EOF
     fi
 
     # 12. 写入分享链接
+    local ech_param=""
+    if $ECH_ENABLED; then
+        ech_param="&ech=$(urlencode "$ECH_QUERY_PARAM")"
+    fi
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-        echo "vless://$UUID@$LINK_IP:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH#VLESS-XHTTP-$index" > "$SHARE_FILE"
+        echo "vless://$UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH${ech_param}#VLESS-XHTTP-$index" > "$SHARE_FILE"
     else
-        echo "vless://$UUID@$LINK_IP:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN#VLESS-WS-$index" > "$SHARE_FILE"
+        echo "vless://$UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN${ech_param}#VLESS-WS-$index" > "$SHARE_FILE"
     fi
 
     # 13. 输出信息
@@ -737,7 +760,6 @@ rebuild_client() {
     cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
     CERT_DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
     CLIENT_SNI="$CERT_DOMAIN"
-    if $ECH_ENABLED; then CLIENT_SNI="cloudflare-ech.com"; fi
     LISTEN_ADDR="0.0.0.0"
     [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
     render_nginx_conf
@@ -751,12 +773,12 @@ rebuild_client() {
 
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
 cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: SNI=cloudflare-ech.com, DNS 必须 DOH (https://dns.alidns.com/dns-query)\n')
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
   - name: vless-$num2
     type: vless
-    server: $SERVER_IP
-    port: $VLESS_PORT
+    server: $CERT_DOMAIN
+    port: 443
     uuid: $VLESS_UUID
     sni: $CLIENT_SNI
     client-fingerprint: chrome
@@ -771,15 +793,15 @@ $([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="vless://$VLESS_UUID@$LINK_IP:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=auto&path=$XHTTP_PATH#VLESS-XHTTP-$num2"
+        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=auto&path=$XHTTP_PATH$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-XHTTP-$num2"
     else
 cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: SNI=cloudflare-ech.com, DNS 必须 DOH (https://dns.alidns.com/dns-query)\n')
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
   - name: vless-$num2
     type: vless
-    server: $SERVER_IP
-    port: $VLESS_PORT
+    server: $CERT_DOMAIN
+    port: 443
     uuid: $VLESS_UUID
     sni: $CLIENT_SNI
     client-fingerprint: chrome
@@ -795,7 +817,7 @@ $([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="vless://$VLESS_UUID@$LINK_IP:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN#VLESS-WS-$num2"
+        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-WS-$num2"
     fi
 
     echo "$SHARE_LINK" > "$SHARE_FILE"
@@ -868,7 +890,6 @@ rebuild_client_silent() {
     cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
     CERT_DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
     CLIENT_SNI="$CERT_DOMAIN"
-    if $ECH_ENABLED; then CLIENT_SNI="cloudflare-ech.com"; fi
     LISTEN_ADDR="0.0.0.0"
     [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
     render_nginx_conf
@@ -882,12 +903,12 @@ rebuild_client_silent() {
 
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
 cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: SNI=cloudflare-ech.com, DNS 必须 DOH (https://dns.alidns.com/dns-query)\n')
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
   - name: vless-$num2
     type: vless
-    server: $SERVER_IP
-    port: $VLESS_PORT
+    server: $CERT_DOMAIN
+    port: 443
     uuid: $VLESS_UUID
     sni: $CLIENT_SNI
     client-fingerprint: chrome
@@ -902,15 +923,15 @@ $([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="vless://$VLESS_UUID@$LINK_IP:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=auto&path=$XHTTP_PATH#VLESS-XHTTP-$num2"
+        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=auto&path=$XHTTP_PATH$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-XHTTP-$num2"
     else
 cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: SNI=cloudflare-ech.com, DNS 必须 DOH (https://dns.alidns.com/dns-query)\n')
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
   - name: vless-$num2
     type: vless
-    server: $SERVER_IP
-    port: $VLESS_PORT
+    server: $CERT_DOMAIN
+    port: 443
     uuid: $VLESS_UUID
     sni: $CLIENT_SNI
     client-fingerprint: chrome
@@ -926,7 +947,7 @@ $([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="vless://$VLESS_UUID@$LINK_IP:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN#VLESS-WS-$num2"
+        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-WS-$num2"
     fi
 
     echo "$SHARE_LINK" > "$SHARE_FILE"
