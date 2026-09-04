@@ -64,50 +64,56 @@ CFMGR=""
 _cfmgr_asked=0
 
 cfmgr() {
-    local path="" yn
-    if [[ -x "/root/catmi/cloudflare/cf-manager.sh" ]]; then
-        path="/root/catmi/cloudflare/cf-manager.sh"
+    local path="" dir="/root/catmi/cloudflare"
+    local main="$dir/cf-manager.sh"
+    local base_url="https://raw.githubusercontent.com/mi1314cat/One-click-script/main/cfapi"
+
+    # 已存在 → 检查是否含"自归位"标记 (旧版无此标记则自动升级)
+    if [[ -x "$main" ]]; then
+        path="$main"
+        if ! grep -q 'AUTO_HOME_REPO' "$main" 2>/dev/null; then
+            print_warn "检测到旧版 cf-manager (无自归位), 自动升级中..."
+            mkdir -p "$dir/modules"
+            local f
+            if curl -fsSL --max-time 25 "$base_url/cf-manager.sh" -o "$main.tmp" 2>/dev/null; then
+                mv -f "$main.tmp" "$main"
+                chmod +x "$main"
+                for f in common context account zone dns ech ssl origin cert; do
+                    [[ -f "$dir/modules/$f.sh" ]] || \
+                        curl -fsSL --max-time 20 "$base_url/modules/$f.sh" -o "$dir/modules/$f.sh" 2>/dev/null || true
+                done
+                print_ok "cf-manager 已升级 (含自归位)"
+            else
+                print_warn "升级下载失败, 继续使用现有版本"
+            fi
+        fi
+        CFMGR="$path"
+        echo "$path"
+        return 0
     elif command -v cf-manager.sh >/dev/null 2>&1; then
         path=$(command -v cf-manager.sh)
-    fi
-    if [[ -n "$path" ]]; then
         CFMGR="$path"
         echo "$path"
         return 0
     fi
 
-    # 本地未找到: 询问是否从 GitHub 自动安装 (只询问一次, 防重复打扰)
-    if [[ "$_cfmgr_asked" -eq 1 ]]; then
-        CFMGR=""
-        return 1
-    fi
-    _cfmgr_asked=1
-
-    printf "未找到 cf-manager.sh, 是否自动从 GitHub 安装到 /root/catmi/cloudflare/？(y/N): " >&2
-    read -r yn
-    if [[ "$(clean_input "$yn")" =~ ^[yY]$ ]]; then
-        local install_dir="/root/catmi/cloudflare"
-        local base_url="https://raw.githubusercontent.com/mi1314cat/One-click-script/main/cfapi"
-        local f
-        mkdir -p "$install_dir/modules"
-        print_info "从 GitHub 下载 cf-manager.sh 及 modules/ ..."
-        if curl -fsSL "$base_url/cf-manager.sh" -o "$install_dir/cf-manager.sh"; then
-            chmod +x "$install_dir/cf-manager.sh"
-            for f in common context account zone dns ech ssl origin cert; do
-                curl -fsSL "$base_url/modules/$f.sh" -o "$install_dir/modules/$f.sh" || true
-            done
-        else
-            print_error "下载 cf-manager.sh 失败"
-            CFMGR=""
-            return 1
-        fi
-        # 校验 modules/common.sh (GitHub cfapi/ 缺 modules/ 目录时)
-        if [[ -f "$install_dir/modules/common.sh" ]]; then
-            CFMGR="$install_dir/cf-manager.sh"
+    # 本地未找到: 静默自动安装到标准目录 (不再询问, 治本)
+    print_info "未找到 cf-manager, 自动安装到 $dir ..."
+    mkdir -p "$dir/modules"
+    local f
+    if curl -fsSL --max-time 25 "$base_url/cf-manager.sh" -o "$dir/cf-manager.sh"; then
+        chmod +x "$dir/cf-manager.sh"
+        for f in common context account zone dns ech ssl origin cert; do
+            curl -fsSL --max-time 20 "$base_url/modules/$f.sh" -o "$dir/modules/$f.sh" || true
+        done
+        if [[ -f "$dir/modules/common.sh" ]]; then
+            CFMGR="$dir/cf-manager.sh"
             echo "$CFMGR"
             return 0
         fi
         print_warn "GitHub cfapi/ 缺少 modules/ 目录, 请手动上传 modules/ 或本地安装 cf-manager"
+    else
+        print_error "下载 cf-manager.sh 失败"
     fi
     CFMGR=""
     return 1
