@@ -426,11 +426,22 @@ cf_ech_ensure() {
         print_ok "API Key 已缓存到 $CF_CRED_FILE (可删除该文件重新输入)"
     fi
 
-    # 2. 根据域名查找 zone_id
+    # 2. 根据域名查找 zone_id (Bug fix: 逐级向上剥域名, CF API name= 只认根 zone 名)
     print_info "正在查询域名 $domain 的 Cloudflare zone..."
-    zone_id=$(curl -sS -4 -X GET "https://api.cloudflare.com/client/v4/zones?name=$domain" \
-        -H "X-Auth-Email: $email" -H "X-Auth-Key: $key" 2>/dev/null \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result'][0]['id'] if d.get('success') and d['result'] else '')")
+    zone_id=""
+    local try="$domain"
+    while [[ -n "$try" ]]; do
+        zone_id=$(curl -sS -4 -X GET "https://api.cloudflare.com/client/v4/zones?name=$try" \
+            -H "X-Auth-Email: $email" -H "X-Auth-Key: $key" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result'][0]['id'] if d.get('success') and d['result'] else '')")
+        if [[ -n "$zone_id" ]]; then
+            print_ok "匹配到 zone: $try"
+            break
+        fi
+        # 剥掉最左一级 (a.b.c → b.c → c)
+        try="${try#*.}"
+        [[ "$try" == *"."* ]] || break
+    done
     if [[ -z "$zone_id" ]]; then
         print_error "无法找到域名 $domain 的 zone (API Key 可能无效或域名不在该账户)"
         print_warn "请手动确认后重试; 节点仍会生成, 但 ECH 未启用"
