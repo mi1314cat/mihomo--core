@@ -172,7 +172,7 @@ get_next_index() {
     done
     IFS=$'\n' used=($(printf "%s\n" "${used[@]}" | sort -n))
     for n in "${used[@]}"; do
-        [[ "$n" -ne "$i" ]] && break
+        [[ $((10#$n)) -ne "$i" ]] && break
         ((i++))
     done
     printf "%02d\n" "$i"
@@ -182,6 +182,17 @@ get_next_index() {
 # 随机端口
 # ================================
 random_port() { shuf -i 10000-60000 -n 1; }
+
+# 随机 8-16 位路径段 (字母+数字, 抗识别; 大小写混合)
+random_path() {
+    local len=$((RANDOM % 9 + 8))  # 8..16
+    local chars="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    local out="" i
+    for ((i = 0; i < len; i++)); do
+        out+="${chars:RANDOM % ${#chars}:1}"
+    done
+    echo "$out"
+}
 
 safe_read_port() {
     local default="$1"
@@ -520,14 +531,30 @@ ask_cert() {
     local yn domain
 
     echo "  证书来源:" >&2
-    echo "  1) 已有证书 (ssl.sh 申请过, /root/catmi/ 下)" >&2
-    echo "  2) 现在申请 (调用 ssl.sh)" >&2
+    echo "  1) 已有证书 (cf-manager Origin CA / ssl.sh, 双路径检测)" >&2
+    echo "  2) 现在申请 (cf-manager Origin CA 优先, 失败退 ssl.sh)" >&2
     echo "  3) 自签证书 (内测/无域名兜底)" >&2
     printf "  选择 (默认1): " >&2
     read -r yn
     case "$(clean_input "$yn")" in
         2)
-            print_info "调用 ssl.sh 申请证书..."
+            # 先获取域名
+            printf "请输入要申请证书的域名: " >&2
+            read -r domain
+            domain=$(clean_input "$domain" | tr '[:upper:]' '[:lower:]')
+            [[ -z "$domain" ]] && { print_error "域名不能为空"; generate_cert "cloudflare.com"; CERT_DOMAIN="cloudflare.com"; return; }
+            # 优先 cf-manager 签 Origin CA (15年, 走CF回源正确选择); 失败退 ssl.sh
+            print_info "通过 cf-manager 申请 Origin CA 证书: $domain ..."
+            if cfmgr && "$CFMGR" cert issue "$domain" 2>/dev/null; then
+                local ocrt="/root/catmi/cloudflare/certs/$domain.crt"
+                local okey="/root/catmi/cloudflare/certs/$domain.key"
+                if [[ -f "$ocrt" && -f "$okey" ]]; then
+                    CERT_FILE="$ocrt"; KEY_FILE="$okey"; CERT_DOMAIN="$domain"
+                    print_ok "Origin CA 证书已就绪: $domain"
+                    return 0
+                fi
+            fi
+            print_warn "cf-manager 签 Origin CA 失败, 退回 ssl.sh (acme.sh)..."
             bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/ssl.sh) || {
                 print_error "ssl.sh 运行失败, 退回自签"
                 generate_cert "cloudflare.com"
@@ -553,15 +580,18 @@ ask_cert() {
             CERT_DOMAIN="cloudflare.com"
             ;;
         *)
-            # 默认1: 已有证书
+            # 默认1: 已有证书 (双路径: cf-manager Origin CA 优先 + 原 /root/catmi)
             shopt -s nullglob
-            local existing=("/root/catmi"/*.crt)
+            local existing=()
+            local c
+            for c in "/root/catmi/cloudflare/certs"/*.crt "/root/catmi"/*.crt; do
+                [[ -f "$c" ]] && existing+=("$c")
+            done
             if [[ ${#existing[@]} -gt 0 ]]; then
                 echo "  检测到已有证书:" >&2
-                local i=0
+                local i=0 d
                 for c in "${existing[@]}"; do
                     i=$((i+1))
-                    local d
                     d=$(basename "$c" .crt)
                     echo "    $i) $d" >&2
                 done
@@ -628,9 +658,9 @@ add_config() {
     # 6. TLS 证书来源 (VLESS 恒 TLS, 无 Reality 分支)
     ask_cert
 
-    # 7. 传输路径 (防御初始化, 防止任何路径下为空)
-    WS_PATH="/ws-$index"
-    XHTTP_PATH="/xh-$index"
+    # 7. 传输路径 (随机 8-16 位, 抗识别)
+    WS_PATH="/$(random_path)"
+    XHTTP_PATH="/$(random_path)"
     XHTTP_MODE="auto"
     CF_ECH_READY=false
 
@@ -804,7 +834,11 @@ EOF
     echo -e "编号: $index" >&2
     echo -e "端口: $VLESS_PORT" >&2
     echo -e "UUID: $UUID" >&2
-    echo -e "传输: $VLESS_TRANSPORT (路径: ${VLESS_TRANSPORT/ws/$WS_PATH})" >&2
+    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
+        echo -e "传输: xhttp (路径: $XHTTP_PATH)" >&2
+    else
+        echo -e "传输: ws (路径: $WS_PATH)" >&2
+    fi
     echo -e "域名: $CERT_DOMAIN" >&2
     $MTLS_ENABLED && echo -e "mTLS: 已启用 (客户端证书: $CERT_DIR/mtls-$PROTO-$index/)" >&2
     $ECH_ENABLED && echo -e "ECH: 已启用 (Cloudflare: ${CF_ECH_READY:-未确认})" >&2 || true
