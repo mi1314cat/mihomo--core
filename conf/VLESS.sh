@@ -54,6 +54,85 @@ clean_input() {
 }
 
 # ================================
+# 定位/安装 Cloudflare API 管理器 cf-manager.sh
+# 优先级: RN 本地路径 -> PATH -> 询问从 GitHub 安装 (cfapi/)
+# 输出: 全局 CFMGR 变量 + stdout 打印路径 (无则空, 返回失败)
+# 短链: -A <域名> <IP> [--proxy on|off|auto]  DNS ensure (幂等)
+#       -E <域名>  ECH enable (幂等)   -S <域名>  ssl status   -P <域名> <端口>  origin port
+# ================================
+CFMGR=""
+_cfmgr_asked=0
+
+cfmgr() {
+    local path="" yn
+    if [[ -x "/root/catmi/cloudflare/cf-manager.sh" ]]; then
+        path="/root/catmi/cloudflare/cf-manager.sh"
+    elif command -v cf-manager.sh >/dev/null 2>&1; then
+        path=$(command -v cf-manager.sh)
+    fi
+    if [[ -n "$path" ]]; then
+        CFMGR="$path"
+        echo "$path"
+        return 0
+    fi
+
+    # 本地未找到: 询问是否从 GitHub 自动安装 (只询问一次, 防重复打扰)
+    if [[ "$_cfmgr_asked" -eq 1 ]]; then
+        CFMGR=""
+        return 1
+    fi
+    _cfmgr_asked=1
+
+    printf "未找到 cf-manager.sh, 是否自动从 GitHub 安装到 /root/catmi/cloudflare/？(y/N): " >&2
+    read -r yn
+    if [[ "$(clean_input "$yn")" =~ ^[yY]$ ]]; then
+        local install_dir="/root/catmi/cloudflare"
+        local base_url="https://raw.githubusercontent.com/mi1314cat/One-click-script/main/cfapi"
+        local f
+        mkdir -p "$install_dir/modules"
+        print_info "从 GitHub 下载 cf-manager.sh 及 modules/ ..."
+        if curl -fsSL "$base_url/cf-manager.sh" -o "$install_dir/cf-manager.sh"; then
+            chmod +x "$install_dir/cf-manager.sh"
+            for f in common context account zone dns ech ssl origin cert; do
+                curl -fsSL "$base_url/modules/$f.sh" -o "$install_dir/modules/$f.sh" || true
+            done
+        else
+            print_error "下载 cf-manager.sh 失败"
+            CFMGR=""
+            return 1
+        fi
+        # 校验 modules/common.sh (GitHub cfapi/ 缺 modules/ 目录时)
+        if [[ -f "$install_dir/modules/common.sh" ]]; then
+            CFMGR="$install_dir/cf-manager.sh"
+            echo "$CFMGR"
+            return 0
+        fi
+        print_warn "GitHub cfapi/ 缺少 modules/ 目录, 请手动上传 modules/ 或本地安装 cf-manager"
+    fi
+    CFMGR=""
+    return 1
+}
+
+# ================================
+# 获取公网 IP (交互确认; echo 输出 IP 到 stdout, 所有 print_* 与 read -p 提示走 stderr)
+# IPv4 优先, API 失败时 api64.ipify.org (IPv6) 兜底, 再不行手动输入
+# ================================
+detect_public_ip() {
+    local ip user_ip
+    ip=$(curl -s https://api.ipify.org || curl -s https://api64.ipify.org || curl -s https://ifconfig.me || true)
+    if [[ -z "$ip" ]]; then
+        print_error "获取公网 IP 失败"
+        read -r -p "请输入公网IP: " ip
+        echo "$(clean_input "$ip")"
+        return
+    fi
+    print_info "检测到 IP: $ip"
+    read -r -p "使用此IP？(回车默认): " user_ip
+    user_ip=$(clean_input "$user_ip")
+    echo "${user_ip:-$ip}"
+}
+
+# ================================
 # URL 编码 (分享链接 ech= 参数用)
 # ================================
 urlencode() {
@@ -312,6 +391,21 @@ cf_ech_ensure() {
     local domain="$1"
     local email key zone_id ech_status
 
+    # 0. 优先使用 cf-manager 短链 (幂等, 已开则提示 already enabled 退出 0)
+    # 注意: 必须直接调用 cfmgr 而不是 $(cfmgr) —— 命令替换在子 shell 执行, 会丢掉 CFMGR 赋值
+    if cfmgr; then
+        print_info "通过 cf-manager 开启 ECH: $domain"
+        if "$CFMGR" -E "$domain"; then
+            print_ok "Cloudflare ECH 已确认开启 (cf-manager)"
+            CF_ECH_READY=true
+            return 0
+        else
+            print_warn "cf-manager 开启 ECH 失败, 降级为手动 API..."
+        fi
+    else
+        print_warn "未找到 cf-manager, 使用手动 API 方式..."
+    fi
+
     # 1. 获取 Cloudflare API Key (优先读缓存)
     if [[ -f "$CF_CRED_FILE" ]]; then
         email=$(awk -F= '/^EMAIL=/{print $2}' "$CF_CRED_FILE")
@@ -496,8 +590,14 @@ add_config() {
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
-    # 4. 获取服务器 IP
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    # 4. 获取服务器 IP (交互确认)
+    print_info "检测服务器公网 IP..."
+    SERVER_IP=$(detect_public_ip)
+
+    if [[ -z "$SERVER_IP" ]]; then
+        print_error "获取公网 IP 失败, 节点无 IP 无法生成分享链接"
+        return 1
+    fi
 
     if [[ "$SERVER_IP" =~ : ]]; then
         LINK_IP="[$SERVER_IP]"
@@ -527,9 +627,43 @@ add_config() {
     CLIENT_SNI="$CERT_DOMAIN"
     if $ECH_ENABLED; then
         print_info "ECH 已选择, 正在检查 Cloudflare 侧配置..."
-        cf_ech_ensure "$CERT_DOMAIN" || true
+        # 优化: 先检测域名是否已开启 ECH; 已开启则跳过开启步骤 (cf-manager ech status)
+        if cfmgr && "$CFMGR" ech status "$CERT_DOMAIN" --json 2>/dev/null | grep -q '"ech":"on"'; then
+            print_ok "域名 $CERT_DOMAIN 已开启 ECH (检测确认), 跳过开启步骤"
+            CF_ECH_READY=true
+        else
+            cf_ech_ensure "$CERT_DOMAIN" || true
+        fi
         # ECH 模式: SNI 保持真实域名, mihomo ech-opts 自动将外层 SNI 伪装为 cloudflare-ech.com
         CLIENT_SNI="$CERT_DOMAIN"
+    fi
+
+    # 9.1 可选: DNS 绑定域名到本机 IP (cf-manager: 橙云/CDN 或灰云直连)
+    # Bug7 fix: 自签兜底 CERT_DOMAIN=cloudflare.com 占位名, 不询问绑定 (避免误导)
+    if [[ "$ECH_ENABLED" = true || -n "$CERT_DOMAIN" ]] && [[ "$CERT_DOMAIN" != "cloudflare.com" ]]; then
+        local yn
+        echo "  是否将域名 $CERT_DOMAIN 的 DNS 绑定到本机 IP ($SERVER_IP)？(y/N)" >&2
+        read -r yn
+        if [[ "$(clean_input "$yn")" =~ ^[yY]$ ]]; then
+            if cfmgr; then
+                echo "  DNS 记录代理模式:" >&2
+                echo "  1) 橙云 (CDN 代理, 默认)" >&2
+                echo "  2) 灰云 (仅 DNS 直连)" >&2
+                printf "  选择 (默认1): " >&2
+                read -r yn
+                local proxy_mode="on"
+                case "$(clean_input "$yn")" in
+                    2) proxy_mode="off" ;;
+                esac
+                if "$CFMGR" -A "$CERT_DOMAIN" "$SERVER_IP" --proxy "$proxy_mode"; then
+                    print_ok "DNS 绑定成功: $CERT_DOMAIN -> $SERVER_IP (cf-manager)"
+                else
+                    print_warn "DNS 绑定失败, 节点仍会生成, 请稍后手动处理"
+                fi
+            else
+                print_warn "未找到 cf-manager, 跳过 DNS 绑定"
+            fi
+        fi
     fi
 
     render_smux
