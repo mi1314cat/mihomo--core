@@ -658,6 +658,25 @@ add_config() {
     # 6. TLS 证书来源 (VLESS 恒 TLS, 无 Reality 分支)
     ask_cert
 
+    # 6.1 证书归位 (mihomo SAFE_PATHS 修复): 无论证书来源, 统一复制到 conf/certs
+    #     并改写路径, 否则 mihomo 拒绝 conf 目录外证书 → listener 不启动 (通用 bug)
+    if [[ -n "$CERT_FILE" && -f "$CERT_FILE" && -n "$KEY_FILE" && -f "$KEY_FILE" ]]; then
+        local _cfn _safe_crt _safe_key
+        _cfn=$(basename "$CERT_FILE")
+        _safe_crt="$CERT_DIR/cert-$index-$_cfn"
+        _safe_key="$CERT_DIR/cert-$index-$(basename "$KEY_FILE")"
+        mkdir -p "$CERT_DIR"
+        if cp -f "$CERT_FILE" "$_safe_crt" 2>/dev/null && cp -f "$KEY_FILE" "$_safe_key" 2>/dev/null; then
+            if [[ "$CERT_FILE" != "$_safe_crt" ]]; then
+                CERT_FILE="$_safe_crt"
+                KEY_FILE="$_safe_key"
+                print_ok "证书已复制到 mihomo 安全路径: $CERT_DIR/"
+            fi
+        else
+            print_warn "证书复制失败, 使用原路径 (若 mihomo 拒绝请手动复制到 $CERT_DIR/)"
+        fi
+    fi
+
     # 7. 传输路径 (随机 8-16 位, 抗识别)
     WS_PATH="/$(random_path)"
     XHTTP_PATH="/$(random_path)"
