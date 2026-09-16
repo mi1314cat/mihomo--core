@@ -359,6 +359,8 @@ proxies:
     type: hysteria2
     server: $PUBLIC_IP
     port: $port
+    up: 50 Mbps
+    down: 200 Mbps
     password: $password
     sni: $domain
     skip-cert-verify: true
