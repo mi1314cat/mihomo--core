@@ -187,6 +187,37 @@ generate_self_signed_cert() {
     print_ok "证书生成完成: $CERT_FILE"
 }
 
+# --- pin/hpkp 高效计算(配合 Xray 26.x: pin 必填, allowInsecure 已移除) ---
+# 用法: calc_pin <cert文件>; 输出 $CERT_PIN(64hex 小写) 与 $HPKP_PIN(冒号大写)
+calc_pin() {
+    local cert="$1" tmp out
+    CERT_PIN=""; HPKP_PIN=""
+    [[ -s "$cert" ]] || return 0
+    tmp=$(mktemp)
+    if openssl x509 -in "$cert" -outform der -out "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
+        out=$(sha256sum "$tmp" | awk '{print tolower($1)}')
+        if [[ "${#out}" == "64" && "$out" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]]; then
+            CERT_PIN="$out"
+            HPKP_PIN=$(echo "$out" | fold -w2 | paste -sd: - | tr 'a-f' 'A-F')
+        fi
+    fi
+    rm -f "$tmp"
+}
+
+# 一个 hy2 分享链接生成器(统一新格式, tag 可传)
+hy2_link_service() { # $1=password $2=ip $3=port $4=domain $5=name(可选)
+    local pw="$1" ip="$2" port="$3" dom="$4" nm="${5:-HY2}"
+    local cert="$CERT_DIR/cert-$dom.crt"
+    calc_pin "$cert"
+    if [[ -n "$CERT_PIN" ]]; then
+        echo "hysteria2://$pw@$ip:$port?sni=$dom&insecure=1&allowInsecure=1&alpn=h3&obfs=none&upmbps=50&downmbps=200&pin=$CERT_PIN&hpkp=$HPKP_PIN#$nm"
+    else
+        echo "hysteria2://$pw@$ip:$port?sni=$dom&insecure=1&allowInsecure=1&alpn=h3&obfs=none&upmbps=50&downmbps=200#$nm"
+    fi
+}
+
+
+
 # ================================
 rebuild_client() {
     print_title "重建 Hysteria2 客户端文件"
@@ -230,8 +261,8 @@ proxies:
       - h3
 EOF
 
-    # 分享链接
-    SHARE_LINK="hysteria2://$password@$SERVER_IP:$port?sni=$domain&insecure=1#HY2-$num"
+    # 分享链接(新版: 带 pin/hpkp/alpn/obfs/up-down)
+    SHARE_LINK=$(hy2_link_service "$password" "$SERVER_IP" "$port" "$domain" "HY2-$num")
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     # 展开输出
@@ -275,7 +306,7 @@ proxies:
       - h3
 EOF
 
-    echo "hysteria2://$password@$SERVER_IP:$port?sni=$domain&insecure=1#HY2-$num" > "$SHARE_FILE"
+    echo "$(hy2_link_service "$password" "$SERVER_IP" "$port" "$domain" "HY2-$num")" > "$SHARE_FILE"
 }
 export_subscription() {
     print_title "导出所有 Hysteria2 节点订阅（展开格式）"
@@ -370,7 +401,7 @@ proxies:
       - h3
 EOF
 
-    echo "hysteria2://$password@$PUBLIC_IP:$port?sni=$domain&insecure=1#HY2-$index" > "$SHARE_FILE"
+    echo "$(hy2_link_service "$password" "$PUBLIC_IP" "$port" "$domain" "HY2-$index")" > "$SHARE_FILE"
 
     print_ok "创建完成: $index"
 
