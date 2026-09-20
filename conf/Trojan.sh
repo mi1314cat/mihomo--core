@@ -38,40 +38,54 @@ PUB_DIR="$OUT_DIR/pub"
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR" "$PUB_DIR"
 
 # ================================
-# 统一域名优选 (与 Reality.sh 相同机制)
-# 本地不维护域名池, 不复制 random_website:
-#   从 One-click-script/domains.sh 远程抽取自包含的
-#   random_website() 函数, 缓存到临时文件;
-#   domains.sh 更新后此处无需改动.
+# 统一域名优选 (与 Reality.sh 相同调用方式)
+# 本地不维护域名池, 不复制 random_website, 不下载到本地文件:
+#   直接按 Reality.sh 的方式执行统一 domains.sh:
+#     bash <(curl -fsSL "$DOMAINS_URL")
+#   domains.sh 内部: 留空 -> random_website() 现场优选,
+#   结果经 update_env 持久化为 install_info.env 的 dest_server;
+#   此处仅负责执行并从该 env 回读域名.
 # 接口: auto_website 成功时 stdout 输出一个域名(仅一个),
 #       进度/诊断均走 stderr; 失败返回非 0.
+# domains.sh 更新后此处无需改动.
 # ================================
 DOMAINS_URL="https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh"
 
-load_random_website() {
-    local tmp="/tmp/mihomo-domains-$$"
-    if ! curl -fsSL "$DOMAINS_URL" -o "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        print_error "domains.sh 下载失败"
-        return 1
-    fi
-    local fn
-    fn=$(awk '/^random_website\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$tmp")
-    rm -f "$tmp"
-    if [[ -z "$fn" ]]; then
-        print_error "domains.sh 中未找到 random_website() 函数"
-        return 1
-    fi
-    eval "$fn"
-}
-
 auto_website() {
-    load_random_website || return 1
-    local d
-    d=$(random_website) || return 1
+    local CATMI_DIR="/root/catmi"
+    local CATMIENV_FILE="$CATMI_DIR/catmi.env"
+    # domains.sh 依赖 catmi.env 的 mode 决定写入目录; Trojan 体系固定为 mihomo.
+    # load_env 要求值带双引号且按行序生效, 故把遗留的裸 mode= 行统一为带引号格式.
+    if [[ -f "$CATMIENV_FILE" ]]; then
+        grep -qE '^mode=[^"]' "$CATMIENV_FILE" && \
+            sed -i 's/^mode=\([^"]*\)$/mode="\1"/' "$CATMIENV_FILE"
+    fi
+    if [[ ! -f "$CATMIENV_FILE" ]] || ! grep -qE '^mode="[^"]+"' "$CATMIENV_FILE"; then
+        printf 'mode="mihomo"\n' >> "$CATMIENV_FILE" 2>/dev/null || return 1
+    fi
+    # 父进程无 load_env, mode 从 catmi.env 现场读取; 异常时按 mihomo 处理
+    local mode
+    mode=$(grep -E '^mode=' "$CATMIENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
+    mode=$(clean_input "$mode" | tr '[:upper:]' '[:lower:]' | sed 's/^"//; s/"$//')
+    [[ "$mode" =~ ^[a-z0-9_-]+$ ]] || mode="mihomo"
+    local NINSTALL_ENV="/root/catmi/$mode/install_info.env"
+
+    # 清掉旧值, 保证回读到的一定是本次 domains.sh 的结果 (防止沿用陈旧值)
+    if [[ -f "$NINSTALL_ENV" ]]; then
+        sed -i '/^dest_server=/d' "$NINSTALL_ENV" || return 1
+    fi
+
+    # 与 Reality.sh 完全一致的调用方式; 关闭 stdin 使其 read 返回空, 走自动优选分支
+    bash <(curl -fsSL "$DOMAINS_URL") </dev/null >/dev/null 2>&2 || true
+
+    local d=""
+    if [[ -f "$NINSTALL_ENV" ]]; then
+        d=$(grep -E "^dest_server=" "$NINSTALL_ENV" | tail -1 | sed 's/^dest_server=//')
+        d=$(clean_input "$d" | sed 's/^"//; s/"$//; s/^'\''//; s/'\''$//')
+    fi
     d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]')
-    [[ "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || {
-        print_error "domains.sh 返回了非法域名: $d"
+    [[ "$d" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || {
+        print_error "domains.sh 未返回有效域名"
         return 1
     }
     echo "$d"
