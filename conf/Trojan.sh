@@ -38,6 +38,46 @@ PUB_DIR="$OUT_DIR/pub"
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR" "$PUB_DIR"
 
 # ================================
+# 统一域名优选 (与 Reality.sh 相同机制)
+# 本地不维护域名池, 不复制 random_website:
+#   从 One-click-script/domains.sh 远程抽取自包含的
+#   random_website() 函数, 缓存到临时文件;
+#   domains.sh 更新后此处无需改动.
+# 接口: auto_website 成功时 stdout 输出一个域名(仅一个),
+#       进度/诊断均走 stderr; 失败返回非 0.
+# ================================
+DOMAINS_URL="https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh"
+
+load_random_website() {
+    local tmp="/tmp/mihomo-domains-$$"
+    if ! curl -fsSL "$DOMAINS_URL" -o "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        print_error "domains.sh 下载失败"
+        return 1
+    fi
+    local fn
+    fn=$(awk '/^random_website\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$tmp")
+    rm -f "$tmp"
+    if [[ -z "$fn" ]]; then
+        print_error "domains.sh 中未找到 random_website() 函数"
+        return 1
+    fi
+    eval "$fn"
+}
+
+auto_website() {
+    load_random_website || return 1
+    local d
+    d=$(random_website) || return 1
+    d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]')
+    [[ "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || {
+        print_error "domains.sh 返回了非法域名: $d"
+        return 1
+    }
+    echo "$d"
+}
+
+# ================================
 # 输入清理
 # ================================
 clean_input() {
@@ -275,7 +315,8 @@ PY
 # 纯 TLS 模式证书来源选择
 #   1) 已有证书 (ssl.sh 申请, /root/catmi/<域名>.crt|.key)
 #   2) 现在调用 ssl.sh 申请
-#   3) 自签证书 (兜底)
+#   3) 自签证书 (内测/无域名兜底)
+#   4) 自动优选域名 + 自签证书 (调用统一 domains.sh)
 # 输出: CERT_FILE / KEY_FILE / CERT_DOMAIN
 # ================================
 ask_cert() {
@@ -285,6 +326,7 @@ ask_cert() {
     echo "  1) 已有证书 (ssl.sh 申请过, /root/catmi/ 下)" >&2
     echo "  2) 现在申请 (调用 ssl.sh)" >&2
     echo "  3) 自签证书 (内测/无域名兜底)" >&2
+    echo "  4) 自动优选域名 + 自签证书 (统一域名优选 domains.sh)" >&2
     printf "  选择 (默认1): " >&2
     read -r yn
     case "$(clean_input "$yn")" in
@@ -313,6 +355,19 @@ ask_cert() {
         3)
             generate_cert "cloudflare.com"
             CERT_DOMAIN="cloudflare.com"
+            ;;
+        4)
+            # 统一域名优选: 留空逻辑的自动分支, 与 Reality.sh 同一 domains.sh
+            print_info "调用统一域名优选 domains.sh..."
+            local auto_domain
+            if auto_domain=$(auto_website); then
+                generate_cert "$auto_domain"
+                CERT_DOMAIN="$auto_domain"
+            else
+                print_error "域名优选失败, 退回自签 cloudflare.com"
+                generate_cert "cloudflare.com"
+                CERT_DOMAIN="cloudflare.com"
+            fi
             ;;
         *)
             # 默认1: 已有证书
@@ -385,10 +440,21 @@ add_config() {
     # 6. 按模式准备安全参数
     if [[ "$TROJAN_MODE" = "reality" ]]; then
         gen_reality_keys
-        REALITY_DEST="www.bing.com"
         REALITY_SHORT_ID=$(openssl rand -hex 8)
-        read -p "Reality 伪装目标域名 (默认 www.bing.com): " REALITY_DEST_INPUT
-        REALITY_DEST=$(clean_input "${REALITY_DEST_INPUT:-www.bing.com}")
+        # 伪装域名: 手动输入 > 自动优选 (统一 domains.sh) > 原默认 www.bing.com
+        read -p "Reality 伪装目标域名 (回车=自动优选 domains.sh): " REALITY_DEST_INPUT
+        REALITY_DEST_INPUT=$(clean_input "$REALITY_DEST_INPUT")
+        if [[ -n "$REALITY_DEST_INPUT" ]]; then
+            REALITY_DEST="$REALITY_DEST_INPUT"
+        else
+            print_info "未输入域名, 调用统一域名优选 domains.sh..."
+            if auto_domain=$(auto_website); then
+                REALITY_DEST="$auto_domain"
+            else
+                print_error "域名优选失败, 使用默认 www.bing.com"
+                REALITY_DEST="www.bing.com"
+            fi
+        fi
     else
         ask_cert
         if $MTLS_ENABLED; then
