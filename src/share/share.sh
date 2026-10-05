@@ -24,6 +24,15 @@
 # 导致 systemd 的 ExecStart 变成 "/share_server.py"。
 SH_SHARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
+# 从 /tmp 之类的临时副本 source 时, 上面的推导会指向那个副本,
+# 于是装出来的 unit 里 ExecStart 指向一个下次重启就不存在的文件。
+# 所以先验一下 share_server.py 是不是真在这儿, 不是就退回安装目录。
+if [[ ! -f "$SH_SHARE_DIR/share_server.py" ]]; then
+    for cand in "${SRV_ROOT:-}/src/share" "${SRV_ROOT:-}/share"; do
+        [[ -n "$cand" && -f "$cand/share_server.py" ]] && { SH_SHARE_DIR="$cand"; break; }
+    done
+fi
+
 if ! declare -F m_get_env >/dev/null 2>&1; then
     ENVTOOL="${ENVTOOL:-$(dirname "$SH_SHARE_DIR")/lib/envtool.py}"
     m_get_env() { python3 "$ENVTOOL" get "$1" "$2"; }
