@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# =============================================================
+# mihomo--core 安装引导
+#
+#   bash <(curl -fsSL <仓库>/install.sh)              # 服务器 + 客户端 菜单
+#   bash <(curl -fsSL <仓库>/install.sh) server
+#   bash <(curl -fsSL <仓库>/install.sh) client
+#
+# 客户端与服务端装在不同目录, 共用一个内核安装器, 但 systemd 服务名不同。
+# =============================================================
+set -uo pipefail
+
+REPO_RAW="${REPO_RAW:-https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
+REPO_PROXY="${REPO_PROXY:-https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
+
+SRV_ROOT="${SRV_ROOT:-/root/catmi/mihomo}"
+CLI_ROOT="${CLI_ROOT:-/root/catmi/mihomo-client}"
+
+GREEN="\033[32m"; RED="\033[31m"; CYAN="\033[36m"
+MAGENTA="\033[35m"; BOLD="\033[1m"; RESET="\033[0m"
+say()  { printf "${CYAN}[信息]${RESET} %s\n" "$1"; }
+ok()   { printf "${GREEN}[成功]${RESET} %s\n" "$1"; }
+err()  { printf "${RED}[错误]${RESET} %s\n" "$1"; }
+die()  { err "$1"; exit 1; }
+
+[[ "$(id -u)" == "0" ]] || die "请使用 root 权限运行"
+command -v curl >/dev/null || die "缺少 curl"
+command -v python3 >/dev/null || die "缺少 python3"
+
+# Python 依赖: merge.py / validate.py / build_sub.py 都要 yaml
+ensure_yaml() {
+    python3 -c "import yaml" 2>/dev/null && return 0
+    say "安装 Python 依赖 (PyYAML)..."
+    if command -v apt-get >/dev/null; then
+        apt-get install -y python3-yaml >/dev/null 2>&1
+    elif command -v yum >/dev/null; then
+        yum install -y python3-pyyaml >/dev/null 2>&1
+    else
+        python3 -m pip install --break-system-packages pyyaml >/dev/null 2>&1 \
+            || python3 -m pip install pyyaml >/dev/null 2>&1
+    fi
+    python3 -c "import yaml" 2>/dev/null || die "PyYAML 安装失败"
+    ok "PyYAML 就绪"
+}
+
+fetch() {  # fetch <远端相对路径> <本地路径>
+    local rel="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    curl -fsSL --max-time 60 "$REPO_RAW/$rel" -o "$dst" 2>/dev/null \
+        || curl -fsSL --max-time 90 "$REPO_PROXY/$rel" -o "$dst" 2>/dev/null \
+        || return 1
+    [[ -s "$dst" ]]
+}
+
+fetch_repo() {  # 把面板需要的文件拉到本地
+    local base="$1"
+    local files=(
+        "src/lib/env.sh" "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
+        "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
+        "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
+        "src/conf/XRevise.sh"
+        "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
+        "src/core_install.sh"
+    )
+    local f
+    for f in "${files[@]}"; do
+        fetch "$f" "$base/$f" || { err "下载失败: $f"; return 1; }
+    done
+    chmod +x "$base/src/core_install.sh" 2>/dev/null
+    ok "面板文件已就绪 ($base/src)"
+}
+
+banner() {
+    printf "${MAGENTA}${BOLD}╔══════════════════════════════════════════════╗\n"
+    printf "║  %-42s ║\n" "$1"
+    printf "╚══════════════════════════════════════════════╝${RESET}\n"
+}
+
+install_server() {
+    banner "服务端安装"
+    ensure_yaml
+    fetch_repo "$SRV_ROOT" || die "面板文件下载失败"
+
+    INSTALL_DIR="$SRV_ROOT" SERVICE_NAME="mihomo" \
+        bash "$SRV_ROOT/src/core_install.sh" || die "内核安装失败"
+
+    # 服务端需要的依赖
+    [[ -f "$SRV_ROOT/src/server.sh" ]] || {
+        fetch "src/server.sh" "$SRV_ROOT/src/server.sh" || die "服务端面板下载失败"
+    }
+    chmod +x "$SRV_ROOT/src/server.sh"
+
+    ok "服务端安装完成"
+    printf '\n  启动面板:\n    \033[1mbash %s/src/server.sh\033[0m\n\n' "$SRV_ROOT"
+}
+
+install_client() {
+    banner "客户端安装"
+    ensure_yaml
+    fetch_repo "$CLI_ROOT" || die "面板文件下载失败"
+
+    INSTALL_DIR="$CLI_ROOT" SERVICE_NAME="mihomo-client" \
+        bash "$CLI_ROOT/src/core_install.sh" || die "内核安装失败"
+
+    fetch "src/client.sh" "$CLI_ROOT/src/client.sh" || die "客户端面板下载失败"
+    chmod +x "$CLI_ROOT/src/client.sh"
+
+    # 客户端的配置目录名与服务端一致 (core_install.sh 统一用 conf/)
+    ok "客户端安装完成"
+    printf '\n  启动面板:\n    \033[1mbash %s/src/client.sh\033[0m\n\n' "$CLI_ROOT"
+}
+
+menu() {
+    banner "mihomo--core 安装"
+    echo "1) 安装服务端 (建节点、发分享)"
+    echo "2) 安装客户端 (拉节点、出网)"
+    echo "3) 两边都装"
+    printf "0) 退出\n"
+    printf "\n请选择: "
+    local c; read -r c
+    case "$c" in
+        1) install_server ;;
+        2) install_client ;;
+        3) install_server; install_client ;;
+        0) exit 0 ;;
+        *) die "无效选项" ;;
+    esac
+}
+
+case "${1:-}" in
+    server) install_server ;;
+    client) install_client ;;
+    all)    install_server; install_client ;;
+    *)      menu ;;
+esac

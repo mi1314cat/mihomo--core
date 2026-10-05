@@ -37,6 +37,14 @@ ENV_FILE="$BASE_DIR/install_info.env"
 PUB_DIR="$OUT_DIR/pub"
 PUB_ENV="$PUB_DIR/public_key.env"
 
+
+# ---------- 共享库 (src/lib/env.sh) ----------
+# 提供: 路径常量 / 环境变量读写 / Reality dest 选择 / 合并+严格校验+重载闭环
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SRV_ROOT="$BASE_DIR"
+MIHOMO_BIN="$BASE_DIR/mihomo"
+source "$SELF_DIR/../lib/env.sh"
+
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$PUB_DIR"
 
 # ================================
@@ -203,23 +211,23 @@ render_smux() {
 add_config() {
     print_title "新增 Reality 配置"
 
-    DINSTALL_CATMI="/root/catmi"
-    CATMIENV_FILE="$DINSTALL_CATMI/catmi.env"
+    # 环境准备: 复用/生成 install_info.env
+    # 原先依赖 One-click-script 的 update_env.sh + load_env.sh + domains.sh,
+    # 现改为本地实现 (src/lib/env.sh), 外部脚本不可达时不再整条链路失败。
+    if [[ ! -x "$MIHOMO_BIN" ]]; then
+        print_error "未找到 mihomo 内核: $MIHOMO_BIN"
+        print_info "请先从主菜单安装 Mihomo"
+        return
+    fi
 
-    # 更新环境（模式：mihomo）
-    source <(curl -fsSL "https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/A/update_env.sh")
-    update_env "$CATMIENV_FILE" mode mihomo
+    if [[ ! -f "$ENV_FILE" ]] || ! m_load_env "$ENV_FILE"; then
+        print_info "首次使用, 正在生成环境变量..."
+        bash "$SELF_DIR/XRevise.sh" || { print_error "环境变量生成失败"; return; }
+    fi
+    m_load_env "$ENV_FILE"
 
-    # 域名选择
-    bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh)
-
-    # 重新生成所有变量
-    print_info "正在重新生成环境变量..."
-    bash <(curl -fsSL https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main/conf/XRevise.sh)
-
-    # 加载 ENV
-    source <(curl -fsSL "https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/A/load_env.sh")
-    load_env "$ENV_FILE"
+    # Reality dest 站点
+    m_pick_dest "${dest_server:-}" || return
 
     required_vars=(UUID PRIVATE_KEY PUBLIC_KEY SHORT_ID dest_server PUBLIC_IP link_ip REALITY_PORT)
     for v in "${required_vars[@]}"; do
@@ -538,8 +546,8 @@ main_menu() {
 
         case $c in
             1) list_configs ;;
-            2) add_config ;;
-            3) delete_config ;;
+            2) add_config; m_sync_reload ;;
+            3) delete_config; m_sync_reload ;;
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;

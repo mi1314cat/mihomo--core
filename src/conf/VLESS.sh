@@ -44,6 +44,14 @@ OUT_DIR="$BASE_DIR/out"
 CERT_DIR="$BASE_DIR/conf/certs"
 PUB_DIR="$OUT_DIR/pub"
 
+
+# ---------- 共享库 (src/lib/env.sh) ----------
+# 提供: 路径常量 / 环境变量读写 / Reality dest 选择 / 合并+严格校验+重载闭环
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SRV_ROOT="$BASE_DIR"
+MIHOMO_BIN="$BASE_DIR/mihomo"
+source "$SELF_DIR/../lib/env.sh"
+
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR" "$PUB_DIR"
 
 # ================================
@@ -618,6 +626,23 @@ ask_cert() {
 }
 
 # ================================
+# v2 修复: 从入站配置提取前端/接入域名
+# 优先读注释 "# server-name:" (add_config 阶段人工确认的真实访问域名)
+# 兜底兼容旧片段: 安全路径证书名剥去 cert-<编号>- / cert- 前缀 (避免旧 bug 碎名)
+# ================================
+extract_server_name() {
+    local f="$1"
+    local domain=""
+    domain=$(grep -oE "^[[:space:]]*# server-name: [^[:space:]]+" "$f" 2>/dev/null | head -1 | awk '{print $3}')
+    if [[ -z "$domain" ]]; then
+        local cert
+        cert=$(grep -E "certificate:" "$f" | awk '{print $2}')
+        domain=$(basename "$cert" .crt | sed -E 's/^cert-[0-9]+-//; s/^cert-//')
+    fi
+    echo "$domain"
+}
+
+# ================================
 # 新增 VLESS 配置
 # ================================
 add_config() {
@@ -658,11 +683,37 @@ add_config() {
     # 6. TLS 证书来源 (VLESS 恒 TLS, 无 Reality 分支)
     ask_cert
 
+    # 6.1 证书归位 (mihomo SAFE_PATHS 修复): 无论证书来源, 统一复制到 conf/certs
+    #     并改写路径, 否则 mihomo 拒绝 conf 目录外证书 → listener 不启动 (通用 bug)
+    if [[ -n "$CERT_FILE" && -f "$CERT_FILE" && -n "$KEY_FILE" && -f "$KEY_FILE" ]]; then
+        local _cfn _safe_crt _safe_key
+        _cfn=$(basename "$CERT_FILE")
+        _safe_crt="$CERT_DIR/cert-$index-$_cfn"
+        _safe_key="$CERT_DIR/cert-$index-$(basename "$KEY_FILE")"
+        mkdir -p "$CERT_DIR"
+        if cp -f "$CERT_FILE" "$_safe_crt" 2>/dev/null && cp -f "$KEY_FILE" "$_safe_key" 2>/dev/null; then
+            if [[ "$CERT_FILE" != "$_safe_crt" ]]; then
+                CERT_FILE="$_safe_crt"
+                KEY_FILE="$_safe_key"
+                print_ok "证书已复制到 mihomo 安全路径: $CERT_DIR/"
+            fi
+        else
+            print_warn "证书复制失败, 使用原路径 (若 mihomo 拒绝请手动复制到 $CERT_DIR/)"
+        fi
+    fi
+
     # 7. 传输路径 (随机 8-16 位, 抗识别)
     WS_PATH="/$(random_path)"
     XHTTP_PATH="/$(random_path)"
     XHTTP_MODE="auto"
     CF_ECH_READY=false
+
+    # 7.1 接入/前端域名 (nginx server_name 或 CF zone 指向的域名)
+    #     v2 修复: 客户端 server/sni 不再直接信任证书 CN/CN 文件名, 必须显式确认并持久化。
+    printf "请输入访问域名 (客户端 server/sni 使用, 默认: %s): " "$CERT_DOMAIN" >&2
+    read -r front_domain
+    front_domain=$(clean_input "$front_domain" | tr '[:upper:]' '[:lower:]')
+    FRONT_DOMAIN=${front_domain:-$CERT_DOMAIN}
 
     # 8. 可选: mTLS 证书
     if $MTLS_ENABLED; then
@@ -725,6 +776,7 @@ add_config() {
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
 cat > "$IN_FILE" <<EOF
 # transport: xhttp
+# server-name: $FRONT_DOMAIN
 # access: $ACCESS_MODE
 # mtls: $MTLS_ENABLED
 # ech: $ECH_ENABLED
@@ -748,6 +800,7 @@ EOF
     else
 cat > "$IN_FILE" <<EOF
 # transport: ws
+# server-name: $FRONT_DOMAIN
 # access: $ACCESS_MODE
 # mtls: $MTLS_ENABLED
 # ech: $ECH_ENABLED
@@ -942,8 +995,9 @@ rebuild_client() {
         XHTTP_PATH=$(grep -A2 "xhttp-config:" "$IN_FILE" | grep "path:" | awk '{print $2}' | tr -d ' ')
     fi
 
+    server_name="$(extract_server_name "$IN_FILE")"
     cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
-    CERT_DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+    CERT_DOMAIN=${server_name:-$(basename "$cert" .crt | sed -E 's/^cert-[0-9]+-//; s/^cert-//')}
     CLIENT_SNI="$CERT_DOMAIN"
     LISTEN_ADDR="0.0.0.0"
     [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
@@ -1072,8 +1126,9 @@ rebuild_client_silent() {
         XHTTP_PATH=$(grep -A2 "xhttp-config:" "$IN_FILE" | grep "path:" | awk '{print $2}' | tr -d ' ')
     fi
 
+    server_name="$(extract_server_name "$IN_FILE")"
     cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
-    CERT_DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
+    CERT_DOMAIN=${server_name:-$(basename "$cert" .crt | sed -E 's/^cert-[0-9]+-//; s/^cert-//')}
     CLIENT_SNI="$CERT_DOMAIN"
     LISTEN_ADDR="0.0.0.0"
     [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
@@ -1164,7 +1219,7 @@ cat >> "$SUB_FILE" <<EOF
 # ============================
 # vless-$num2
 # ============================
-$(sed 's/^/  /' "$CLIENT_FILE")
+$(grep -v "^proxies:" "$CLIENT_FILE" | grep -v "^# ECH:" | sed 's/^/  /')
 
   $SHARE_LINK
 
@@ -1199,8 +1254,8 @@ main_menu() {
 
         case $c in
             1) list_configs ;;
-            2) add_config ;;
-            3) delete_config ;;
+            2) add_config; m_sync_reload ;;
+            3) delete_config; m_sync_reload ;;
             4) rebuild_client ;;
             5) export_subscription ;;
             6) view_nginx_conf ;;

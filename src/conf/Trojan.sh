@@ -35,6 +35,14 @@ OUT_DIR="$BASE_DIR/out"
 CERT_DIR="$BASE_DIR/conf/certs"
 PUB_DIR="$OUT_DIR/pub"
 
+
+# ---------- 共享库 (src/lib/env.sh) ----------
+# 提供: 路径常量 / 环境变量读写 / Reality dest 选择 / 合并+严格校验+重载闭环
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SRV_ROOT="$BASE_DIR"
+MIHOMO_BIN="$BASE_DIR/mihomo"
+source "$SELF_DIR/../lib/env.sh"
+
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR" "$PUB_DIR"
 
 # ================================
@@ -872,8 +880,8 @@ main_menu() {
 
         case $c in
             1) list_configs ;;
-            2) add_config ;;
-            3) delete_config ;;
+            2) add_config; m_sync_reload ;;
+            3) delete_config; m_sync_reload ;;
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;
