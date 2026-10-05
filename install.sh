@@ -58,13 +58,39 @@ ensure_yaml() {
     ok "PyYAML 就绪"
 }
 
+# 探测一次可用源, 结果记在 _SRC 里, 后面所有文件直接用它。
+# 之前是每个文件都把整条镜像链重试一遍, 在只能走镜像的国内机器上
+# 14 个文件要磨好几十分钟 —— 实测 4 分钟才下完 2 个。
+_SRC=""
+_pick_source() {
+    [[ -n "$_SRC" ]] && return 0
+    local base probe="$1"
+    for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
+        if curl -fsSL --max-time 12 "$base/$probe" -o /dev/null 2>/dev/null; then
+            _SRC="$base"
+            [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已选用镜像: $(echo "$base" | cut -d/ -f3)"
+            return 0
+        fi
+    done
+    return 1
+}
+
 fetch() {  # fetch <远端相对路径> <本地路径>
     local rel="$1" dst="$2" base
     mkdir -p "$(dirname "$dst")"
-    [[ -s "$dst" ]] && { rm -f "$dst"; }
+    rm -f "$dst"
+    _pick_source "README.md" || { err "所有下载源都不可用 (github.com 及各镜像)"; return 1; }
+    for base in "$_SRC"; do
+        if curl -fsSL --max-time 45 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+            return 0
+        fi
+    done
+    # 选中的源中途挂了, 换一个再来
+    _SRC=""
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
         if curl -fsSL --max-time 45 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
-            [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已走镜像: $(echo "$base" | cut -d/ -f3)"
+            _SRC="$base"
+            [[ "$base" == "$REPO_RAW" ]] || say "切换到镜像: $(echo "$base" | cut -d/ -f3)"
             return 0
         fi
         rm -f "$dst"
