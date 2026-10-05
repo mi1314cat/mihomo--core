@@ -12,10 +12,17 @@ set -uo pipefail
 
 REPO_RAW="${REPO_RAW:-https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
 
-# 镜像链: 国内机器经常连不上 github.com, 单个镜像又不够稳 (实测
-# cfgithub 在一台机器超时、jsdelivr 在另一台可用), 所以按顺序全试一遍。
+# 镜像链: 国内机器经常连不上 github.com, 单个镜像又不够稳, 所以按顺序全试一遍。
 # 每个前缀后面直接拼 <相对路径> 即可, 结构一致。
+#
+# 顺序很讲究:
+#   * ghproxy / gh-proxy 是**实时回源**的, 能立刻拿到刚推上去的版本
+#   * jsdelivr 是 CDN **带缓存**的 —— 实测推完 commit 后它仍然返回旧文件,
+#     加时间戳也绕不过去。所以只能放最后兜底。
+#   * cfgithub 在部分机器上直接超时, 排中间。
 REPO_MIRRORS=(
+    "https://ghproxy.net/https://raw.githubusercontent.com/mi1314cat/mihomo--core/main"
+    "https://gh-proxy.com/https://raw.githubusercontent.com/mi1314cat/mihomo--core/main"
     "${REPO_PROXY:-https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
     "https://cdn.jsdelivr.net/gh/mi1314cat/mihomo--core@main"
     "https://fastly.jsdelivr.net/gh/mi1314cat/mihomo--core@main"
