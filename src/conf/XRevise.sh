@@ -168,7 +168,10 @@ generate_all_env() {
         exit 1
     fi
 
+    # 开透明代理时上面两个值很可能是**代理出口 IP**而不是本机 IP,
+    # 选错会导致所有生成分享链接的节点从外部连不上。
     echo "请选择要使用的公网 IP 地址:"
+    echo "(若本机开了透明代理/机场, 请先确认下面不是代理出口 IP)"
     [ -n "$PUBLIC_IP_V4" ] && echo "1. IPv4: $PUBLIC_IP_V4"
     [ -n "$PUBLIC_IP_V6" ] && echo "2. IPv6: $PUBLIC_IP_V6"
     read -p "请输入对应数字 [默认1]: " IP_CHOICE

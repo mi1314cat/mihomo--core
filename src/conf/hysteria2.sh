@@ -166,7 +166,7 @@ detect_public_ip() {
         while read -r ip; do
             [[ "$ip" == 172.* || "$ip" == 10.* || "$ip" == 127.* || "$ip" == 192.168.* ]] || echo "$ip"
         done | head -1)
-    public_ip=$(curl -s --max-time 8 -4 api.ipify.org 2>/dev/null || true)
+    public_ip=$(m_server_ip)
     if [[ -n "$public_ip" && "$public_ip" != "$local_ip" ]]; then
         print_warn "出口IP($public_ip) != 网卡IP($local_ip), 可能走了代理, 默认用网卡IP"
     fi

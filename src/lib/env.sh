@@ -141,6 +141,36 @@ m_sync() {
     return 0
 }
 
+# m_server_ip —— 生成分享链接 / 客户端配置时对外写的那个地址
+#
+# 顺序刻意这样排:
+#   1. 传参进来的
+#   2. install_info.env 里管理员确认过的 PUBLIC_IP
+#   3. 实在没有才现探测, 并**明确告警**
+#
+# 为什么不能把探测放前面: 开了透明代理 (tproxy/redirect) 的机器上,
+# --noproxy 对 curl 无效, api.ipify 拿回来的是**代理出口 IP**。
+# 把它写进客户端配置, 节点就成了"连自己都连不上"的死节点。
+# 踩过的坑: 有节点的 server 被写成了 CDN 出口 IP, 而服务器本身是另一个地址,
+# 客户端连过去直接 i/o timeout。
+m_server_ip() {
+    [[ -n "${1:-}" ]] && { printf '%s' "$1"; return 0; }
+    [[ -n "${PUBLIC_IP:-}" ]] && { printf '%s' "$PUBLIC_IP"; return 0; }
+    if [[ -f "${SRV_ENV:-}" ]]; then
+        m_load_env "$SRV_ENV" 2>/dev/null || true
+        [[ -n "${PUBLIC_IP:-}" ]] && { printf '%s' "$PUBLIC_IP"; return 0; }
+    fi
+    local ip
+    ip=$(curl -s4 --max-time 8 https://api.ipify.org 2>/dev/null)
+    [[ -z "$ip" ]] && ip=$(curl -s6 --max-time 8 https://api64.ipify.org 2>/dev/null)
+    if [[ -n "$ip" ]]; then
+        print_warn "install_info.env 里没有 PUBLIC_IP, 现探测到 $ip"
+        print_warn "若本机开了透明代理, 这很可能是**代理出口 IP**而不是你的服务器 IP"
+        print_warn "请确认无误后写回:  python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
+    fi
+    printf '%s' "$ip"
+}
+
 # m_sync_reload —— 校验通过才重载; 失败保留旧配置
 m_sync_reload() {
     local bak; bak=$(mktemp)

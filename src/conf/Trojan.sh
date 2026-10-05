@@ -448,7 +448,7 @@ add_config() {
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
     # 4. 获取服务器 IP
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
 
     if [[ "$SERVER_IP" =~ : ]]; then
         LINK_IP="[$SERVER_IP]"
@@ -680,7 +680,7 @@ rebuild_client() {
     read_features "$IN_FILE"
     render_smux
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
     [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
     if [[ "$TROJAN_MODE" = "reality" ]]; then
@@ -763,7 +763,7 @@ rebuild_client_silent() {
     read_features "$IN_FILE"
     render_smux
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
     [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
     if [[ "$TROJAN_MODE" = "reality" ]]; then

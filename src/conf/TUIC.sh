@@ -153,7 +153,7 @@ choose_listen_ip() {
 detect_public_ip() {
     local ip user_ip
 
-    ip=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || true)
+    ip=$(m_server_ip)
 
     if [[ -z "$ip" ]]; then
         print_error "获取公网 IP 失败"
@@ -369,7 +369,7 @@ rebuild_client() {
     cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
     domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
 
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -420,7 +420,7 @@ rebuild_client_silent() {
     cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
     domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
 
 cat > "$OUT_FILE" <<EOF
 proxies:

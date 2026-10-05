@@ -386,7 +386,7 @@ rebuild_client() {
     read_features "$IN_FILE"
     render_smux
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
 
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -446,7 +446,7 @@ rebuild_client_silent() {
     read_features "$IN_FILE"
     render_smux
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
 
 cat > "$OUT_FILE" <<EOF
 proxies:

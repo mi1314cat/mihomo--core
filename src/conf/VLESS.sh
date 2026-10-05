@@ -129,11 +129,12 @@ cfmgr() {
 
 # ================================
 # 获取公网 IP (交互确认; echo 输出 IP 到 stdout, 所有 print_* 与 read -p 提示走 stderr)
-# IPv4 优先, API 失败时 api64.ipify.org (IPv6) 兜底, 再不行手动输入
+# 优先用 install_info.env 里管理员确认过的 PUBLIC_IP;
+# 没有才现探测, 并且一律要人工确认 —— 透明代理下探测到的往往是代理出口 IP
 # ================================
 detect_public_ip() {
     local ip user_ip
-    ip=$(curl -s https://api.ipify.org || curl -s https://api64.ipify.org || curl -s https://ifconfig.me || true)
+    ip=$(m_server_ip)
     if [[ -z "$ip" ]]; then
         print_error "获取公网 IP 失败"
         read -r -p "请输入公网IP: " ip
@@ -1007,7 +1008,7 @@ rebuild_client() {
         MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
     fi
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
     [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
@@ -1138,7 +1139,7 @@ rebuild_client_silent() {
         MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
     fi
 
-    SERVER_IP=$(curl -s4 https://api.ipify.org || curl -s6 https://api64.ipify.org)
+    SERVER_IP=$(m_server_ip)
     [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
