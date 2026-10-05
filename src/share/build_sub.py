@@ -126,6 +126,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--import-dir", default="", help="外部拉取的订阅目录 (合并为 imported)")
+    ap.add_argument("--providers-dir", default="",
+                    help="客户端 proxy-providers 目录 (每个 *.yaml 单独成一个 tag)")
     ap.add_argument("--tag", default="all", help="all 或某个协议前缀 (reality/trojan/...)")
     ap.add_argument("-o", "--output", default="")
     ap.add_argument("--list", action="store_true", help="只列出可用 tag")
@@ -134,6 +136,11 @@ def main() -> int:
     buckets = collect(args.out_dir)
     if args.import_dir and os.path.isdir(args.import_dir):
         collect_dir(args.import_dir, "imported", buckets)
+    if args.providers_dir and os.path.isdir(args.providers_dir):
+        # 客户端没有 out/*_client-*.yaml, 节点都在 conf/providers/*.yaml 里。
+        # 每个 provider 文件单开一个 tag, 这样可以只分享其中一个订阅。
+        for pf in sorted(glob.glob(os.path.join(args.providers_dir, "*.yaml"))):
+            collect_dir(os.path.dirname(pf), os.path.splitext(os.path.basename(pf))[0], buckets)
 
     if args.list:
         if not buckets:
@@ -148,7 +155,16 @@ def main() -> int:
         return 0
 
     if args.tag == "all":
-        proxies = [x for proto in sorted(buckets) for x in buckets[proto]]
+        # 客户端常见情况: 同一个订阅被导入成多个 provider (rn_all / 哈希名 / sub_*)。
+        # 直接按桶拼接会得到成倍的同名重复节点, 这里按 name 去重并保留首个。
+        proxies, seen = [], set()
+        for proto in sorted(buckets):
+            for x in buckets[proto]:
+                nm = x.get("name")
+                if nm in seen:
+                    continue
+                seen.add(nm)
+                proxies.append(x)
     else:
         proxies = buckets.get(args.tag, [])
         if not proxies:

@@ -70,19 +70,117 @@ random_free_port() {
 }
 
 safe_read_port() {
-    local default="$1" input port
+    # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
+    #   拒绝 1-1023 特权端口与系统常用端口, TCP/UDP 双查占用, EOF 安全退出。
+    m_safe_read_port "$1"
+}
+
+# ================================================================
+# 选配 (M 内核 / mihomo v1.19.32 特有字段)
+# 每条都标了内核源码位置; 没有源码依据的一律不做。
+# ================================================================
+
+# ---------- ① congestion-controller ----------
+#   proxy   : adapter/outbound/tuic.go:48
+#   listener: listener/inbound/tuic.go:21 (内核默认 "bbr", listener/parse.go:130)
+#   合法值: cubic / new_reno / bbr / bbr_meta_v1 / bbr_meta_v2
+#           transport/tuic/common/congestion.go:20-53 —— switch **无 default 分支**,
+#           写错值不报错, 静默保留内核默认。必须从枚举里选。
+#   ⚠ 两侧要一致, 否则客户端算的拥塞窗口和服务端对不上。
+CC_PROFILE="bbr"
+
+# ---------- ② udp-relay-mode (仅客户端) ----------
+#   adapter/outbound/tuic.go:47
+#   合法值: native (默认) / quic。
+#   ⚠ 判断是 `if option.UdpRelayMode != "quic"` —— **写错字静默落 native**
+#     (adapter/outbound/tuic.go:165-168)。listener 侧没有这个字段。
+UDP_RELAY="native"
+
+# ---------- ③ reduce-rtt = TUIC 的 0-RTT 开关 (仅客户端) ----------
+#   adapter/outbound/tuic.go:45 → DialQuicOption{Early: ...} (:114)
+#   降首包延迟, 代价是失去前向保密; 服务端固定 Allow0RTT=true
+#   (listener/tuic/server.go:102), 所以客户端默认关即可。
+REDUCE_RTT=false
+
+# ---------- ④ heartbeat-interval (仅客户端, 毫秒) ----------
+#   adapter/outbound/tuic.go:43; <=0 时内核回落 10000 (:161-163)
+HEARTBEAT_MS="10000"
+
+ask_uint_ms() {
+    local p="$1" d="$2" input v
     while true; do
-        printf "请输入监听端口 (默认: %s): " "$default" >&2
-        read -r input
-        input=$(clean_input "$input")
-        port="${input:-$default}"
-
-        [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
-        (( port >= 1 && port <= 65535 )) || { print_error "端口范围错误"; continue; }
-        port_in_use "$port" && { print_error "端口已占用"; continue; }
-
-        echo "$port"; return
+        printf "%s (默认: %s): " "$p" "$d" >&2
+        read -r input || { printf "\n[信息] 非交互环境, 已退出\n" >&2; return 1; }
+        input=$(printf '%s' "$input" | tr -d '\000-\037' | tr -d '[:space:]')
+        v="${input:-$d}"
+        [[ "$v" =~ ^[0-9]+$ ]] || { print_error "请输入正整数 (单位毫秒)"; continue; }
+        (( v <= 0 )) && { print_error "必须 > 0 (<=0 内核会静默回落 10000ms)"; continue; }
+        printf '%s' "$v"
+        return 0
     done
+}
+
+ask_tuic_opts() {
+    echo "  拥塞控制 congestion-controller (两侧必须一致):" >&2
+    echo "  1) bbr (默认; 也是内核 listener 默认值, listener/parse.go:130)" >&2
+    echo "  2) bbr_meta_v2" >&2
+    echo "  3) cubic" >&2
+    echo "  4) new_reno" >&2
+    printf "  选择 (默认1): " >&2
+    local c=""
+    read -r c || c=""
+    c=$(clean_input "$c")
+    case "$c" in
+        2) CC_PROFILE="bbr_meta_v2" ;;
+        3) CC_PROFILE="cubic" ;;
+        4) CC_PROFILE="new_reno" ;;
+        *) CC_PROFILE="bbr" ;;
+    esac
+
+    echo "  UDP 中继模式 udp-relay-mode (仅客户端; 写错字会静默落 native):" >&2
+    echo "  1) native (默认, UDP 报文直传)" >&2
+    echo "  2) quic (走 QUIC DATAGRAM)" >&2
+    printf "  选择 (默认1): " >&2
+    read -r c || c=""
+    c=$(clean_input "$c")
+    if [[ "$c" == "2" ]]; then UDP_RELAY="quic"; else UDP_RELAY="native"; fi
+
+    read -r -p "  启用 0-RTT (reduce-rtt)? 降首包延迟, 但会失去前向保密 (默认否, y/N): " c || c=""
+    if [[ "$(clean_input "$c")" =~ ^[yY]$ ]]; then REDUCE_RTT=true; else REDUCE_RTT=false; fi
+
+    HEARTBEAT_MS=$(ask_uint_ms "  心跳间隔 heartbeat-interval (毫秒)" "10000") || HEARTBEAT_MS="10000"
+}
+
+# 从子配置读回选配 (重建/导出保持一致); 缺字段一律回落内核默认
+# ⚠ congestion-controller 是 listener 真实字段, 直接读;
+#   udp-relay-mode / reduce-rtt / heartbeat-interval 是 **仅客户端** 字段
+#   (listener/inbound/tuic.go:12-28 没有), 只能靠切片顶部的注释行持久化
+#   —— 与 AnyTLS/Reality 的 "# smux: x" 同一套路。
+read_tuic_opts() {
+    local f="$1" v=""
+    # ⚠ 本文件开了 `set -o errexit -o pipefail`; grep 无命中时退出码 1 会让整脚本退出,
+    #   所以每条读取都必须 `|| true` —— 否则老配置 (没有这些注释行) 重建时直接崩。
+    v=$(grep -E '^[[:space:]]*congestion-controller:' "$f" | head -1 | awk '{print $2}') || true
+    CC_PROFILE="${v:-bbr}"
+    v=$(grep -E '^[[:space:]]*# udp-relay-mode:' "$f" | head -1 | sed -E 's/.*# udp-relay-mode:[[:space:]]*//') || true
+    UDP_RELAY="${v:-native}"
+    if grep -qE '^[[:space:]]*# reduce-rtt:[[:space:]]*true' "$f"; then
+        REDUCE_RTT=true
+    else
+        REDUCE_RTT=false
+    fi
+    v=$(grep -E '^[[:space:]]*# heartbeat-interval:' "$f" | head -1 | sed -E 's/.*# heartbeat-interval:[[:space:]]*//') || true
+    HEARTBEAT_MS="${v:-10000}"
+    return 0
+}
+
+# 客户端选配块 (仅 proxy 侧字段)
+render_tuic_proxy_opts() {
+    echo "    congestion-controller: $CC_PROFILE"
+    echo "    udp-relay-mode: $UDP_RELAY"
+    echo "    heartbeat-interval: $HEARTBEAT_MS"
+    [[ "$REDUCE_RTT" == true ]] && echo "    reduce-rtt: true"
+    return 0
 }
 
 # ================================
@@ -224,11 +322,17 @@ add_config() {
     uuid=$(uuidgen)
     pass=$(openssl rand -hex 12)
 
+    # ---- 选配: 拥塞控制 / UDP 中继 / 0-RTT / 心跳 ----
+    ask_tuic_opts
+
     IN_FILE="$CONF_DIR/${PROTO}-$index.yaml"
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
     cat > "$IN_FILE" <<EOF
+# udp-relay-mode: $UDP_RELAY
+# reduce-rtt: $REDUCE_RTT
+# heartbeat-interval: $HEARTBEAT_MS
 listeners:
   - name: ${PROTO}-$index
     type: tuic
@@ -238,7 +342,7 @@ listeners:
       $uuid: $pass
     certificate: $CERT_FILE
     private-key: $KEY_FILE
-    congestion-controller: bbr
+    congestion-controller: $CC_PROFILE
     max-idle-time: 15000
     authentication-timeout: 1000
     alpn:
@@ -255,18 +359,18 @@ proxies:
     uuid: $uuid
     password: $pass
     sni: $domain
-    congestion-controller: bbr
-    udp-relay-mode: native
+$(render_tuic_proxy_opts)
     skip-cert-verify: true
     alpn:
       - h3
 EOF
 
-    echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$index" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$index" > "$SHARE_FILE"
 
     print_ok "已创建子配置: $IN_FILE"
     print_ok "客户端文件: $OUT_FILE"
     print_ok "分享文件: $SHARE_FILE"
+    print_ok "拥塞控制: $CC_PROFILE | UDP 中继: $UDP_RELAY | 0-RTT: $REDUCE_RTT | 心跳: ${HEARTBEAT_MS}ms"
 }
 
 # ================================
@@ -369,6 +473,9 @@ rebuild_client() {
     cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
     domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
+    # 选配: 读回 congestion-controller / udp-relay-mode / reduce-rtt / heartbeat
+    read_tuic_opts "$IN_FILE"
+
     SERVER_IP=$(m_server_ip)
 
 cat > "$OUT_FILE" <<EOF
@@ -380,14 +487,13 @@ proxies:
     uuid: $uuid
     password: $pass
     sni: $domain
-    congestion-controller: bbr
-    udp-relay-mode: native
+$(render_tuic_proxy_opts)
     skip-cert-verify: true
     alpn:
       - h3
 EOF
 
-    SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$num"
+    SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$num"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     print_ok "客户端文件已重建：$num"
@@ -420,6 +526,9 @@ rebuild_client_silent() {
     cert=$(grep -E 'certificate:' "$IN_FILE" | awk '{print $2}')
     domain=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
+    # 选配: 读回 congestion-controller / udp-relay-mode / reduce-rtt / heartbeat
+    read_tuic_opts "$IN_FILE"
+
     SERVER_IP=$(m_server_ip)
 
 cat > "$OUT_FILE" <<EOF
@@ -431,14 +540,13 @@ proxies:
     uuid: $uuid
     password: $pass
     sni: $domain
-    congestion-controller: bbr
-    udp-relay-mode: native
+$(render_tuic_proxy_opts)
     skip-cert-verify: true
     alpn:
       - h3
 EOF
 
-    echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#TUICv5-$num" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$num" > "$SHARE_FILE"
 }
 
 # ================================
@@ -512,7 +620,7 @@ main_menu() {
         echo "5) 导出所有节点订阅"
         echo "0) 退出配置"
 
-        read -r -p "选择: " c
+        read -r -p "选择: " c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
 
         case "$c" in
             1) list_configs ;;
@@ -524,7 +632,7 @@ main_menu() {
             *) print_error "无效选项" ;;
         esac
 
-        read -r -p "回车继续..." _
+        read -r -p "回车继续..." _ || break
     done
 }
 

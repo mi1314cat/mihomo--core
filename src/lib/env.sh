@@ -35,6 +35,10 @@ mkdir -p "$SRV_CONFIGD" "$SRV_CERTS" "$SRV_OUT"
 OCS_RAW="https://github.com/mi1314cat/One-click-script/raw/refs/heads/main"
 OCS_PROXY="https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/One-click-script/raw/refs/heads/main"
 
+# 需要下载执行的第三方脚本统一落在这里 (domains.sh / ssl.sh ...)。
+# 不再散落到 /tmp 或进程替换里, 便于排查与清理。
+CFMGR_DIR="${CFMGR_DIR:-/root/catmi/mihomo/scripts}"
+
 # curl 取远程脚本: 依次尝试 直连 → 代理 → 失败返回非 0
 fetch_remote() {
     local path="$1"
@@ -44,6 +48,40 @@ fetch_remote() {
         cat "$out"; rm -f "$out"; return 0
     fi
     rm -f "$out"; return 1
+}
+
+# fetch_script <仓库相对路径> <目标文件>
+#
+# 下载一个**要被执行**的脚本到本地文件。
+#
+# 为什么不用 `bash <(curl ...)`:
+#   1. 进程替换会把 curl 的管道 fd 交给 bash 读, 一旦 curl 慢/不通,
+#      bash 会在该 fd 上自旋不退出 —— 实测表现为面板卡死且吃满 CPU。
+#   2. `curl -fsSL` 不带 --max-time 时没有任何上界, 网络异常就是无限期挂起。
+#   3. 进程替换拿不到退出码, 失败也无从判断。
+#
+# 这里统一: 先落到文件 → 校验非空且像 shell 脚本 → 调用方再执行。
+fetch_script() {
+    local path="$1" dest="$2"
+    local tmp="${dest}.part"
+    mkdir -p "$CFMGR_DIR" "$(dirname "$dest")"
+    local base
+    for base in "$OCS_RAW" "$OCS_PROXY"; do
+        rm -f "$tmp"
+        if curl -fsSL --max-time 30 "$base/$path" -o "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
+            # 极简健全性检查: 不是 shell 脚本就别执行
+            if head -c 2 "$tmp" | grep -q '#!'; then
+                mv -f "$tmp" "$dest"
+                chmod +x "$dest" 2>/dev/null
+                return 0
+            fi
+            print_warn "下载内容不像可执行脚本, 已丢弃: $path"
+            rm -f "$tmp"
+            return 1
+        fi
+    done
+    rm -f "$tmp"
+    return 1
 }
 
 # =============================================================
@@ -70,6 +108,111 @@ m_load_env() {
         printf -v "$k" '%s' "$v"
     done < <(python3 "$ENVTOOL" load "$file")
     return 0
+}
+
+# =============================================================
+# 自签证书兜底与客户端接入地址
+#
+# 以前没有证书/没填域名时, 兜底是 generate_cert "cloudflare.com"。
+# 后果实测过: 生成的客户端配置是 server: cloudflare.com + Host: cloudflare.com,
+# 面板一路绿灯, 但客户端连的是真正的 cloudflare.com, 和这台服务器毫无关系 ——
+# 一个完全不可用、却显示成功的死节点。
+#
+# 现在改用 RFC 2606 保留 TLD (.invalid 永不解析) 作哨兵, 并且客户端一律回落到
+# 服务器真实 IP, 保证自签节点也是"能连上的", 只是没有可信任的证书身份。
+# =============================================================
+M_NO_DOMAIN="self-signed.invalid"
+
+m_client_host() {
+    local cert_domain="${1:-}"
+    if [[ -n "$cert_domain" && "$cert_domain" != "$M_NO_DOMAIN" && "$cert_domain" != "cloudflare.com" ]]; then
+        printf '%s' "$cert_domain"
+        return
+    fi
+    # 只有自签证书时必须落到真实地址。
+    # SERVER_IP 由调用方探测后设置, 但 env.sh 本身不定义它 —— 在 set -u 下
+    # 直接引用会"unbound variable"秒杀整个脚本, 所以这里用 :- 兜底并就地探测。
+    if [[ -n "${SERVER_IP:-}" ]]; then
+        printf '%s' "$SERVER_IP"
+        return
+    fi
+    m_server_ip 2>/dev/null || printf ''
+}
+
+# =============================================================
+# WS / gRPC 路径
+#
+# 路径在这里是**安全参数**而不是装饰: 内核侧就是普通的路径匹配
+# (listener/inbound 的 ws-path), 路径越短越容易被扫到。
+# 之前允许用户随手输入 "/1" 这种, 面板不提示、也不拦。
+# =============================================================
+M_MIN_WS_PATH_LEN=8
+
+m_check_ws_path() {
+    local p="${1:-}"
+    [[ -z "$p" ]] && { print_error "路径不能为空"; return 1; }
+    [[ "$p" == /* ]] || p="/$p"
+    if [[ "${#p}" -lt "$M_MIN_WS_PATH_LEN" ]]; then
+        print_error "路径太短 (${#p} 字符), 至少 $M_MIN_WS_PATH_LEN 个; 短路径容易被扫描命中"
+        return 1
+    fi
+    case "$p" in
+        *[[:space:]]*) print_error "路径不能包含空格"; return 1 ;;
+        *"?"*|*"#"*) print_error "路径不能包含 ? 或 # (分享链接里会被截断)"; return 1 ;;
+    esac
+    printf "%s" "$p"
+}
+
+# =============================================================
+# 端口校验
+#
+# 拒绝 1-1023 特权段以及一批系统常用端口。
+# 之前六份 safe_read_port 都写成 `port >= 1 && port <= 65535`,
+# 实测直接把端口填成 2, 面板就以 root 身份把节点绑了上去, 全程零提示。
+# 顶掉 sshd / rsyslog / 名字服务这类端口的后果是「面板还在、机器连不上」。
+# =============================================================
+M_BLOCKED_PORTS="22 23 25 53 67 68 69 80 110 111 123 135 137 138 139 143 161 162 389 443 445 465 514 587 631 636 993 995 1194 1433 1521 2049 3306 3389 5432 5900 6379 8443 9200 11211 27017"
+
+m_port_allowed() {
+    local p="$1"
+    [[ "$p" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; return 1; }
+    (( p >= 1024 && p <= 65535 )) || {
+        print_error "端口必须在 1024-65535 之间 (1-1023 是特权端口, 会顶掉 sshd 等系统服务)"
+        return 1
+    }
+    local b
+    for b in $M_BLOCKED_PORTS; do
+        if [[ "$p" == "$b" ]]; then
+            print_error "端口 $p 是系统常用端口, 请换一个"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# 端口是否已被占用 (TCP + UDP 都要查 —— QUIC 节点只看 TCP 会漏)
+m_port_in_use() {
+    ss -tulHn 2>/dev/null | awk '{print $5}' | grep -oE '[0-9]+$' | grep -qx "$1"
+}
+
+# m_safe_read_port <默认值> —— 六个协议脚本共用的端口提问
+m_safe_read_port() {
+    local default="$1" input port
+    while true; do
+        printf "请输入监听端口 (默认: %s): " "$default" >&2
+        # stdin 已关闭 (EOF) 必须退出, 否则这里会变成吃满 CPU 的死循环
+        read input || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; return 1; }
+        input=$(printf '%s' "$input" | tr -d '\000-\037' | tr -d '[:space:]')
+        port="${input:-$default}"
+
+        m_port_allowed "$port" || continue
+        if m_port_in_use "$port"; then
+            print_error "端口 $port 已被占用, 换一个"
+            continue
+        fi
+        printf '%s' "$port"
+        return 0
+    done
 }
 
 # =============================================================

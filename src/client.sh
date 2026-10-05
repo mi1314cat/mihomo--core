@@ -533,9 +533,10 @@ client_menu() {
         echo "7) 配置检查"
         echo "8) 节点测速"
         echo "9) 客户端设置 (端口 / 绑定 / 面板密钥)"
+        echo "10) 分享订阅 (把我的节点发给别人)"
         echo "0) 退出"
         printf "\n请选择: "
-        local c; read -r c
+        local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         case "$c" in
             1) apply_change ;;
             2) node_add ;;
@@ -546,11 +547,72 @@ client_menu() {
             7) check_menu ;;
             8) node_test ;;
             9) settings_menu ;;
+            10) cli_share_menu ;;
             0) exit 0 ;;
             *) print_error "无效选项" ;;
         esac
-        printf "\n按回车继续..."; read -r
+        printf "\n按回车继续..."; read -r || break
     done
+}
+
+# =============================================================
+# 分享订阅
+#
+# 把本机已经导入的节点 (proxy-providers) 生成带 token 的分享链接,
+# 发给别人后对方可直接作为 proxy-provider 消费。
+#
+# 与服务端 share 的差别:
+#   服务端节点来自 out/*_client-*.yaml
+#   客户端节点来自 conf/providers/*.yaml  —— 所以要传 SHARE_PROVIDERS_DIR
+#
+# 注意 SRV_ROOT 必须显式指向 CLI_ROOT。share.sh 的默认值是 /root/catmi/mihomo,
+# 而客户端机器上那个路径可能存在但是**别的项目**的目录, 不指过去会发布错配置。
+# =============================================================
+cli_share_menu() {
+    print_title "分享订阅"
+
+    if [[ ! -d "$CLI_PROVIDERS" ]]; then
+        print_error "没有 provider 目录: $CLI_PROVIDERS"
+        print_info "请先通过「添加节点」导入订阅或分享链接"
+        return 1
+    fi
+
+    local n
+    n=$(ls -1 "$CLI_PROVIDERS"/*.yaml 2>/dev/null | wc -l)
+    if [[ "$n" -eq 0 ]]; then
+        print_error "provider 目录为空, 没有可分享的节点"
+        return 1
+    fi
+    print_info "本机有 $n 份 provider, 可分别生成分享链接"
+
+    export SRV_ROOT="$CLI_ROOT"
+    export SRV_OUT="$CLI_ROOT/out"
+    export SRV_CONF="$CLI_CONF"
+    export SRV_SERVICE="$CLI_SERVICE"
+    export SRV_ENV="$CLI_ROOT/install_info.env"
+    export SHARE_DIR="$CLI_ROOT/share"
+    # 客户端用独立的服务名和端口, 避免与服务器端混淆或撞端口
+    export SHARE_SERVICE="mihomo-client-share"
+    export SHARE_PORT="${CLI_SHARE_PORT:-9444}"
+    export SHARE_PROVIDERS_DIR="$CLI_PROVIDERS"
+
+    # share 模块按需加载。
+    # 注意: 这里必须用带命名空间的名字 (cli_share_menu) 调本函数。
+    # share.sh 自己就定义了 share_menu, 若同名, declare -F 会因为"本函数已存在"
+    # 而恒为真 → source 永远不执行 → 末尾裸调用 share_menu 调到自己 → 无限递归。
+    if ! declare -F share_menu >/dev/null 2>&1; then
+        local _here share_sh
+        _here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+        share_sh="$_here/share/share.sh"
+        if [[ ! -f "$share_sh" ]]; then
+            print_error "缺少 share 模块: $share_sh"
+            print_info "请重新运行安装脚本补齐文件"
+            return 1
+        fi
+        # shellcheck source=/dev/null
+        source "$share_sh" || { print_error "share 模块加载失败"; return 1; }
+    fi
+    share_menu
 }
 
 svc_menu() {

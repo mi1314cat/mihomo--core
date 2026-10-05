@@ -15,7 +15,15 @@
 #   bash all.sh                    # 自动检测证书, 生成全部
 #   bash all.sh --no-tls           # 跳过所有需要证书的协议
 #   bash all.sh --only reality,trojan,hysteria2
+#   bash all.sh --fp firefox       # 换 client-fingerprint (默认 chrome)
 #   bash all.sh --dry-run          # 只看会生成什么, 不落盘
+#
+# 记录过: 交互提问 + 应答串重放必然整体错位):
+#   CLIENT_FP=chrome|firefox|safari|edge|ios|android|random   (等价于 --fp)
+#   XHTTP_MODE=auto|stream-one|stream-up|packet-up             (默认 auto)
+#   XHTTP_PAD=std|strong|max                                   (默认 std)
+#   VMESS_PAD=0|1              VMess 客户端 global-padding 等 (默认 1)
+#   ALL_PORT_BASE=20000        端口扫描起点
 # =============================================================
 set -uo pipefail
 
@@ -43,17 +51,80 @@ err()   { printf "${RED}✗${RESET} %s\n" "$1" >&2; }
 DRY_RUN=0
 USE_TLS=1
 ONLY=""
+CLIENT_FP="${CLIENT_FP:-chrome}"
+# 打印本文件顶部那段用法注释 (从第 3 行到第一行 "# ====..." 为止)
+# 不能写死行号 —— 往用法说明里加一行, sed 的范围就悄悄截错。
+usage() { sed -n '3,/^# =\{10,\}/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --no-tls)  USE_TLS=0 ;;
         --only)    shift; ONLY="$1" ;;
-        -h|--help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --fp)      shift; CLIENT_FP="$1" ;;
+        -h|--help) usage; exit 0 ;;
         *) err "未知参数: $1"; exit 1 ;;
     esac
     shift
 done
+
+# =============================================================
+# client-fingerprint 校验 (必须在这里拦, 不能只靠内核)
+#
+# 内核对无法识别的指纹只打一条 log.Warnln 就**静默降级成原生 TLS**,
+# 没有任何报错 (component/tls/utls.go:56-59)。
+# 也就是说写错了: 面板全绿、-t 通过, 直到第一次真实握手才暴露 —— 正是
+# 枚举取 spec §2.3.1, 故意不暴露 5 个已标 deprecated 的历史指纹。
+# =============================================================
+M_FP_VALUES="chrome firefox safari edge ios android random"
+valid_fp() {
+    local v
+    for v in $M_FP_VALUES; do [[ "$1" == "$v" ]] && return 0; done
+    return 1
+}
+if ! valid_fp "$CLIENT_FP"; then
+    err "不支持的 client-fingerprint: $CLIENT_FP"
+    err "可用: $M_FP_VALUES"
+    err "(内核对未知值只会静默降级为原生 TLS, 所以在这里直接拒绝)"
+    exit 1
+fi
+
+# =============================================================
+# XHTTP 抗探测档位 (批量只认环境变量, 不做任何交互提问)
+#
+#   std     : 只调 bytes 区间, obfs 关 —— 内核本身就有默认 padding
+#             (transport/xhttp/xpadding.go:180-186, 默认 "100-1000")
+#   strong  : 开 x-padding-obfs-mode, padding 变成可解码的混淆流量
+#   max     : strong + session/seq 挪到 header, URL 长度不再抖动
+#
+# mode 取值必须 proxy / listener 两侧都合法:
+#   proxy     只认 stream-one / stream-up / packet-up (transport/xhttp/client.go:247-251)
+#   listener  认 auto / stream-up / stream-one / packet-up (listener/sing_vless/server.go:201-205)
+#   => 取交集 auto 最稳 (两侧都放行, server 侧 auto 三条路径全开, server.go:191-225)
+# =============================================================
+XHTTP_MODE="${XHTTP_MODE:-auto}"
+XHTTP_PAD="${XHTTP_PAD:-std}"
+XHTTP_PAD_HEADER="X-Pad"; XHTTP_PAD_METHOD="tokenish"
+case "$XHTTP_MODE" in
+    auto|stream-one|stream-up|packet-up) ;;
+    *) err "XHTTP_MODE 非法: $XHTTP_MODE (auto / stream-one / stream-up / packet-up)"; exit 1 ;;
+esac
+XHTTP_PAD_BYTES="100-1000"; XHTTP_PAD_OBFS=0
+XHTTP_PAD_PLACEMENT="query"
+case "$XHTTP_PAD" in
+    std) ;;
+    strong) XHTTP_PAD_OBFS=1; XHTTP_PAD_BYTES="256-4096" ;;
+    max)    XHTTP_PAD_OBFS=1; XHTTP_PAD_BYTES="512-8192"; XHTTP_PAD_PLACEMENT="header" ;;
+    *) err "XHTTP_PAD 非法: $XHTTP_PAD (std / strong / max)"; exit 1 ;;
+esac
+# strong/max 档的 x-padding-key 是每个节点现场随机生成的 (见 render_xhttp_pad),
+# 所以这里只提前确认 openssl 在, 免得跑到一半才发现没工具
+if [[ "$XHTTP_PAD_OBFS" == "1" ]] && ! command -v openssl >/dev/null 2>&1; then
+    err "XHTTP_PAD=$XHTTP_PAD 需要 openssl 生成 x-padding-key, 当前环境找不到"; exit 1
+fi
+
+# VMess 客户端 padding 开关 (proxy-only, 见 g_vmess_ws 注释)
+VMESS_PAD="${VMESS_PAD:-1}"
+case "$VMESS_PAD" in 0|1) ;; *) err "VMESS_PAD 只能是 0 或 1"; exit 1 ;; esac
 
 # =============================================================
 # 端口分配: 从 20000 起找一个没被占用的
@@ -103,14 +174,24 @@ next_port() {
 
 next_index() {  # next_index <proto>
     local proto="$1" i=1
-    shopt -s nullglob
     while (( i < 100 )); do
-        local f; printf '%s\n' "$CONF_DIR/$proto-$(printf '%02d' $i).yaml" | grep -qxF "$CONF_DIR/$proto-$(printf '%02d' $i).yaml" || true
-        f=$(printf '%s/%s-%02d.yaml' "$CONF_DIR" "$proto" "$i")
+        local f; f=$(printf '%s/%s-%02d.yaml' "$CONF_DIR" "$proto" "$i")
         [[ -f "$f" ]] || { printf '%02d' "$i"; return; }
         i=$((i + 1))
     done
     printf '01'
+}
+
+# count_indexed <proto> —— 统计 <proto>-NN.yaml 已有多少个
+#
+# 不能写成 `ls "$CONF_DIR/$proto-"*.yaml`: proto=vless 时这个 glob 会把
+# vless-ws-01.yaml / vless-wss-02.yaml 也数进去, 序号就会算错。
+count_indexed() {
+    local proto="$1" i n=0
+    for i in $(seq 1 99); do
+        [[ -f "$(printf '%s/%s-%02d.yaml' "$CONF_DIR" "$proto" "$i")" ]] && n=$((n + 1))
+    done
+    printf '%s' "$n"
 }
 
 # =============================================================
@@ -209,6 +290,26 @@ record() {  # record <协议> <端口> <状态> <说明>
     RESULTS+=("$1|$2|$3|$4")
 }
 
+ALL_GEN_IDS="reality trojan trojan-tls vless vless-ws xhttp xhttp-tls vmess hysteria2 tuicv5 anytls ss snell"
+
+# --only 的 token 必须能对上真实标识符。原来的 want() 对不匹配的 token 静默
+# 返回 false, 于是 `--only tuic` (真名 tuicv5) 会安静地什么都不生成,
+# 汇总还显示"成功 2", 用户完全看不出来自己漏了一个协议。
+check_only_tokens() {
+    local t miss=()
+    local IFS=,
+    for t in $ONLY; do
+        [[ -z "$t" ]] && continue
+        [[ " $ALL_GEN_IDS " == *" $t "* ]] || miss+=("$t")
+    done
+    unset IFS
+    if (( ${#miss[@]} )); then
+        err "无法识别的协议标识: ${miss[*]}"
+        err "可用: $ALL_GEN_IDS"
+        return 1
+    fi
+}
+
 want() {  # 是否选中该协议
     [[ -z "$ONLY" ]] && return 0
     [[ ",$ONLY," == *",$1,"* ]]
@@ -231,6 +332,14 @@ gen() {
         record "$label" "-" "跳过" "无 Reality 密钥"; return
     fi
 
+    # 幂等: 已存在的同名节点**一律不覆盖**, 本次接着往后排新序号。
+    # 这与原有行为一致 (next_index 永远返回第一个空位), 只是现在明确讲出来,
+    # 不然"我明明选了 Trojan, 为什么列表里多了一个 Trojan-02"没人说得清。
+    local n_exist; n_exist=$(count_indexed "$proto")
+    if [[ "$n_exist" != "0" ]]; then
+        info "$label: 已有 $n_exist 个同名节点, 本次**追加**新序号 (不覆盖已有配置)"
+    fi
+
     local idx port
     idx=$(next_index "$proto")
     port=$(next_port "$PORT_BASE") || { record "$label" "-" "失败" "无可用端口"; return; }
@@ -244,14 +353,70 @@ gen() {
         return
     fi
 
-    if "$body" "$idx" "$port" "$in_file" "$out_file"; then
+    # 生成器失败**不中断整批** (脚本没有 set -e, 这里是显式的 if/else),
+    # 但必须: ① 留下失败原因; ② 清掉自己写了一半的文件 ——
+    # 半份 YAML 留在 config.d/ 里会让末尾 m_sync_reload 整体校验失败,
+    # 前提是 next_index 保证 in_file/out_file 本来不存在, 所以 rm 不会误伤旧配置。
+    local logf why
+    logf=$(mktemp)
+    if "$body" "$idx" "$port" "$in_file" "$out_file" 2>"$logf"; then
         record "$label" "$port" "成功" ""
     else
-        record "$label" "$port" "失败" "生成器返回非 0"
+        why=$(tail -2 "$logf" | awk 'NF && !seen[$0]++' | tr '\n' ' ' | cut -c1-100)
+        rm -f "$in_file" "$out_file"
+        record "$label" "$port" "失败" "${why:-生成器返回非 0}"
     fi
+    rm -f "$logf"
 }
 
 # ---------- 各协议模板 ----------
+
+# =============================================================
+# xhttp 抗探测字段 —— **一份字符串同时喂两侧**
+#
+# listener 的 xhttp-config (listener/inbound/vless.go:42-47) 与
+# proxy   的 xhttp-opts    (adapter/outbound/vless.go:99-104)
+# 字段同名同义, 这里靠"只渲染一次"来保证逐字段一致 —— 手写两份迟早漂移。
+#
+# 铁律: x-padding-key / x-padding-header **只在 x-padding-obfs-mode: true
+#       时才生效** (transport/xhttp/config.go:502-509), 且两侧必须一致,
+#       否则客户端发的 padding 服务端解不开, 直接连不上。
+# 放置位置枚举 queryInHeader/cookie/header/query/path/body/auto
+#       (transport/xhttp/config.go:21-29)
+# 生成方法 repeat-x / tokenish (transport/xhttp/xpadding.go:16-18)
+# =============================================================
+render_xhttp_pad() {
+    XHTTP_PAD_FIELDS="      x-padding-bytes: \"$XHTTP_PAD_BYTES\""
+    if [[ "$XHTTP_PAD_OBFS" == "1" ]]; then
+        # 每个节点现场生成一份独立的 key/session/seq。
+        # 同一把钥匙开所有节点 = 一个可关联特征, 批量生成时尤其明显。
+        # base64(12 字节) 恰好 16 字符且无 '=' 填充, 再把 +/ 换成 URL 安全字符。
+        local k sk qk
+        k=$(openssl rand -base64 12 2>/dev/null | tr '+/' '-_')
+        if [[ -z "$k" ]]; then
+            # 拿不到 key 就退回 std 档 —— 半份配置带空 key 比不带更糟。
+            # 两侧共用同一份渲染结果, 所以退回后依然是一致的。
+            warn "生成 x-padding-key 失败, 本节点退回 std 档 (无 obfs padding)"
+            return 0
+        fi
+        XHTTP_PAD_FIELDS="${XHTTP_PAD_FIELDS}
+      x-padding-obfs-mode: true
+      x-padding-key: \"$k\"
+      x-padding-header: $XHTTP_PAD_HEADER
+      x-padding-placement: $XHTTP_PAD_PLACEMENT
+      x-padding-method: $XHTTP_PAD_METHOD"
+        if [[ "$XHTTP_PAD" == "max" ]]; then
+            sk=$(openssl rand -base64 12 2>/dev/null | tr '+/' '-_')
+            qk=$(openssl rand -base64 12 2>/dev/null | tr '+/' '-_')
+            XHTTP_PAD_FIELDS="${XHTTP_PAD_FIELDS}
+      session-placement: header
+      session-key: $sk
+      seq-placement: header
+      seq-key: $qk"
+        fi
+    fi
+}
+
 g_reality() {
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
@@ -287,7 +452,7 @@ proxies:
     reality-opts:
       public-key: $PUBLIC_KEY
       short-id: $SHORT_ID
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FP
 EOF
 }
 
@@ -322,7 +487,7 @@ proxies:
     reality-opts:
       public-key: $PUBLIC_KEY
       short-id: $SHORT_ID
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FP
 EOF
 }
 
@@ -416,8 +581,147 @@ proxies:
 EOF
 }
 
+# =============================================================
+# VLESS + XHTTP
+#
+# 为什么明文 + 随机端口的 XHTTP **也能跑通** (逐条源码依据):
+#   1. listener 侧 xhttp 只是一个挂在 httpServer 上的 HTTP handler;
+#      整个 listener 对所有传输一视同仁地只做 listen(port) 再决定要不要套 TLS:
+#      listener/sing_vless/server.go:257-278。**内核从不校验端口必须是 443。**
+#   2. 套不套 TLS 由 security mode 决定; 明文 VLESS 只要显式 allow-insecure
+#      就放行, 与 WS 完全同一条路径: server.go:275-277。
+#   3. handler 的注册条件是 xhttp-config 的 path/host/mode 任一非空
+#      (server.go:207-256), 明文同样注册, 并且明文 HTTP/2 (h2c) 也开了
+#      (server.go:249)。
+#   4. 客户端侧: tls:false 时 streamTLSConn 原样返回裸 conn
+#      (adapter/outbound/vless.go:337), xhttp 走的是同一个包装函数
+#      (vless.go:673-675), 所以明文 xhttp 端到端成立。
+#   结论: 沿用本脚本既有的 "公网 IP + 随机端口" 写法即可, 不必强行 443。
+#   ⚠️ 但要讲清代价: XHTTP 的价值在于"看起来就是普通 HTTP/1.1 站点",
+#      跑在高位明文端口 + IP 直连时, 既没有 TLS 指纹也没有 CDN 前置,
+#      抗探测收益远低于 443 + 域名 + 证书 + CDN。批量默认出**明文 + TLS 两个**,
+#      真要上线请优先用 xhttp-tls 那个并配好域名。
+# =============================================================
+g_vless_xhttp() {
+    # 路径过短容易被扫到, 借 env.sh 的共享校验过一道 (>=8 字符, 见 M_MIN_WS_PATH_LEN)
+    local path; path=$(m_check_ws_path "/xhttp$1") || return 1
+    render_xhttp_pad
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VLESS + XHTTP (明文)
+listeners:
+  - name: vless-xhttp-$1
+    type: vless
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+    # listener 侧**没有** network 字段, 传输方式靠 xhttp-config 是否非空判定
+    # (listener/inbound/vless.go:17; listener/sing_vless/server.go:207)
+    xhttp-config:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+    # 与明文 WS 同一条约束: 不写 allow-insecure, 内核拒绝启动
+    # "disallow using Vless without any certificates/..." (server.go:275-277)
+    allow-insecure: true
+EOF
+    cat > "$4" <<EOF
+# 由 all.sh 一键生成 · VLESS + XHTTP (明文) 客户端
+proxies:
+  - name: VLESS-XHTTP-$1
+    type: vless
+    server: $XHTTP_CLIENT_HOST
+    port: $2
+    uuid: $UUID
+    network: xhttp
+    tls: false
+    udp: true
+    # xhttp-opts 与 listener 的 xhttp-config **逐字段一致** (同一份字符串渲染)
+    xhttp-opts:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+EOF
+}
+
+g_vless_xhttp_tls() {
+    local path; path=$(m_check_ws_path "/xhttps$1") || return 1
+    render_xhttp_pad
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VLESS + XHTTP + TLS
+listeners:
+  - name: vless-xhttps-$1
+    type: vless
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+    xhttp-config:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+    certificate: $CRT
+    private-key: $KEY
+EOF
+    cat > "$4" <<EOF
+# 由 all.sh 一键生成 · VLESS + XHTTP + TLS 客户端
+proxies:
+  - name: VLESS-XHTTPS-$1
+    type: vless
+    server: $XHTTP_CLIENT_HOST
+    port: $2
+    uuid: $UUID
+    network: xhttp
+    tls: true
+    udp: true
+    skip-cert-verify: true
+    servername: $SNI
+    # uTLS ClientHello 伪装。XHTTP 把握手指纹做在 HTTP 握手层,
+    # 这里给真实浏览器指纹才有意义 (明文 xhttp 用不上, 故明文那版不写)。
+    client-fingerprint: $CLIENT_FP
+    # xhttp-opts 与 listener 的 xhttp-config **逐字段一致** (同一份字符串渲染)
+    xhttp-opts:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+EOF
+}
+
+# =============================================================
+# VMess: global-padding / authenticated-length
+#
+# 结论: **只写客户端 (proxy) 一侧**, listener 侧写不了也不该写 ——
+#   字段定义只在 adapter/outbound/vmess.go:86-87;
+#   listener 的 VmessOption (listener/inbound/vmess.go:12-30) 根本没有这两个字段,
+#   写上去内核会静默忽略 (common/structure 只对"缺无 omitempty 的字段"报错,
+#   多写的键一律不报, docs/PROTOCOL-OPTIONS-SPEC.md §3.3)。
+#   所以它们纯粹是**客户端出站行为**, 作用在加密流上, 与本脚本写的监听端无关。
+#
+# ⚠️ 对端警告 (必须让用户知道):
+#   这是客户端行为, **对端也需支持, 否则可能握手失败**。
+#   实现在外部库 sing-vmess, 本机源码里只有两个 ClientWith* 入口
+#   (adapter/outbound/vmess.go:478-483), 对端解码逻辑查不到。
+#   本项目生成的节点两端都是 mihomo, 所以默认开 (VMESS_PAD=1);
+#   若要把 out/ 里的客户端配置喂给非 mihomo 客户端, 请 VMESS_PAD=0 重新生成。
+#
+# alterId 保持 0: mihomo 内核既无废弃标记也无拒绝逻辑, 纯透传
+# (adapter/outbound/vmess.go:59), 0 是唯一安全值。
+#   ⚠️ alterId 与 cipher 的 tag 都**没有** omitempty, 少写会被内核硬报
+#   "has unset fields: alterId" —— 这两个必须留在 proxy 侧 (spec §0.7)。
+# =============================================================
+vmess_pad_client_block() {
+    if [[ "$VMESS_PAD" == "1" ]]; then
+        VMESS_PAD_BLOCK="    # ↓ 客户端行为: 对端也需支持, 否则可能握手失败 (见上方注释)
+    global-padding: true
+    authenticated-length: true"
+    else
+        VMESS_PAD_BLOCK="    # VMESS_PAD=0: 本次未开 global-padding / authenticated-length"
+    fi
+}
+
 g_vmess_ws() {
     local path="/vm$1"
+    vmess_pad_client_block
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
@@ -427,21 +731,28 @@ listeners:
     port: $2
     users:
       - uuid: $UUID
+        # alterId: 0 是唯一安全值 (adapter/outbound/vmess.go:59)
         alterId: 0
     ws-path: $path
+    # 注意: global-padding / authenticated-length 在 listener 上**不存在**
+    # (listener/inbound/vmess.go:12-30), 它们只属于客户端, 理由见本函数上方注释。
 EOF
     cat > "$4" <<EOF
+# 由 all.sh 一键生成
 proxies:
   - name: VMess-WS-$1
     type: vmess
     server: $PUBLIC_IP
     port: $2
     uuid: $UUID
+    # ⚠️ alterId / cipher 的 tag 无 omitempty, 漏写内核直接报 unset fields
+    # (adapter/outbound/vmess.go:59-60)
     alterId: 0
     cipher: auto
     network: ws
     tls: false
     udp: true
+${VMESS_PAD_BLOCK}
     ws-opts:
       path: $path
 EOF
@@ -531,7 +842,7 @@ proxies:
     sni: $SNI
     skip-cert-verify: true
     udp: true
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FP
 EOF
 }
 
@@ -590,6 +901,8 @@ printf "${MAGENTA}${BOLD}╔═════════════════�
 printf "║  一键生成全协议节点                              ║\n"
 printf "╚══════════════════════════════════════════════╝${RESET}\n"
 
+# 所有函数已定义后再校验 --only, 否则 bash 会在定义前调用
+check_only_tokens || exit 1
 ensure_env
 ensure_reality
 m_pick_dest "${dest_server:-}" >/dev/null 2>&1 || true
@@ -597,7 +910,8 @@ m_pick_dest "${dest_server:-}" >/dev/null 2>&1 || true
 
 CRT=""; KEY=""; SNI=""
 if [[ "$USE_TLS" == "1" ]]; then
-    local pair; pair=$(find_cert)
+    # 这里已经在函数外, 写 local 会报 "can only be used in a function"
+    pair=$(find_cert)
     if [[ -n "$pair" ]]; then
         IFS=$'\t' read -r CRT KEY SNI <<<"$pair"
     fi
@@ -610,6 +924,17 @@ PUBLIC_IP=$(m_server_ip)
 [[ -z "$PUBLIC_IP" ]] && { err "拿不到对外地址, 请先在 install_info.env 里设置 PUBLIC_IP"; exit 1; }
 info "对外地址: $PUBLIC_IP"
 
+# m_client_host() 在证书域名不可用时回落 **$SERVER_IP** (src/lib/env.sh:126-133),
+# 而本脚本统一用的是 PUBLIC_IP —— 不先把 SERVER_IP 补上, 走到那个回落分支时
+# `set -u` 会直接报 "SERVER_IP: unbound variable" 把整批脚本干掉。
+SERVER_IP="$PUBLIC_IP"
+# M_NO_DOMAIN / "cloudflare.com" 这类哨兵域名在这里会被 m_client_host 换成 IP;
+# 另外再兜一层"看起来不像域名"的判断, 防止证书文件名推出来的伪域名
+# (env.sh:113-123 记录过: 客户端连的是别人的站点、面板却全绿的假节点)。
+XHTTP_CLIENT_HOST=$(m_client_host "$SNI")
+[[ "$XHTTP_CLIENT_HOST" =~ ^[A-Za-z0-9._-]+\.[A-Za-z]{2,}$ ]] || XHTTP_CLIENT_HOST="$PUBLIC_IP"
+info "XHTTP 客户端地址: $XHTTP_CLIENT_HOST (xhttp 的 Host 头直接取自这里)"
+
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERTS_DIR"
 collect_used_ports
 
@@ -619,6 +944,8 @@ gen trojan         "Trojan+Reality" 1 0 g_trojan_reality
 gen trojan-tls     "Trojan+TLS"     0 1 g_trojan_tls
 gen vless          "VLESS+WS"       0 0 g_vless_ws
 gen vless-ws       "VLESS+WS+TLS"   0 1 g_vless_ws_tls
+gen xhttp          "VLESS+XHTTP"      0 0 g_vless_xhttp
+gen xhttp-tls      "VLESS+XHTTP+TLS"  0 1 g_vless_xhttp_tls
 gen vmess          "VMess+WS"       0 0 g_vmess_ws
 gen hysteria2      "Hysteria2"      0 1 g_hysteria2
 gen tuicv5         "TUIC v5"        0 1 g_tuicv5
@@ -630,17 +957,44 @@ gen snell          "Snell"          0 0 g_snell
 printf "\n${BOLD}生成结果${RESET}\n"
 printf "  %-18s %-8s %-8s %s\n" "协议" "端口" "状态" "备注"
 printf "  %s\n" "────────────────────────────────────────────────────"
-local_fail=0
+local_fail=0 n_ok=0 n_skip=0 n_prev=0
 for r in "${RESULTS[@]}"; do
     IFS='|' read -r p port st note <<<"$r"
     case "$st" in
-        成功) stc="${GREEN}${st}${RESET}" ;;
-        预览) stc="${CYAN}${st}${RESET}" ;;
+        成功) stc="${GREEN}${st}${RESET}"; n_ok=$((n_ok+1)) ;;
+        预览) stc="${CYAN}${st}${RESET}"; n_prev=$((n_prev+1)) ;;
         失败) stc="${RED}${st}${RESET}"; local_fail=$((local_fail+1)) ;;
-        *)    stc="${YELLOW}${st}${RESET}" ;;
+        *)    stc="${YELLOW}${st}${RESET}"; n_skip=$((n_skip+1)) ;;
     esac
     printf "  %-18s %-8s %-18b %s\n" "$p" "$port" "$stc" "$note"
 done
+
+#
+# 只在表尾打一行计数不够 —— 用户真正要回答的问题是"少了什么、为什么少"。
+# 所以跳过项与失败项各自再列一遍明细, 失败项带上生成器 stderr 的尾部。
+printf "\n${BOLD}汇总${RESET}  "
+if [[ "$n_prev" -gt 0 ]]; then
+    printf "${CYAN}预览 %d${RESET} · " "$n_prev"
+fi
+# ⚠️ 颜色常量是字面量 "\033[32m" (bash 双引号里不解释 \033), 只有 printf 的
+# **格式串**才会把转义还原 —— 所以颜色必须留在格式串里, 不能当 %s 参数传。
+printf "${GREEN}成功 %d${RESET} · ${YELLOW}跳过 %d${RESET} · ${RED}失败 %d${RESET}\n" \
+    "$n_ok" "$n_skip" "$local_fail"
+
+if [[ "$n_skip" -gt 0 ]]; then
+    printf "${YELLOW}跳过明细${RESET}\n"
+    for r in "${RESULTS[@]}"; do
+        IFS='|' read -r p _ st note <<<"$r"
+        [[ "$st" == "跳过" ]] && printf "  · %-18s %s\n" "$p" "$note"
+    done
+fi
+if [[ "$local_fail" -gt 0 ]]; then
+    printf "${RED}失败明细${RESET} (这些协议没生成, 其余照常生效)\n"
+    for r in "${RESULTS[@]}"; do
+        IFS='|' read -r p port st note <<<"$r"
+        [[ "$st" == "失败" ]] && printf "  · %-18s 端口 %-6s %s\n" "$p" "$port" "$note"
+    done
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf "\n${YELLOW}预览模式, 未写入任何文件${RESET}\n"
@@ -648,10 +1002,15 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 # ---------- 统一校验 + 重载 ----------
-printf '\n${BOLD}校验并应用${RESET}\n'
+printf "\n${BOLD}校验并应用${RESET}\n"
 if m_sync_reload; then
-    n_ok=$(grep -c "成功" /dev/null 2>/dev/null || echo 0)
-    printf "\n${GREEN}${BOLD}全协议节点已生成并生效${RESET}\n"
+    if [[ "$local_fail" -eq 0 ]]; then
+        printf "\n${GREEN}${BOLD}全协议节点已生成并生效${RESET}\n"
+    else
+        # 有失败也照样重载: 成功的那些是好的, 回滚反而把它们一起弄没。
+        # 退出码仍非 0, 让调用方 (含 CI) 知道"这一批没全成"。
+        printf "\n${YELLOW}${BOLD}已生成并生效, 但有 %d 个协议失败 (见上面「失败明细」)${RESET}\n" "$local_fail"
+    fi
     printf "  配置目录: %s\n" "$CONF_DIR"
     printf "  分享内容: %s\n" "$OUT_DIR"
     printf "\n  下一步: 服务端面板 → 生成分享链接, 或直接\n"

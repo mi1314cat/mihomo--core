@@ -79,26 +79,206 @@ get_next_index() {
 random_port() { shuf -i 10000-60000 -n 1; }
 
 safe_read_port() {
-    local default="$1"
-    local input
+    # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
+    #   拒绝 1-1023 特权端口与系统常用端口, TCP/UDP 双查占用, EOF 安全退出。
+    m_safe_read_port "$1"
+}
 
+# ================================================================
+# 选配 (M 内核 / mihomo v1.19.32 特有字段)
+# 每条都标了内核源码位置; 没有源码依据的一律不做。
+# ================================================================
+
+# ---------- ① padding-scheme 抗主动探测填充 (★ 只有 listener 能配) ----------
+#   listener/inbound/anytls.go:24  inbound:"padding-scheme"
+#   消费点 listener/anytls/server.go:127-133
+#     ⚠ 格式错 → listener 启动直接失败: incorrect padding scheme format (:129)
+#     ⚠ 唯一硬要求: 必须有可 Atoi 的 stop=  (transport/anytls/padding/padding.go:51-55)
+#   ⚠ **proxy 侧没有这个字段** (adapter/outbound/anytls.go:27-51 全文),
+#     客户端无条件用内置默认 (transport/anytls/client.go:49-50);
+#     真实方案由服务端通过 cmdUpdatePaddingScheme 帧下发
+#     (transport/anytls/session/frame.go:14 + session/session.go:274-283)。
+#     → 所以这个选配**只在服务端生效**, 客户端不需要也不能配。
+#   键 = 十进制报文类型序号 (padding.go:60-61); 值 = 逗号分隔的 min-max 或字面量 c
+#     (:62-88); <=0 的项静默丢弃 (:77-79); min>max 自动交换 (:74-76)
+# 内置默认方案逐字抄自 transport/anytls/padding/padding.go:17-25
+ANYTLS_PADDING_DEFAULT="stop=8
+0=30-30
+1=100-400
+2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000
+3=9-9,500-1000
+4=500-1000
+5=500-1000
+6=500-1000
+7=500-1000"
+
+PADDING_BLOCK=""
+
+# 渲染 listener 侧 padding-scheme (YAML 块标量 |, 键缩进 4, 内容缩进 6)
+render_padding_block() {
+    local scheme="$1" line
+    [[ -n "$scheme" ]] || return 0
+    echo "    padding-scheme: |"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        echo "      $line"
+    done <<< "$scheme"
+    return 0
+}
+
+# 校验 scheme: 每行 k=v; v 为逗号分隔的 min-max 或 c; 必须含 stop=
+_validate_padding_scheme() {
+    local scheme="$1" line key val item has_stop=false
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        [[ "$line" == *=* ]] || { print_error "每行必须写成 k=v (例: stop=8), 收到: $line"; return 1; }
+        key="${line%%=*}"; val="${line#*=}"
+        [[ "$key" =~ ^[0-9]+$ || "$key" == "stop" ]] || {
+            print_error "键只能是 stop 或十进制报文序号 0..N, 收到: $key"; return 1; }
+        [[ "$key" == "stop" ]] && has_stop=true
+        for item in ${val//,/ }; do
+            if [[ "$item" != "c" && ! "$item" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
+                print_error "值只能写 数字 / 数字-数字 / 字面量 c, 收到: $item (在 $key 行)"
+                return 1
+            fi
+            if [[ "$item" =~ ^[0-9]+$ ]] && (( item <= 0 )); then
+                print_warn "$key=$item 会被内核静默丢弃 (padding.go:77-79)"
+            fi
+        done
+    done <<< "$scheme"
+    if [[ "$has_stop" != "true" ]]; then
+        print_error "必须有 stop=<整数>, 否则 listener 启动报 incorrect padding scheme format"
+        return 1
+    fi
+    return 0
+}
+
+ask_padding() {
+    PADDING_BLOCK=""
+    echo "  抗主动探测填充 padding-scheme (服务端侧选配):" >&2
+    echo "  ⚠ 只有 listener 能配这个字段; 客户端走内置默认, 真实方案由服务端协议帧下发。" >&2
+    echo "    (依据: listener/inbound/anytls.go:24 有; adapter/outbound/anytls.go:27-51 没有)" >&2
+    echo "  1) 不写 (内核默认, 推荐)" >&2
+    echo "  2) 显式写入内核默认 (行为一致, 只是配置里看得见)" >&2
+    echo "  3) 自定义 (每行 k=v, 必须含 stop=)" >&2
+    printf "  选择 (默认1): " >&2
+    local c="" scheme=""
+    read -r c || c=""
+    c=$(clean_input "$c")
+    case "$c" in
+        2)
+            scheme="$ANYTLS_PADDING_DEFAULT"
+            ;;
+        3)
+            print_info "逐行输入 k=v, 空行结束。键: stop 或报文序号; 值: min-max / c / 它们的逗号组合"
+            local line
+            while true; do
+                printf "    > " >&2
+                read -r line || { echo >&2; break; }
+                line=$(clean_input "$line")
+                line="${line#"${line%%[![:space:]]*}"}"
+                [[ -z "$line" ]] && break
+                scheme+="$line"$'\n'
+            done
+            _validate_padding_scheme "$scheme" || { print_error "自定义方案不合法, 已放弃 (不写该字段)"; return 0; }
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+    PADDING_BLOCK="$(render_padding_block "$scheme")"
+    return 0
+}
+
+# ---------- ② client-fingerprint (AnyTLS 是三个 QUIC 协议里唯一有这个字段的) ----------
+#   adapter/outbound/anytls.go:39
+#   取值表 component/tls/utls.go:78-101 (init() 动态追加 randomized, :103-111)
+#   ⚠ 未知值只 log.Warnln 并**静默降级成原生 TLS** (utls.go:56-59) —— 必须从枚举里选
+#   ⚠ 不暴露 deprecated 的 5 个 (chrome_psk 等, utls.go:94-99 注释已标 deprecated)
+#   ⚠ 'none'/空 = 关闭 uTLS 用原生 Go TLS (:43-45) —— 抗识别最差, 不进菜单
+CLIENT_FP="chrome"
+
+ask_fp() {
+    echo "  TLS 客户端指纹 client-fingerprint (抗 JA3/JA4 识别):" >&2
+    echo "  1) chrome (默认)" >&2
+    echo "  2) firefox" >&2
+    echo "  3) safari" >&2
+    echo "  4) edge" >&2
+    echo "  5) ios" >&2
+    echo "  6) android" >&2
+    echo "  7) random (每次启动加权随机: chrome6/safari3/ios2/firefox1)" >&2
+    printf "  选择 (默认1): " >&2
+    local c=""
+    read -r c || c=""
+    c=$(clean_input "$c")
+    case "$c" in
+        2) CLIENT_FP="firefox" ;;
+        3) CLIENT_FP="safari" ;;
+        4) CLIENT_FP="edge" ;;
+        5) CLIENT_FP="ios" ;;
+        6) CLIENT_FP="android" ;;
+        7) CLIENT_FP="random" ;;
+        *) CLIENT_FP="chrome" ;;
+    esac
+    return 0
+}
+
+# ---------- ③ idle-session-* 会话复用参数 (仅客户端) ----------
+#   adapter/outbound/anytls.go:47-48
+#   ⚠ <=5 秒会被内核**静默抬成 30 秒** (transport/anytls/session/client.go:50-55)
+#     → 菜单里只给 >= 6 的值
+IDLE_CHECK="30"
+IDLE_TIMEOUT="30"
+
+ask_idle() {
+    IDLE_CHECK="30"; IDLE_TIMEOUT="30"
     while true; do
-        printf "请输入监听端口 (默认: %s): " "$default" >&2
-        read input
-        input=$(clean_input "$input")
-        port="${input:-$default}"
-
-        [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
-        (( port >= 1 && port <= 65535 )) || { print_error "端口范围错误"; continue; }
-
-        ss -tuln | awk '{print $5}' | grep -E -q "(:|])$port$" && {
-            print_error "端口已占用"
-            continue
-        }
-
-        echo "$port"
-        return
+        printf "  空闲会话检查间隔 idle-session-check-interval 秒 (默认 30, 最小 6): " >&2
+        local v=""
+        read -r v || v=""
+        v=$(clean_input "$v")
+        [[ -z "$v" ]] && v="30"
+        [[ "$v" =~ ^[0-9]+$ ]] || { print_error "请输入正整数"; continue; }
+        (( v >= 6 )) || { print_error "必须 >= 6 秒 (小于等于 5 秒会被内核静默抬成 30 秒)"; continue; }
+        IDLE_CHECK="$v"
+        break
     done
+    while true; do
+        printf "  空闲会话超时 idle-session-timeout 秒 (默认 30, 最小 6): " >&2
+        local v=""
+        read -r v || v=""
+        v=$(clean_input "$v")
+        [[ -z "$v" ]] && v="30"
+        [[ "$v" =~ ^[0-9]+$ ]] || { print_error "请输入正整数"; continue; }
+        (( v >= 6 )) || { print_error "必须 >= 6 秒 (小于等于 5 秒会被内核静默抬成 30 秒)"; continue; }
+        IDLE_TIMEOUT="$v"
+        break
+    done
+    return 0
+}
+
+# 从子配置顶部的注释行读回仅客户端的选配
+read_client_opts() {
+    local f="$1" v=""
+    CLIENT_FP="chrome"
+    IDLE_CHECK="30"
+    IDLE_TIMEOUT="30"
+    v=$(grep -E '^[[:space:]]*# fp:' "$f" | head -1 | sed -E 's/.*# fp:[[:space:]]*//') || true
+    [[ -n "$v" ]] && CLIENT_FP="$v"
+    v=$(grep -E '^[[:space:]]*# idle:' "$f" | head -1 | sed -E 's/.*# idle:[[:space:]]*//') || true
+    if [[ -n "$v" ]]; then
+        IDLE_CHECK="${v%%/*}"
+        IDLE_TIMEOUT="${v#*/}"
+    fi
+    return 0
+}
+
+# 渲染仅客户端的选配块 (缩进 4, 与 add/rebuild/export/silent 四条路径共用)
+render_client_opts() {
+    echo "    client-fingerprint: $CLIENT_FP"
+    echo "    idle-session-check-interval: $IDLE_CHECK"
+    echo "    idle-session-timeout: $IDLE_TIMEOUT"
+    return 0
 }
 
 # ================================
@@ -262,17 +442,22 @@ add_config() {
         LINK_IP="$SERVER_IP"
     fi
 
-    # 7. 询问可选特性 (mTLS / smux)
+    # 7. 询问可选特性 (mTLS / smux / 指纹 / 空闲会话 / 服务端 padding)
     ask_features
     if $MTLS_ENABLED; then
         gen_mtls_cert "$index"
     fi
     render_smux
+    ask_fp
+    ask_idle
+    ask_padding
 
     # 8. 写入入站配置（Mihomo AnyTLS）
 cat > "$IN_FILE" <<EOF
 # mtls: $MTLS_ENABLED
 # smux: ${SMUX_PROFILE:-false}
+# fp: $CLIENT_FP
+# idle: $IDLE_CHECK/$IDLE_TIMEOUT
 listeners:
   - name: anytls-$index
     type: anytls
@@ -283,22 +468,20 @@ listeners:
     certificate: $CERT_FILE
     private-key: $KEY_FILE
 $([ "$MTLS_ENABLED" = true ] && printf '    client-auth-type: RequireAndVerifyClientCert\n    client-auth-cert: %s' "$MTLS_CA")
+$PADDING_BLOCK
 EOF
 
     # 9. 写入客户端配置（Clash Meta）
 cat > "$OUT_FILE" <<EOF
 proxies:
-  
   - name: anytls
     type: anytls
     server: $SERVER_IP
     port: $ANYTLS_PORT
     password: $PASSWORD
     sni: $DOMAIN
-    client-fingerprint: chrome
+$(render_client_opts)
     udp: true
-    idle-session-check-interval: 30
-    idle-session-timeout: 30
     skip-cert-verify: true
     alpn:
       - h2
@@ -308,7 +491,7 @@ $SMUX_BLOCK
 EOF
 
     # 10. 写入分享链接
-echo "anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$index" > "$SHARE_FILE"
+echo "anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$index" > "$SHARE_FILE"
 
     # 11. 输出信息
     print_ok "AnyTLS 配置生成成功"
@@ -317,6 +500,8 @@ echo "anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$in
     echo -e "UUID: $UUID" >&2
     echo -e "密码: $PASSWORD" >&2
     echo -e "SNI: $DOMAIN" >&2
+    echo -e "指纹: $CLIENT_FP | 空闲会话: ${IDLE_CHECK}s/${IDLE_TIMEOUT}s" >&2
+    [[ -n "$PADDING_BLOCK" ]] && echo -e "padding-scheme: 已显式写入 (仅服务端 listener 生效, 客户端由服务端帧下发)" >&2
     $MTLS_ENABLED && echo -e "mTLS: 已启用 (客户端证书: $CERT_DIR/mtls-$PROTO-$index/)" >&2
     [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
     echo -e "入站配置: $IN_FILE" >&2
@@ -418,6 +603,7 @@ rebuild_client() {
     DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
     read_features "$IN_FILE"
+    read_client_opts "$IN_FILE"
     render_smux
 
     SERVER_IP=$(m_server_ip)
@@ -435,7 +621,7 @@ proxies:
     port: $ANYTLS_PORT
     password: $PASSWORD
     sni: $DOMAIN
-    client-fingerprint: chrome
+$(render_client_opts)
     udp: true
     skip-cert-verify: true
     alpn:
@@ -445,7 +631,7 @@ $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key:
 $SMUX_BLOCK
 EOF
 
-    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$num2"
+    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     print_ok "客户端文件已重建：$num2"
@@ -476,6 +662,7 @@ export_subscription() {
         DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
         read_features "$f"
+        read_client_opts "$f"
         if $MTLS_ENABLED; then
             MTLS_CLIENT_CERT=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.pem")
             MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
@@ -484,7 +671,7 @@ export_subscription() {
         SERVER_IP=$(m_server_ip)
         [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
-        SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$num2"
+        SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
 
 cat >> "$SUB_FILE" <<EOF
 
@@ -497,9 +684,12 @@ cat >> "$SUB_FILE" <<EOF
     port: $ANYTLS_PORT
     password: $PASSWORD
     sni: $DOMAIN
-    client-fingerprint: chrome
+$(render_client_opts)
     udp: true
     skip-cert-verify: true
+    alpn:
+      - h2
+      - http/1.1
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 
@@ -532,6 +722,7 @@ rebuild_client_silent() {
     DOMAIN=$(basename "$cert" | sed 's/cert-//; s/\.crt//')
 
     read_features "$IN_FILE"
+    read_client_opts "$IN_FILE"
     render_smux
 
     SERVER_IP=$(m_server_ip)
@@ -549,7 +740,7 @@ proxies:
     port: $ANYTLS_PORT
     password: $PASSWORD
     sni: $DOMAIN
-    client-fingerprint: chrome
+$(render_client_opts)
     udp: true
     skip-cert-verify: true
     alpn:
@@ -559,7 +750,7 @@ $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key:
 $SMUX_BLOCK
 EOF
 
-    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1#AnyTLS-$num2"
+    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     
@@ -582,7 +773,7 @@ main_menu() {
 
 
         printf "请选择: " >&2
-        read c
+        read c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         c=$(clean_input "$c")
 
         case $c in
@@ -596,7 +787,7 @@ main_menu() {
         esac
 
         printf "按回车继续..." >&2
-        read
+        read || break
     done
 }
 

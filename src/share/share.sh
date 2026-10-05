@@ -20,6 +20,11 @@
 : "${SHARE_PORT:=9443}"
 : "${SHARE_SERVICE:=mihomo-share}"
 
+# 客户端侧没有 out/*_client-*.yaml, 节点都在 conf/providers/*.yaml 里。
+# 服务端留空即可; 客户端由 client.sh 设成 $SRV_CONF/providers。
+# 每份 provider 会单开一个 tag, 这样可以只分享其中一份订阅。
+: "${SHARE_PROVIDERS_DIR:=}"
+
 # 自身目录 —— 被父级 source 时 SELF_SHARE_DIR 可能为空,
 # 导致 systemd 的 ExecStart 变成 "/share_server.py"。
 SH_SHARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -76,11 +81,40 @@ _share_addr() {
         [[ -n "$a" ]] && { printf "%s" "$a"; return; }
     fi
 
-    a=$(curl -s6 --max-time 6 https://api64.ipify.org 2>/dev/null)
-    [[ -n "$a" ]] && { printf "%s" "$a"; return; }
+    # 外部探测回来的地址**必须自检是不是本机真有的地址**。
+    # WARP / 透明代理下 curl 拿到的是代理出口地址, 而那个地址并不在本机接口上,
+    # 写进分享链接的结果是: 面板显示生成成功, 客户端却连不上。
+    # 踩过的坑: 探测回 WARP 出口地址, 而本机地址列表里根本没有它。
+    local cand
+    for cand in $(curl -s6 --max-time 6 https://api64.ipify.org 2>/dev/null) \
+                 $(curl -s4 --max-time 6 https://api.ipify.org 2>/dev/null); do
+        [[ -n "$cand" ]] || continue
+        if _addr_is_local "$cand"; then
+            printf "%s" "$cand"
+            return
+        fi
+        print_warn "探测到地址 $cand 不在本机接口上 (多半是 WARP/透明代理的出口), 已丢弃"
+    done
 
-    a=$(curl -s4 --max-time 6 https://api.ipify.org 2>/dev/null)
-    printf "%s" "$a"
+    # 兜底: 直接从本机接口上取, 宁可给一个不完美但一定可达的地址
+    _local_addr
+}
+
+# 该地址是否挂在本机某个接口上
+_addr_is_local() {
+    local a="$1"
+    [[ -n "$a" ]] || return 1
+    ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$a"
+}
+
+# 本机第一个全局单播地址 (优先 IPv4, 兼容性最好)
+_local_addr() {
+    local v4 v6
+    v4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [[ -n "$v4" ]] && { printf "%s" "$v4"; return; }
+    v6=$(ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v '^fe80:' | head -1)
+    [[ -n "$v6" ]] && { printf "%s" "$v6"; return; }
+    return 1
 }
 
 # IPv6 字面量必须写成 [addr], 否则 http://2a09::1:9443/ 解析不出来
@@ -123,7 +157,16 @@ share_create() {
     printf "\n分享哪些节点?\n"
     printf "  1) 全部节点 (all)\n"
     local i=2 tagname
-    local tags; tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" --list 2>/dev/null | awk 'NF==2 && $1!="合计"{print $1}')
+    local tags
+    if [[ -n "$SHARE_PROVIDERS_DIR" && -d "$SHARE_PROVIDERS_DIR" ]]; then
+        print_info "分享来源: proxy-providers ($SHARE_PROVIDERS_DIR)"
+        tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" \
+               --providers-dir "$SHARE_PROVIDERS_DIR" --list 2>/dev/null \
+               | awk 'NF==2 && $1!="合计"{print $1}')
+    else
+        tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" --list 2>/dev/null \
+               | awk 'NF==2 && $1!="合计"{print $1}')
+    fi
     for tagname in $tags; do
         printf "  %d) 仅 %s\n" "$i" "$tagname"; i=$((i+1))
     done
@@ -335,6 +378,7 @@ Environment=SHARE_PORT=$SHARE_PORT
 Environment=OUT_DIR=$SRV_OUT
 Environment=BUILD_SUB=$BUILD_SUB
 Environment=MIHOMO_SERVICE=$SRV_SERVICE
+Environment=PROVIDERS_DIR=$SHARE_PROVIDERS_DIR
 ExecStart=/usr/bin/python3 ${SELF_SHARE_DIR:-$SH_SHARE_DIR}/share_server.py
 Restart=on-failure
 RestartSec=3
@@ -390,7 +434,7 @@ share_menu() {
         echo "9) 停止分享服务"
         echo "0) 返回"
         printf "\n请选择 [0-9]: "
-        local c; read -r c
+        local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         case "$c" in
             1) share_create ;;
             2) share_list ;;
@@ -404,7 +448,7 @@ share_menu() {
             0) return ;;
             *) print_error "无效选项" ;;
         esac
-        printf "\n按回车继续..."; read -r
+        printf "\n按回车继续..."; read -r || break
     done
 }
 

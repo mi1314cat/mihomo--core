@@ -86,6 +86,8 @@ TOP = {
     "sniffer", "tun", "dns", "hosts", "rule-providers", "rules", "sub-rules",
     "listeners", "proxies", "proxy-groups", "proxy-providers", "tunnels",
     "ntp", "iptables", "tls", "experimental", "global-ua", "etag-support",
+    # 内核 config/config.go:434-435 确有这两个顶层键, 之前漏了会被误报
+    "interface-name", "routing-mark",
     "clash-for-android", "ss-config", "vmess-config", "tuic-server",
     "inbound-tfo", "inbound-mptcp", "sniffer",
 }
@@ -185,7 +187,7 @@ PROXY = {
     "vless": BASE_PROXY | TLS_PROXY | {
         "uuid", "flow", "packet-addr", "xudp", "packet-encoding", "encryption",
         "network", "shadow-tls-opts", "restls-opts", "jls-opts", "reality-opts",
-        "http-opts", "h2-opts", "grpc-opts", "ws-opts", "xhttp-opts", "ws-headers",
+        "http-opts", "h2-opts", "grpc-opts", "ws-opts", "xhttp-opts",
         "servername", "client-fingerprint"},
     "vmess": BASE_PROXY | TLS_PROXY | {
         "uuid", "alterId", "cipher", "network", "shadow-tls-opts", "restls-opts",
@@ -225,6 +227,33 @@ PROXY = {
     "direct": BASE_PROXY, "reject": BASE_PROXY, "pass": BASE_PROXY,
     "dns": BASE_PROXY, "compatible": BASE_PROXY,
 }
+# 补充协议 —— 字段名逐个对照 adapter/outbound/<proto>.go
+PROXY["openvpn"] = {
+    "server", "port", "proto", "dev", "cipher", "data-ciphers",
+    "data-ciphers-fallback", "auth", "comp-lzo", "ca", "cert", "key",
+    "tls-auth", "key-direction", "tls-crypt", "tls-crypt-v2", "username",
+    "password", "peer-info", "ping", "ping-restart", "tran-window",
+    "handshake-timeout", "mtu", "udp", "ip-stack", "remote-dns-resolve", "dns",
+}
+PROXY["tailscale"] = {
+    "hostname", "auth-key", "control-url", "state-dir", "ephemeral", "udp",
+    "accept-routes", "exit-node", "exit-node-allow-lan-access",
+}
+PROXY["hysteria"] = {
+    "port", "ports", "protocol", "obfs-protocol", "up", "up-speed", "down",
+    "down-speed", "auth", "auth-str", "obfs", "sni", "ech-opts",
+    "skip-cert-verify", "name-cert-verify", "fingerprint", "certificate",
+    "private-key", "alpn", "recv-window-conn", "recv-window",
+    "disable-mtu-discovery", "fast-open", "hop-interval",
+} | TLS_PROXY | BASE_PROXY
+
+# 死字段: 内核保留了 yaml tag, 但代码里从不读取 —— 写了不报错也不生效。
+# vless.ws-headers 就是典型 (真正生效的是 ws-opts.headers)。
+DEAD_FIELDS = {
+    ("vless", "ws-headers"),
+    ("vmess", "ws-headers"),
+}
+
 PROXY_TYPES = set(PROXY)
 
 TRANSPORT_OPTS = {
@@ -235,9 +264,24 @@ TRANSPORT_OPTS = {
     "http-opts": {"method", "path", "headers"},
     "h2-opts": {"host", "path"},
     "reality-opts": {"public-key", "short-id", "support-x25519mlkem768"},
-    "xhttp-opts": {"path", "host", "mode", "headers", "no-grpc-header",
-                   "uplink-http-method", "reuse-settings", "download-settings"},
+    # proxy 侧 xhttp-opts —— 键名逐个对照 adapter/outbound/vless.go:XHTTPOptions。
+    # 只列 8 个键会把合法的 xhttp 配置判成未知字段, 校验一旦覆盖客户端就会满屏误报。
+    "xhttp-opts": {
+        "path", "host", "mode", "headers", "no-grpc-header",
+        "uplink-http-method",
+        "x-padding-bytes", "x-padding-obfs-mode", "x-padding-key",
+        "x-padding-header", "x-padding-placement", "x-padding-method",
+        "session-placement", "session-key", "session-table", "session-length",
+        "seq-placement", "seq-key",
+        "uplink-data-placement", "uplink-data-key", "uplink-chunk-size",
+        "sc-max-each-post-bytes", "sc-min-posts-interval-ms",
+        "reuse-settings", "download-settings",
+    },
 }
+# XHTTP 嵌套子结构 (adapter/outbound/vless.go:XHTTPReuseSettings)
+XHTTP_REUSE_OPTS = {"max-concurrency", "max-connections", "c-max-reuse-times",
+                    "h-max-request-times", "h-max-reusable-secs", "h-keep-alive-period"}
+
 TRANSPORT_OPTS["xhttp-config"] = TRANSPORT_OPTS["xhttp-opts"] | {
     "no-sse-header", "x-padding-bytes", "x-padding-obfs-mode", "x-padding-key",
     "x-padding-header", "x-padding-placement", "x-padding-method",
@@ -289,12 +333,17 @@ class Report:
         self.warns.append(f"{where}: {msg}")
 
 
-def check_keys(d, allowed, where, r: Report, ctx=""):
+# `ca` 在 TLS 型代理上确实已删, 但 openvpn 的 ca 是真实在用的 CA 路径,
+# 不能按同一张废弃表一刀切, 否则合法配置被误杀。
+REMOVED_EXEMPT = {("openvpn", "ca")}
+
+
+def check_keys(d, allowed, where, r: Report, ctx="", owner=""):
     if not isinstance(d, dict):
         return
     for k, v in d.items():
         nk = _norm_key(k)
-        if nk in REMOVED:
+        if nk in REMOVED and (owner, nk) not in REMOVED_EXEMPT:
             ver, note, alt = REMOVED[nk]
             r.err(where, f"字段 `{k}` 已废弃/删除 ({ver}) — {note}"
                          + (f"；请改用 `{alt}`" if alt and alt != "-" else ""))
@@ -347,6 +396,25 @@ def check_listeners(cfg, r: Report):
                            f"{w}.{opt}", r)
 
 
+def _check_xhttp_nested(d: dict, w: str, r: Report) -> None:
+    """xhttp-opts 里的嵌套子结构。download-settings 是一整份 proxy 定义,
+    字段集与 xhttp-opts 完全不同, 不能按同一份白名单套。"""
+    if isinstance(d.get("reuse-settings"), dict):
+        check_keys(d["reuse-settings"], XHTTP_REUSE_OPTS, f"{w}.reuse-settings", r)
+    if isinstance(d.get("download-settings"), dict):
+        ds = d["download-settings"]
+        # download-settings = 一整份 vless proxy 定义 + xhttp 自己的 path/host/headers
+        allowed = set(PROXY.get("vless", BASE_PROXY)) | {"path", "host", "headers",
+                                                         "reuse-settings"}
+        for k in ds:
+            if k not in allowed:
+                r.err(f"{w}.download-settings", f"未知字段 `{k}`")
+        if "mode" in ds:
+            r.err(f"{w}.download-settings", "`mode` 只能写在 xhttp-opts 外层")
+        if "port" not in ds:
+            r.warn(f"{w}.download-settings", "未指定 port，可能下载不下来")
+
+
 def check_proxies(cfg, r: Report):
     for i, p in enumerate(cfg.get("proxies") or []):
         if not isinstance(p, dict):
@@ -356,7 +424,7 @@ def check_proxies(cfg, r: Report):
         if t not in PROXY_TYPES:
             r.err(w, f"不支持的 proxy 类型 `{t}`")
             continue
-        check_keys(p, PROXY.get(t, BASE_PROXY), w, r)
+        check_keys(p, PROXY.get(t, BASE_PROXY), w, r, owner=t)
         if t in ("vmess",) and "alterId" not in p:
             r.err(w, "vmess 缺少 alterId（必填）")
         if t in ("vmess",) and "cipher" not in p:
@@ -370,11 +438,18 @@ def check_proxies(cfg, r: Report):
         if t == "hysteria2" and "masquerade" in p:
             r.err(w, "masquerade 仅 listener 端支持")
         if t == "vmess" and "ws-headers" in p:
-            r.err(w, "vmess 不支持 ws-headers（只有 vless 有；vmess 用 ws-opts.headers）")
+            r.err(w, "vmess 不支持 ws-headers（用 ws-opts.headers）")
+        # 死字段: 内核保留 yaml tag 但代码从不读取, 写了对错都没提示, 功能静默失效
+        for k in p:
+            if (t, k) in DEAD_FIELDS:
+                r.err(w, f"`{k}` 是死字段：内核不读取该键（vless 用的是 ws-opts.headers）")
         for opt in ("ws-opts", "grpc-opts", "http-opts", "h2-opts",
                     "reality-opts", "xhttp-opts"):
             if isinstance(p.get(opt), dict):
                 check_keys(p[opt], TRANSPORT_OPTS.get(opt, set()), f"{w}.{opt}", r)
+        # xhttp 嵌套结构单独校验
+        if isinstance(p.get("xhttp-opts"), dict):
+            _check_xhttp_nested(p["xhttp-opts"], f"{w}.xhttp-opts", r)
 
 
 def check_groups(cfg, r: Report):

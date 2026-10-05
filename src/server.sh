@@ -42,7 +42,7 @@ print_title() {
     printf "╚══════════════════════════════════════════════╝\n" >&2
     printf "${RESET}" >&2
 }
-pause() { printf "\n${CYAN}按回车继续...${RESET}"; read -r; }
+pause() { printf "\n${CYAN}按回车继续...${RESET}"; read -r || return 1; }
 
 ensure_dirs() { mkdir -p "$SRV_CONF" "$SRV_CONFIGD" "$SRV_CERTS" "$SRV_OUT"; }
 
@@ -372,7 +372,7 @@ main_menu() {
         echo "c) 卸载服务端"
         printf "0) 退出\n"
         printf "\n请选择: "
-        local c; read -r c
+        local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         case "$c" in
             1) add_node ;;
             2) manage_node ;;

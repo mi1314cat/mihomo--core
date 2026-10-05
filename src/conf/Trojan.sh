@@ -84,7 +84,8 @@ auto_website() {
     fi
 
     # 与 Reality.sh 完全一致的调用方式; 关闭 stdin 使其 read 返回空, 走自动优选分支
-    bash <(curl -fsSL "$DOMAINS_URL") </dev/null >/dev/null 2>&2 || true
+    fetch_script "domains.sh" "$CFMGR_DIR/domains.sh" \
+        && bash "$CFMGR_DIR/domains.sh" </dev/null >/dev/null 2>&2 || true
 
     local d=""
     if [[ -f "$NINSTALL_ENV" ]]; then
@@ -132,27 +133,14 @@ get_next_index() {
 # ================================
 random_port() { shuf -i 10000-60000 -n 1; }
 
+# 随机十六进制片段 —— 用于 ws 路径 / grpc 服务名。
+# 只出 [0-9a-f], 保证拼进分享链接 URI 时不需要 urlencode。
+random_token() { openssl rand -hex "${1:-8}"; }
+
 safe_read_port() {
-    local default="$1"
-    local input
-
-    while true; do
-        printf "请输入监听端口 (默认: %s): " "$default" >&2
-        read input
-        input=$(clean_input "$input")
-        port="${input:-$default}"
-
-        [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
-        (( port >= 1 && port <= 65535 )) || { print_error "端口范围错误"; continue; }
-
-        ss -tuln | awk '{print $5}' | grep -E -q "(:|])$port$" && {
-            print_error "端口已占用"
-            continue
-        }
-
-        echo "$port"
-        return
-    done
+    # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
+    #   拒绝 1-1023 特权端口与系统常用端口, TCP/UDP 双查占用, EOF 安全退出。
+    m_safe_read_port "$1"
 }
 
 # ================================
@@ -193,13 +181,211 @@ smux_profile() {
     esac
 }
 
-# ================================
-# 特性询问（模式 + mTLS + smux）
+# ================================================================
+# 传输相关标记的读取与渲染
+#
+#   proxy   (adapter/outbound/trojan.go)
+#     network: ws|grpc|不写/其它 => default 分支 = 裸 TCP+TLS (:79, :148-150, :211-213)
+#       ws   : ws-opts{path, headers{Host}, v2ray-http-upgrade(-fast-open)}  (:66)
+#       grpc : grpc-opts{grpc-service-name}                                  (:65)
+#   listener (listener/inbound/trojan.go)
+#     【没有 network 字段】靠平铺键判定, 非空即生效 (listener/trojan/server.go:163, :177)
+#       ws   : ws-path: /xxx
+#       grpc : grpc-service-name: xxx
+#     两个键可同时非空 -> 同一个 listener 同时提供 ws 与 grpc (server.go:163-197)
+# ================================================================
+render_listener_transport() {
+    LISTENER_TRANSPORT=""
+    case "$TROJAN_TRANSPORT" in
+        ws)   LISTENER_TRANSPORT="    ws-path: $WS_PATH" ;;
+        grpc) LISTENER_TRANSPORT="    grpc-service-name: $GRPC_SERVICE" ;;
+    esac
+}
+
+# 渲染客户端 proxy 的传输层块（输出到 LISTENER_TRANSPORT 对应的 TRANSPORT_BLOCK）
+render_proxy_transport() {
+    local upgrade=""
+    TRANSPORT_BLOCK=""
+    # v2ray-http-upgrade / -fast-open 只有 proxy 侧有 (adapter/outbound/trojan.go:93-94
+    # 读 WSOpts, 结构定义 adapter/outbound/vmess.go:170-171); listener 侧无对应项,
+    # 只写 ws-path。而且 fast-open 必须配合 upgrade, 单独写无效, 所以两块一起出。
+    [[ "$WS_HTTP_UPGRADE" = true ]] && upgrade="      v2ray-http-upgrade: true
+      v2ray-http-upgrade-fast-open: true"
+    case "$TROJAN_TRANSPORT" in
+        ws)
+            TRANSPORT_BLOCK="    network: ws
+    ws-opts:
+      path: $WS_PATH
+      headers:
+        Host: $WS_HOST
+$upgrade"
+            ;;
+        grpc)
+            TRANSPORT_BLOCK="    network: grpc
+    grpc-opts:
+      grpc-service-name: $GRPC_SERVICE"
+            ;;
+        *)
+            TRANSPORT_BLOCK="    network: tcp"
+            ;;
+    esac
+}
+
+# 渲染分享链接 (trojan:// URI)
+# 传输参数沿用 VLESS.sh 的同款约定 (VLESS.sh:810-812):
+#   tcp : type=tcp
+#   ws  : type=ws&path=<ws-path>&host=<ws Host 头>
+#   grpc: type=grpc&serviceName=<grpc-service-name>
+# fp 跟实际选的 client-fingerprint 走, 不再硬编码 chrome。
+render_share_link() {
+    local idx="$1" transport_uri="type=tcp"
+    case "$TROJAN_TRANSPORT" in
+        ws)   transport_uri="type=ws&path=$WS_PATH&host=$WS_HOST" ;;
+        grpc) transport_uri="type=grpc&serviceName=$GRPC_SERVICE" ;;
+    esac
+    if [[ "$TROJAN_MODE" = "reality" ]]; then
+        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&$transport_uri&fp=$CLIENT_FINGERPRINT&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#Trojan-$idx"
+    else
+        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&$transport_uri&fp=$CLIENT_FINGERPRINT#Trojan-$idx"
+    fi
+}
+
+# ================================================================
+# client-fingerprint 选配
+# 取值表 component/tls/utls.go:78-101。这里只暴露仍在维护的 7 个,
+# 【不暴露】utls.go:94-99 注释标 deprecated 的 5 个 (chrome_psk /
+# chrome_psk_shuffle / chrome_padding_psk_shuffle / chrome_pq / chrome_pq_psk),
+# 也不暴露 randomized (:100, :108 每次启动重播种, 指纹会漂)。
+#
+# 两种模式都要问:
+#   Reality —— 【硬约束】缺 client-fingerprint 会在首次握手直接报
+#              "REALITY is based on uTLS, please set a client-fingerprint"
+#              (transport/vmess/tls.go:130-132), 而且 -t 校验抓不到 (§3.4 运行期才报错)
+#   纯 TLS  —— 不配则走原生 Go TLS (utls.go:43-45), JA3 指纹直接暴露
+# ================================================================
+ask_client_fingerprint() {
+    local yn
+    echo "  TLS ClientHello 指纹 (client-fingerprint):" >&2
+    echo "  1) chrome   (默认, 兼容面最广)" >&2
+    echo "  2) firefox" >&2
+    echo "  3) safari" >&2
+    echo "  4) edge" >&2
+    echo "  5) ios" >&2
+    echo "  6) android" >&2
+    echo "  7) random   (内核加权: chrome6/safari3/ios2/firefox1, utls.go:62-68)" >&2
+    printf "  选择 (默认1): " >&2
+    read -r yn
+    case "$(clean_input "$yn")" in
+        2) CLIENT_FINGERPRINT="firefox" ;;
+        3) CLIENT_FINGERPRINT="safari" ;;
+        4) CLIENT_FINGERPRINT="edge" ;;
+        5) CLIENT_FINGERPRINT="ios" ;;
+        6) CLIENT_FINGERPRINT="android" ;;
+        7) CLIENT_FINGERPRINT="random" ;;
+        *) CLIENT_FINGERPRINT="chrome" ;;
+    esac
+}
+
+# skip-cert-verify: 纯 TLS 分支的 proxy 侧字段 (adapter/outbound/trojan.go:53)。
+# 默认 true —— 保持脚本既有行为(自签 / 免费证书 / 域名对不上都能连)。
+# 选严格校验后, 证书身份必须与 sni 匹配, 否则是【首次握手】才失败, -t 抓不到 (§3.4)。
+ask_skip_cert_verify() {
+    local yn
+    SKIP_CERT_VERIFY=true
+    printf "  跳过服务端证书校验 (自签/域名不符也能连)？(Y/n): " >&2
+    read -r yn
+    [[ "$(clean_input "$yn")" =~ ^[nN]$ ]] && SKIP_CERT_VERIFY=false
+}
+
+# ================================================================
+# 传输方式提问
+# Reality 与 ws/grpc 的兼容性 —— 源码结论 (mihomo 1.19.32):
+#
+#   Reality + ws  = 【内核不支持, 必须挡掉】
+#     adapter/outbound/trojan.go:79-147 的 ws 分支构造 TLS 时只处理
+#     ShadowTLS / Restls / JLS (:121-123), 另一条 ca.GetTLSConfig 分支 (:129-144)
+#     也没有 Reality 字段 —— realityConfig 在整个 ws 分支里一次都没被传进去。
+#     结果: reality-opts 被【静默丢弃】, 客户端退回普通 wss, 对着 Reality
+#     listener 握手必失败, 而且 -t 校验照样通过。
+#
+#   Reality + grpc = 【内核是接通的, 放开但提示】
+#     客户端: trojan.go:360-393 建 gun client 时 tlsConfig 里带了
+#             Reality: t.realityConfig (:382) —— 与 ws 分支形成对照。
+#     服务端: listener/trojan/server.go:211-212 把 reality listener 套在底层 l 上,
+#             随后 :203-206 直接 httpServer.Serve(l), 且 :186-189 的注释点名
+#             "some tls conn is not *tls.Conn (like *reality.Conn)" 并为此
+#             SetUnencryptedHTTP2(true) —— 就是为 reality+grpc 准备的。
+#     仍保留提示: 依赖较新的内核, 连不通请改回 tcp。
+# ================================================================
+ask_transport() {
+    local yn
+    TROJAN_TRANSPORT="tcp"
+    WS_PATH=""
+    WS_HOST=""
+    WS_HTTP_UPGRADE=false
+    GRPC_SERVICE=""
+
+    if [[ "$TROJAN_MODE" = "reality" ]]; then
+        echo "  传输方式 (Reality):" >&2
+        echo "  1) tcp  (默认)" >&2
+        echo "  2) grpc (内核已接通 reality+grpc; 连不通请改回 1)" >&2
+        printf "  选择 (默认1): " >&2
+        read -r yn
+        case "$(clean_input "$yn")" in
+            2) TROJAN_TRANSPORT="grpc" ;;
+            *) TROJAN_TRANSPORT="tcp" ;;
+        esac
+        [[ "$TROJAN_TRANSPORT" = "grpc" ]] && \
+            print_info "Reality+grpc 依赖较新内核 (1.19.32 已验证接通), 若握手失败请改用 tcp"
+    else
+        echo "  传输方式 (纯 TLS):" >&2
+        echo "  1) tcp  (默认, 裸 TCP+TLS)" >&2
+        echo "  2) ws   (可套 CDN)" >&2
+        echo "  3) grpc (h2 多路复用)" >&2
+        printf "  选择 (默认1): " >&2
+        read -r yn
+        case "$(clean_input "$yn")" in
+            2) TROJAN_TRANSPORT="ws" ;;
+            3) TROJAN_TRANSPORT="grpc" ;;
+            *) TROJAN_TRANSPORT="tcp" ;;
+        esac
+    fi
+
+    case "$TROJAN_TRANSPORT" in
+        ws)
+            WS_PATH="/$(random_token 8)"
+            printf "  ws 路径 (回车=随机 %s, 至少 %s 字符): " "$WS_PATH" "$M_MIN_WS_PATH_LEN" >&2
+            read -r yn
+            yn=$(clean_input "$yn")
+            [[ -n "$yn" ]] && WS_PATH="$yn"
+            if ! WS_PATH=$(m_check_ws_path "$WS_PATH"); then
+                WS_PATH="/$(random_token 8)"
+                print_warn "已改用随机路径: $WS_PATH"
+            fi
+            printf "  启用 v2ray-http-upgrade (省一次 1-RTT, 仅客户端侧生效)? (y/N): " >&2
+            read -r yn
+            [[ "$(clean_input "$yn")" =~ ^[yY]$ ]] && WS_HTTP_UPGRADE=true
+            ;;
+        grpc)
+            GRPC_SERVICE="gsvc$(random_token 4)"
+            printf "  grpc 服务名 (回车=随机 %s): " "$GRPC_SERVICE" >&2
+            read -r yn
+            yn=$(clean_input "$yn")
+            [[ -n "$yn" ]] && GRPC_SERVICE="$yn"
+            ;;
+    esac
+}
+
+# ================================================================
+# 特性询问（模式 + 传输 + 指纹 + 证书校验 + mTLS + smux）
 # 选择持久化到 config.d 片的注释行:
 #   # mode: tls|reality
+#   # transport: tcp|ws|grpc
+#   # fingerprint: <client-fingerprint>
+#   # skip-cert-verify: true|false
 #   # mtls: true
 #   # smux: <档位>
-# ================================
+# ================================================================
 ask_features() {
     local yn
     TROJAN_MODE=""        # tls | reality
@@ -216,8 +402,15 @@ ask_features() {
         *) TROJAN_MODE="reality" ;;
     esac
 
+    # 传输方式 (Reality 下 ws 被内核丢弃, 见 ask_transport 头注释)
+    ask_transport
+
+    # client-fingerprint: Reality 缺了会握手失败, 纯 TLS 缺了会露 JA3 —— 两边都要
+    ask_client_fingerprint
+
     # mTLS 仅纯 TLS 模式有意义 (Reality 用真站握手, 无本端证书)
     if [[ "$TROJAN_MODE" = "tls" ]]; then
+        ask_skip_cert_verify
         printf "启用 mTLS 客户端证书认证？(y/N): " >&2
         read -r yn
         [[ "$(clean_input "$yn")" =~ ^[yY]$ ]] && MTLS_ENABLED=true
@@ -242,14 +435,41 @@ ask_features() {
 
 # 读取 config.d 片注释中的特性标记（供重建/导出时同步）
 # 兼容旧格式 "# smux: true" -> 视为 web 档
+# 向后兼容: 老片段只有 "# mode: tls|reality", 没有 "# transport:" / "# fingerprint:" /
+# "# skip-cert-verify:" / ws-path / grpc-service-name —— 全部按历史行为回落 (tcp / chrome / true)。
 read_features() {
     local f="$1"
     TROJAN_MODE=""
     MTLS_ENABLED=false
     SMUX_PROFILE=""
+    TROJAN_TRANSPORT="tcp"
+    CLIENT_FINGERPRINT="chrome"
+    SKIP_CERT_VERIFY=true
+    WS_PATH=""
+    WS_HOST=""
+    WS_HTTP_UPGRADE=false
+    GRPC_SERVICE=""
     if grep -qE "^[[:space:]]*# mode: (tls|reality)" "$f"; then
         TROJAN_MODE=$(grep -oE "^[[:space:]]*# mode: (tls|reality)" "$f" | awk '{print $3}')
     fi
+    # transport: 认新的三元组, 老片段没有就保持 tcp
+    if grep -qE "^[[:space:]]*# transport: (tcp|ws|grpc)" "$f"; then
+        TROJAN_TRANSPORT=$(grep -oE "^[[:space:]]*# transport: (tcp|ws|grpc)" "$f" | head -1 | awk '{print $3}')
+    elif grep -qE "^[[:space:]]*ws-path: " "$f"; then
+        TROJAN_TRANSPORT="ws"
+    elif grep -qE "^[[:space:]]*grpc-service-name: " "$f"; then
+        TROJAN_TRANSPORT="grpc"
+    fi
+    if grep -qE "^[[:space:]]*# fingerprint: [a-z0-9]+" "$f"; then
+        CLIENT_FINGERPRINT=$(grep -oE "^[[:space:]]*# fingerprint: [a-z0-9]+" "$f" | head -1 | awk '{print $3}')
+    fi
+    if grep -qE "^[[:space:]]*# skip-cert-verify: false" "$f"; then
+        SKIP_CERT_VERIFY=false
+    fi
+    grep -qE "^[[:space:]]*# ws-http-upgrade: true" "$f" && WS_HTTP_UPGRADE=true
+    # 平铺键回读 (listener/inbound/trojan.go:15-16)
+    WS_PATH=$(grep -oE "^[[:space:]]*ws-path:[[:space:]]*.*$" "$f" | head -1 | sed 's/^[[:space:]]*ws-path:[[:space:]]*//')
+    GRPC_SERVICE=$(grep -oE "^[[:space:]]*grpc-service-name:[[:space:]]*.*$" "$f" | head -1 | sed 's/^[[:space:]]*grpc-service-name:[[:space:]]*//')
     grep -qE "^[[:space:]]*# mtls: true" "$f" && MTLS_ENABLED=true
     if grep -qE "^[[:space:]]*# smux: (web|video|download)" "$f"; then
         SMUX_PROFILE=$(grep -oE "^[[:space:]]*# smux: (web|video|download)" "$f" | awk '{print $3}')
@@ -354,10 +574,10 @@ ask_cert() {
     case "$(clean_input "$yn")" in
         2)
             print_info "调用 ssl.sh 申请证书..."
-            bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/ssl.sh) || {
+            fetch_script "ssl.sh" "$CFMGR_DIR/ssl.sh" && bash "$CFMGR_DIR/ssl.sh" || {
                 print_error "ssl.sh 运行失败, 退回自签"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
                 return
             }
             # ssl.sh 产出 /root/catmi/<域名>.crt/.key; 让用户输入域名
@@ -370,13 +590,13 @@ ask_cert() {
                 CERT_DOMAIN="$domain"
             else
                 print_error "未找到 /root/catmi/$domain.crt, 退回自签"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
             fi
             ;;
         3)
-            generate_cert "cloudflare.com"
-            CERT_DOMAIN="cloudflare.com"
+            generate_cert "$M_NO_DOMAIN"
+            CERT_DOMAIN="$M_NO_DOMAIN"
             ;;
         4)
             # 统一域名优选: 留空逻辑的自动分支, 与 Reality.sh 同一 domains.sh
@@ -387,8 +607,8 @@ ask_cert() {
                 CERT_DOMAIN="$auto_domain"
             else
                 print_error "域名优选失败, 退回自签 cloudflare.com"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
             fi
             ;;
         *)
@@ -414,13 +634,13 @@ ask_cert() {
                 CERT_DOMAIN=$(basename "$chosen" .crt)
                 if [[ ! -f "$KEY_FILE" ]]; then
                     print_error "缺少私钥 ${CERT_FILE%.crt}.key, 退回自签"
-                    generate_cert "cloudflare.com"
-                    CERT_DOMAIN="cloudflare.com"
+                    generate_cert "$M_NO_DOMAIN"
+                    CERT_DOMAIN="$M_NO_DOMAIN"
                 fi
             else
                 print_info "无已有证书, 使用自签"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
             fi
             ;;
     esac
@@ -484,11 +704,17 @@ add_config() {
         fi
     fi
     render_smux
+    # ws 的 Host 头: 内核默认就是取 sni (adapter/outbound/trojan.go:96-97),
+    # 显式写出来只是为了和 path 一起可见, 不改变行为。
+    [[ "$TROJAN_TRANSPORT" = "ws" ]] && WS_HOST="${REALITY_DEST:-$CERT_DOMAIN}"
 
     # 7. 写入入站配置
+    render_listener_transport
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$IN_FILE" <<EOF
 # mode: reality
+# transport: $TROJAN_TRANSPORT
+# fingerprint: $CLIENT_FINGERPRINT
 # smux: ${SMUX_PROFILE:-false}
 listeners:
   - name: trojan-$index
@@ -505,11 +731,16 @@ listeners:
         - $REALITY_SHORT_ID
       server-names:
         - $REALITY_DEST
+$LISTENER_TRANSPORT
 EOF
     else
 cat > "$IN_FILE" <<EOF
 # mode: tls
+# transport: $TROJAN_TRANSPORT
+# fingerprint: $CLIENT_FINGERPRINT
+# skip-cert-verify: $SKIP_CERT_VERIFY
 # mtls: $MTLS_ENABLED
+# ws-http-upgrade: $WS_HTTP_UPGRADE
 # smux: ${SMUX_PROFILE:-false}
 listeners:
   - name: trojan-$index
@@ -521,6 +752,7 @@ listeners:
         password: $PASSWORD
     certificate: $CERT_FILE
     private-key: $KEY_FILE
+$LISTENER_TRANSPORT
 $([ "$MTLS_ENABLED" = true ] && printf '    client-auth-type: RequireAndVerifyClientCert\n    client-auth-cert: %s' "$MTLS_CA")
 EOF
     fi
@@ -531,6 +763,12 @@ EOF
     fi
 
     # 9. 写入客户端配置
+#    ⚠️ 这里【不要】加回 `tls: true`。trojan 的 TrojanOption (adapter/outbound/trojan.go:46-68)
+#    没有 tls 字段 —— 全文无 proxy:"tls"。listener 侧 (listener/inbound/trojan.go:12-29) 同样没有。
+#    trojan 是 TLS-by-default 协议: StreamConnContext 的 default 分支
+#    (adapter/outbound/trojan.go:150-172) 无条件套 TLS, 写了 tls: true 只会静默失效。
+#    真正带 tls 字段的是 vless (adapter/outbound/vless.go)。
+    render_proxy_transport
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -540,10 +778,9 @@ proxies:
     port: $TROJAN_PORT
     password: $PASSWORD
     sni: $REALITY_DEST
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FINGERPRINT
     udp: true
-    network: tcp
-    tls: true
+$TRANSPORT_BLOCK
     reality-opts:
       public-key: $REALITY_PUBLIC_KEY
       short-id: $REALITY_SHORT_ID
@@ -558,21 +795,18 @@ proxies:
     port: $TROJAN_PORT
     password: $PASSWORD
     sni: $CERT_DOMAIN
-    tls: true
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FINGERPRINT
     udp: true
-    skip-cert-verify: true
+    skip-cert-verify: $SKIP_CERT_VERIFY
+$TRANSPORT_BLOCK
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
     fi
 
     # 10. 写入分享链接
-    if [[ "$TROJAN_MODE" = "reality" ]]; then
-        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&type=tcp&fp=chrome&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#Trojan-$index" > "$SHARE_FILE"
-    else
-        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&type=tcp&fp=chrome#Trojan-$index" > "$SHARE_FILE"
-    fi
+    SHARE_LINK=$(render_share_link "$index")
+    echo "$SHARE_LINK" > "$SHARE_FILE"
 
     # 11. 输出信息
     print_ok "Trojan 配置生成成功"
@@ -581,6 +815,13 @@ EOF
     echo -e "UUID: $UUID" >&2
     echo -e "密码: $PASSWORD" >&2
     [[ "$TROJAN_MODE" = "reality" ]] && echo -e "模式: Reality (伪装: $REALITY_DEST)" >&2 || echo -e "模式: 纯 TLS (域名: $CERT_DOMAIN)" >&2
+    case "$TROJAN_TRANSPORT" in
+        ws)   echo -e "传输: ws (路径: $WS_PATH)$([[ "$WS_HTTP_UPGRADE" = true ]] && echo ' + v2ray-http-upgrade')" >&2 ;;
+        grpc) echo -e "传输: grpc (服务名: $GRPC_SERVICE)" >&2 ;;
+        *)    echo -e "传输: tcp" >&2 ;;
+    esac
+    echo -e "指纹: $CLIENT_FINGERPRINT" >&2
+    [[ "$TROJAN_MODE" = "tls" ]] && echo -e "证书校验: $([[ "$SKIP_CERT_VERIFY" = true ]] && echo '跳过' || echo '严格')" >&2
     $MTLS_ENABLED && echo -e "mTLS: 已启用 (客户端证书: $CERT_DIR/mtls-$PROTO-$index/)" >&2
     [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
     echo -e "入站配置: $IN_FILE" >&2
@@ -605,14 +846,23 @@ list_configs() {
     for f in "${files[@]}"; do
         num=$(basename "$f" .yaml | sed -E 's/.*-([0-9]+)/\1/')
         port=$(grep -E "^[[:space:]]*port:" "$f" | awk '{print $2}')
-        uuid=$(grep -E "username:" "$f" | awk '{print $2}' | tr -d ' ')
+        # 取值用 $NF: 片段里可能写成 "- username: xxx" (3 段) 也可能 "username: xxx" (2 段),
+        # 固定取 $2 在前一种写法下会得到字面量 "username:"。
+        uuid=$(grep -E "^[[:space:]]*-?[[:space:]]*username:" "$f" | awk '{print $NF}' | tr -d ' \r')
         pass=$(grep -E "password:" "$f" | head -1 | awk '{print $2}' | tr -d ' ')
         mode=$(grep -oE "^[[:space:]]*# mode: (tls|reality)" "$f" | awk '{print $3}')
         mode=${mode:-tls}
+        # 老片段没有 "# transport:" 标记, 按历史行为回落 tcp
+        transport=$(grep -oE "^[[:space:]]*# transport: (tcp|ws|grpc)" "$f" | head -1 | awk '{print $3}')
+        [[ -z "$transport" ]] && { grep -qE "^[[:space:]]*ws-path: " "$f" && transport=ws || { grep -qE "^[[:space:]]*grpc-service-name: " "$f" && transport=grpc || transport=tcp; }; }
+        fp=$(grep -oE "^[[:space:]]*# fingerprint: [a-z0-9]+" "$f" | head -1 | awk '{print $3}')
+        fp=${fp:-chrome}
 
         printf "${GREEN}%s${RESET}) " "$num" >&2
         printf "端口:${BLUE}%s${RESET}  " "$port" >&2
         printf "模式:${MAGENTA}%s${RESET}  " "$mode" >&2
+        printf "传输:${MAGENTA}%s${RESET}  " "$transport" >&2
+        printf "指纹:${CYAN}%s${RESET}  " "$fp" >&2
         printf "UUID:${WHITE}%s${RESET}  " "$uuid" >&2
         printf "密码:${YELLOW}%s${RESET}\n" "$pass" >&2
     done
@@ -674,8 +924,9 @@ rebuild_client() {
     fi
 
     # 提取字段
-    PASSWORD=$(grep -E "password:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
-    TROJAN_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | awk '{print $2}')
+    PASSWORD=$(grep -E "^[[:space:]]*password:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
+    # 同 rebuild_client: port: 必须锚定, 否则会命中 "# transport: ..." 注释行
+    TROJAN_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | head -1 | awk '{print $2}')
 
     read_features "$IN_FILE"
     render_smux
@@ -696,6 +947,10 @@ rebuild_client() {
         fi
     fi
 
+    # ws 的 Host 头与内核默认值一致 (= sni, adapter/outbound/trojan.go:96-97)
+    [[ "$TROJAN_TRANSPORT" = "ws" ]] && WS_HOST="${REALITY_DEST:-$CERT_DOMAIN}"
+
+    render_proxy_transport
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -705,16 +960,14 @@ proxies:
     port: $TROJAN_PORT
     password: $PASSWORD
     sni: $REALITY_DEST
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FINGERPRINT
     udp: true
-    network: tcp
-    tls: true
+$TRANSPORT_BLOCK
     reality-opts:
       public-key: $REALITY_PUBLIC_KEY
       short-id: $REALITY_SHORT_ID
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&type=tcp&fp=chrome&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#Trojan-$num2"
     else
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -724,16 +977,16 @@ proxies:
     port: $TROJAN_PORT
     password: $PASSWORD
     sni: $CERT_DOMAIN
-    tls: true
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FINGERPRINT
     udp: true
-    skip-cert-verify: true
+    skip-cert-verify: $SKIP_CERT_VERIFY
+$TRANSPORT_BLOCK
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&type=tcp&fp=chrome#Trojan-$num2"
     fi
 
+    SHARE_LINK=$(render_share_link "$num2")
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     print_ok "客户端文件已重建：$num2"
@@ -757,8 +1010,10 @@ rebuild_client_silent() {
 
     [[ -f "$IN_FILE" ]] || return 0
 
-    PASSWORD=$(grep -E "password:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
-    TROJAN_PORT=$(grep -E "port:" "$IN_FILE" | awk '{print $2}')
+    PASSWORD=$(grep -E "^[[:space:]]*password:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
+    # port: 必须锚定行首 —— 新增的 "# transport: ws" 注释行里也含 "port:" 子串,
+    # 不锚定会被 grep 一起捞出来, 把端口读成 "transport:\n<真端口>"。
+    TROJAN_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | head -1 | awk '{print $2}')
 
     read_features "$IN_FILE"
     render_smux
@@ -779,6 +1034,10 @@ rebuild_client_silent() {
         fi
     fi
 
+    # ws 的 Host 头与内核默认值一致 (= sni, adapter/outbound/trojan.go:96-97)
+    [[ "$TROJAN_TRANSPORT" = "ws" ]] && WS_HOST="${REALITY_DEST:-$CERT_DOMAIN}"
+
+    render_proxy_transport
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -788,16 +1047,14 @@ proxies:
     port: $TROJAN_PORT
     password: $PASSWORD
     sni: $REALITY_DEST
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FINGERPRINT
     udp: true
-    network: tcp
-    tls: true
+$TRANSPORT_BLOCK
     reality-opts:
       public-key: $REALITY_PUBLIC_KEY
       short-id: $REALITY_SHORT_ID
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&type=tcp&fp=chrome&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#Trojan-$num2"
     else
 cat > "$OUT_FILE" <<EOF
 proxies:
@@ -807,16 +1064,16 @@ proxies:
     port: $TROJAN_PORT
     password: $PASSWORD
     sni: $CERT_DOMAIN
-    tls: true
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FINGERPRINT
     udp: true
-    skip-cert-verify: true
+    skip-cert-verify: $SKIP_CERT_VERIFY
+$TRANSPORT_BLOCK
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
 $SMUX_BLOCK
 EOF
-        SHARE_LINK="trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&type=tcp&fp=chrome#Trojan-$num2"
     fi
 
+    SHARE_LINK=$(render_share_link "$num2")
     echo "$SHARE_LINK" > "$SHARE_FILE"
 }
 
@@ -875,7 +1132,7 @@ main_menu() {
         echo "0) 退出"
 
         printf "请选择: " >&2
-        read c
+        read c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         c=$(clean_input "$c")
 
         case $c in
@@ -889,7 +1146,7 @@ main_menu() {
         esac
 
         printf "按回车继续..." >&2
-        read
+        read || break
     done
 }
 

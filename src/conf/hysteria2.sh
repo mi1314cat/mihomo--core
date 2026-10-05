@@ -83,19 +83,212 @@ random_free_port() {
 }
 
 safe_read_port() {
-    local default="$1" input port
+    # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
+    #   拒绝 1-1023 特权端口与系统常用端口, TCP/UDP 双查占用, EOF 安全退出。
+    m_safe_read_port "$1"
+}
+
+# ================================================================
+# 选配 (M 内核 / mihomo v1.19.32 特有字段)
+# 每条都标了内核源码位置; 没有源码依据的一律不做。
+# ================================================================
+
+# ---------- ① obfs 混淆 (hy2 最核心的抗探测手段, 之前完全没做) ----------
+#   proxy   : obfs / obfs-password          adapter/outbound/hysteria2.go:49-50
+#             obfs-min/max-packet-size      adapter/outbound/hysteria2.go:51-52
+#   listener: 完全对称                      listener/inbound/hysteria2.go:15-18
+#   取值 salamander / gecko                  docs/config.yaml:1244
+#   ⚠ 有 obfs 无 obfs-password → 硬报错 missing obfs password
+#       (adapter/outbound/hysteria2.go:150-152 / listener/sing_hysteria2/server.go:106-108)
+#   ⚠ 只有 obfs-password 没有 obfs → 静默忽略 (守卫是 if len(option.Obfs)>0, :149)
+#   ⚠ obfs-min/max-packet-size 仅 gecko 生效 (:158-159), 配 salamander 静默无效
+#   ⚠ 未知 type → 硬报错 unknown obfs type (:161 / server.go:117)
+HY_OBFS=""
+HY_OBFS_PASSWORD=""
+HY_OBFS_MIN=""
+HY_OBFS_MAX=""
+
+# ask_uint <提示> <默认值> <最小值> —— 通用正整数提问 (EOF 安全)
+ask_uint() {
+    local p="$1" d="$2" min="$3" input v
     while true; do
-        printf "请输入监听端口 (默认: %s): " "$default" >&2
+        printf "%s (默认: %s): " "$p" "$d" >&2
         if ! read -r input; then echo >&2; return 1; fi
         input=$(clean_input "$input")
-        port="${input:-$default}"
-
-        [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
-        (( port >= 1 && port <= 65535 )) || { print_error "端口范围错误"; continue; }
-        port_in_use "$port" && { print_error "端口已占用"; continue; }
-
-        echo "$port"; return
+        v="${input:-$d}"
+        [[ "$v" =~ ^[0-9]+$ ]] || { print_error "请输入数字"; continue; }
+        (( v >= min )) || { print_error "不能小于 $min"; continue; }
+        printf '%s' "$v"
+        return 0
     done
+}
+
+ask_obfs() {
+    HY_OBFS=""; HY_OBFS_PASSWORD=""; HY_OBFS_MIN=""; HY_OBFS_MAX=""
+
+    echo "  obfs 混淆 (M 内核原生, 抗主动探测):" >&2
+    echo "  1) 关闭 (默认)" >&2
+    echo "  2) salamander (官方标准, 推荐)" >&2
+    echo "  3) gecko (实验性, 可额外调包长)" >&2
+    printf "  选择 (默认1): " >&2
+    if ! read -r choice; then echo >&2; return 1; fi
+    case "$(clean_input "$choice")" in
+        2) HY_OBFS="salamander" ;;
+        3) HY_OBFS="gecko" ;;
+        *) return 0 ;;
+    esac
+
+    local pw
+    pw=$(openssl rand -hex 16)
+    HY_OBFS_PASSWORD=$(safe_read_prompt "  obfs 密码 (两侧必须一致)" "$pw") || return 1
+
+    if [[ "$HY_OBFS" == "gecko" ]]; then
+        HY_OBFS_MIN=$(ask_uint "  gecko 最小包长 (仅 gecko 生效)" "512" 1) || return 1
+        HY_OBFS_MAX=$(ask_uint "  gecko 最大包长 (仅 gecko 生效)" "1200" 1) || return 1
+        (( HY_OBFS_MAX <= HY_OBFS_MIN )) && print_warn "最大包长应大于最小包长"
+    else
+        print_info "obfs-min/max-packet-size 仅 gecko 生效, 当前算法为 salamander 故不写"
+    fi
+    return 0
+}
+
+# 从子配置读回 obfs (重建/导出时保持两侧一致)
+read_obfs_opts() {
+    local f="$1"
+    HY_OBFS=$(grep -E '^[[:space:]]*obfs:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS_PASSWORD=$(grep -E '^[[:space:]]*obfs-password:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs-password:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS_MIN=$(grep -E '^[[:space:]]*obfs-min-packet-size:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs-min-packet-size:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS_MAX=$(grep -E '^[[:space:]]*obfs-max-packet-size:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs-max-packet-size:[[:space:]]*//' | tr -d "\"'")
+}
+
+# 渲染 obfs 块 (缩进 4 空格, 服务端/客户端通用 —— 字段名两侧完全一致)
+render_obfs_block() {
+    [[ -n "$HY_OBFS" ]] || return 0
+    echo "    obfs: $HY_OBFS"
+    echo "    obfs-password: $HY_OBFS_PASSWORD"
+    [[ -n "$HY_OBFS_MIN" ]] && echo "    obfs-min-packet-size: $HY_OBFS_MIN"
+    [[ -n "$HY_OBFS_MAX" ]] && echo "    obfs-max-packet-size: $HY_OBFS_MAX"
+    return 0
+}
+
+# ---------- ② 原生端口跳跃 (客户端侧, 比 iptables DNAT 更优) ----------
+#   ports         adapter/outbound/hysteria2.go:44  语法 "30000-31000" 或 "1000-2000,3000"
+#                 逗号/斜杠都接受, 最多 28 段 (common/utils/ranges.go:24-28)
+#   hop-interval  adapter/outbound/hysteria2.go:45  ⚠ string 类型、单位秒
+#                 只能是单区间 "15-30", 写 "15,30" → invalid range (:248,261-262)
+#                 0 < 值 < 5 会被抬到 5s (:253-257)
+#   ⚠ listener 侧**没有**这两个字段 (listener/inbound/hysteria2.go:12-42 全文) —— 纯客户端行为
+HY_PORTS=""
+HY_HOP_INTERVAL=""
+
+read_hop_opts() {
+    local f="$1"
+    HY_PORTS=$(grep -E '^[[:space:]]*ports:' "$f" | head -1 | sed -E 's/^[[:space:]]*ports:[[:space:]]*//' | tr -d "\"'")
+    HY_HOP_INTERVAL=$(grep -E '^[[:space:]]*hop-interval:' "$f" | head -1 | sed -E 's/^[[:space:]]*hop-interval:[[:space:]]*//' | tr -d "\"'")
+}
+
+render_hop_block() {
+    [[ -n "$HY_PORTS" ]] || return 0
+    echo "    ports: \"$HY_PORTS\""
+    [[ -n "$HY_HOP_INTERVAL" ]] && echo "    hop-interval: \"$HY_HOP_INTERVAL\""
+    return 0
+}
+
+ask_native_hopping() {
+    local range s lo hi bad hop
+    local -a segs=()
+
+    while true; do
+        printf "  跳跃端口范围 (默认: 30000-31000, 也支持 1000-2000,3000): " >&2
+        if ! read -r range; then echo >&2; return 1; fi
+        range=$(clean_input "$range")
+        [[ -z "$range" ]] && range="30000-31000"
+
+        echo "$range" | grep -qE '^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$' || {
+            print_error "格式应为 30000-31000 或 1000-2000,3000"; continue; }
+
+        # 内核把 ports 交给 utils.NewUnsignedRanges[uint16] (adapter/outbound/hysteria2.go:239),
+        # 逗号先被换成 / 再切分, 段数 > 28 直接报错 (common/utils/ranges.go:24-28)。
+        IFS=',' read -ra segs <<< "$range"
+        (( ${#segs[@]} > 28 )) && { print_error "最多 28 段 (内核硬限制, common/utils/ranges.go:26-28)"; continue; }
+
+        bad=0
+        # ⚠ 必须先切数组再遍历: "${range//,/ }" 外面带引号不会分词, 循环只会跑一次
+        for s in "${segs[@]}"; do
+            # 单端口 "5000" 时 %%-* / #*- 都不匹配, lo=hi=5000 —— 行为正确
+            lo="${s%%-*}"; hi="${s#*-}"
+            # 与面板端口策略一致: 跳跃端口同样拒绝 1-1023 特权段
+            (( lo < 1024 || lo > 65535 )) && { print_error "端口越界: $s (需在 1024-65535)"; bad=1; break; }
+            if [[ "$s" == *-* ]]; then
+                (( hi < lo || hi > 65535 )) && { print_error "端口区间非法: $s"; bad=1; break; }
+            fi
+        done
+        (( bad )) && continue
+        break
+    done
+    HY_PORTS="$range"
+
+    while true; do
+        printf "  跳跃间隔 hop-interval 秒 (默认: 30, 可写区间 15-30): " >&2
+        if ! read -r hop; then echo >&2; return 1; fi
+        hop=$(clean_input "$hop")
+        [[ -z "$hop" ]] && hop="30"
+        echo "$hop" | grep -qE '^[0-9]+(-[0-9]+)?$' || {
+            print_error "格式应为 30 或 15-30 (内核只接受单区间, 写 15,30 会报 invalid range)"; continue; }
+        break
+    done
+    HY_HOP_INTERVAL="$hop"
+
+    local h1="${hop%%-*}"
+    (( h1 > 0 && h1 < 5 )) && print_warn "小于 5 秒会被内核静默抬到 5 秒 (adapter/outbound/hysteria2.go:253-257)"
+    print_ok "原生端口跳跃: ports=$HY_PORTS hop-interval=$HY_HOP_INTERVAL (仅客户端侧生效)"
+    return 0
+}
+
+# 端口跳跃总入口: 原生 / iptables / 不开
+ask_port_hopping_mode() {
+    echo "  端口跳跃 (UDP, 抗封锁):" >&2
+    echo "  1) 内核原生 ports/hop-interval (仅客户端, 不动防火墙, 重启不失效)" >&2
+    echo "  2) iptables DNAT (服务端改防火墙, 重启后需重加)" >&2
+    echo "  3) 不开启" >&2
+    printf "  选择 (默认3): " >&2
+    if ! read -r choice; then echo >&2; return 1; fi
+    case "$(clean_input "$choice")" in
+        1) ask_native_hopping "$1" || return 1 ;;
+        2) ask_port_hopping "$1" ;;
+        *) return 0 ;;
+    esac
+}
+
+# ---------- ③ masquerade 伪装站 (之前硬编码 https://bing.com) ----------
+#   listener/inbound/hysteria2.go:29
+#   scheme 仅接受 file / http / https, 否则硬报错 unknown masquerade URL scheme
+#   (listener/sing_hysteria2/server.go:155)
+#   ⚠ proxy 侧没有该字段, validate.py 也禁止写在 proxies 里
+HY_MASQUERADE=""
+
+ask_masquerade() {
+    HY_MASQUERADE=""
+    echo "  masquerade 伪装站 (被探测时返回的假站点):" >&2
+    echo "  1) https://www.bing.com" >&2
+    echo "  2) https://www.cloudflare.com" >&2
+    echo "  3) 自定义 URL (仅 http/https/file)" >&2
+    echo "  4) 关闭" >&2
+    printf "  选择 (默认1): " >&2
+    if ! read -r choice; then echo >&2; return 1; fi
+    case "$(clean_input "$choice")" in
+        2) HY_MASQUERADE="https://www.cloudflare.com" ;;
+        3)
+            printf "  伪装站 URL (例如 https://example.com): " >&2
+            if ! read -r u; then echo >&2; return 1; fi
+            u=$(clean_input "$u")
+            echo "$u" | grep -qE '^(https?|file)://[^[:space:]]+$' || {
+                print_error "必须以 http:// / https:// / file:// 开头 (否则内核报 unknown masquerade URL scheme)"
+                return 1; }
+            HY_MASQUERADE="$u" ;;
+        4) return 0 ;;
+        *) HY_MASQUERADE="https://www.bing.com" ;;
+    esac
 }
 
 # ================================
@@ -463,19 +656,29 @@ render_client_yaml() {
         fi
         echo "    alpn:"
         echo "      - h3"
+        # ---- 选配: 原生端口跳跃 (与 obfs 无互斥, 顺序固定在最后) ----
+        render_hop_block
+        # ---- 选配: obfs 混淆 (必须与服务端逐字一致) ----
+        render_obfs_block
     } > "$out_file"
 }
 
 hy2_link() {
     local pw="$1" ip="$2" port="$3" num="$4"
     calc_pin "$CERT_FILE"
-    local q
+    local q obfs_q=""
     if [[ "$CERT_TRUSTED" == "true" ]]; then
-        q="sni=$CERT_DOMAIN&insecure=0&alpn=h3&obfs=none&upmbps=50&downmbps=200"
+        q="sni=$CERT_DOMAIN&insecure=0&alpn=h3&upmbps=50&downmbps=200"
     else
-        q="sni=$CERT_DOMAIN&alpn=h3&obfs=none&pin=$CERT_PIN&upmbps=50&downmbps=200"
+        q="sni=$CERT_DOMAIN&alpn=h3&pin=$CERT_PIN&upmbps=50&downmbps=200"
     fi
-    echo "hysteria2://$pw@$ip:$port?$q#HY2-$num"
+    # obfs 分量: 与 YAML 同名字段, 服务端/客户端需逐字一致
+    if [[ -n "$HY_OBFS" ]]; then
+        obfs_q="&obfs=$HY_OBFS&obfs-password=$HY_OBFS_PASSWORD"
+    else
+        obfs_q="&obfs=none"
+    fi
+    echo "hysteria2://$pw@$ip:$port?$q$obfs_q#HY2-$num"
 }
 
 # ================================
@@ -620,7 +823,13 @@ add_config() {
         print_ok "外部证书已复制到 M 内核路径: $dst_crt (副本可经「4)重建客户端文件」或每日 timer 刷新)"
     fi
 
-    ask_port_hopping "$port"
+    ask_port_hopping_mode "$port" || return 1
+
+    # ---- 选配: obfs 混淆 (服务端/客户端对称) ----
+    ask_obfs || return 1
+
+    # ---- 选配: masquerade 伪装站 ----
+    ask_masquerade || return 1
 
     local public_ip
     PUBLIC_IP=$(detect_public_ip) || return 1
@@ -641,7 +850,8 @@ listeners:
     port: $port
     users:
       user1: $password
-    masquerade: https://bing.com
+$(render_obfs_block)
+$([[ -n "$HY_MASQUERADE" ]] && printf '    masquerade: %s' "$HY_MASQUERADE")
     certificate: $CERT_FILE
     private-key: $KEY_FILE
 EOF
@@ -706,8 +916,10 @@ list_configs() {
         dom=$(extract_cert_domain "$cert" 2>/dev/null)
 
         check_copy_staleness "$cert" 2>/dev/null || cert="$cert  ⚠副本已过期(源已续期)"
-        printf "${GREEN}%s${RESET}) 端口:${BLUE}%s${RESET} 域名:${YELLOW}%s${RESET} 证书:${CYAN}%s${RESET}\n" \
-            "$num" "${port:-N/A}" "${dom:-N/A}" "${cert:-N/A}" >&2
+        local obfs
+        obfs=$(grep -E '^[[:space:]]*obfs:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs:[[:space:]]*//')
+        printf "${GREEN}%s${RESET}) 端口:${BLUE}%s${RESET} 域名:${YELLOW}%s${RESET} 混淆:${MAGENTA}%s${RESET} 证书:${CYAN}%s${RESET}\n" \
+            "$num" "${port:-N/A}" "${dom:-N/A}" "${obfs:-关}" "${cert:-N/A}" >&2
     done
 }
 
@@ -805,6 +1017,9 @@ rebuild_client() {
     local port password SERVER_IP
     port=$(grep -E '^[[:space:]]*port:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
     password=$(grep -E '^[[:space:]]*user1:' "$IN_FILE" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    # 选配: 读回 obfs / 原生端口跳跃, 保证重建后与子配置一致
+    read_obfs_opts "$IN_FILE"
+    read_hop_opts "$IN_FILE"
     SERVER_IP=$(detect_public_ip)
 
     local OUT_FILE="$OUT_DIR/${PROTO}_client-$pad.yaml" SHARE_FILE="$OUT_DIR/${PROTO}_share-$pad.txt"
@@ -834,6 +1049,9 @@ rebuild_client_silent() {
     local port password SERVER_IP
     port=$(grep -E '^[[:space:]]*port:' "$in_file" | awk -F: '{gsub(/ /,"",$2); print $2}')
     password=$(grep -E '^[[:space:]]*user1:' "$in_file" | awk -F: '{gsub(/ /,"",$2); print $2}')
+    # 选配: 读回 obfs / 原生端口跳跃
+    read_obfs_opts "$in_file"
+    read_hop_opts "$in_file"
     SERVER_IP=$(detect_public_ip)
 
     render_client_yaml "$OUT_DIR/${PROTO}_client-$pad.yaml" "$pad" "$SERVER_IP" "$port" "$password"

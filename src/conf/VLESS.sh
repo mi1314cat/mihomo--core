@@ -1,11 +1,13 @@
 #!/bin/bash
 
 # ================================
-# VLESS 内核服务端生成脚本 (WS / XHTTP 二选一 + TLS)
+# VLESS 内核服务端生成脚本 (WS / XHTTP / gRPC / HTTP2 / 裸TCP 五选一 + TLS)
 # 基于 Trojan.sh 框架:
-#   - 传输: 1) WS (CDN友好)  2) XHTTP (XHTTP+CDN)
+#   - 传输: 1) WS (CDN友好)  2) XHTTP (XHTTP+CDN)  3) gRPC  4) HTTP/2  5) 裸 TCP
 #   - TLSS: 真实域名证书 (走 CDN 伪装)
-#   - smux: 可选 (3档: web/video/download, 客户端侧)
+#   - xhttp 抗探测档位: 标准/强化/极致 (x-padding-*, listener 与 proxy 必须逐字段一致)
+#   - client-fingerprint: 7 档可选 (不再硬编码 chrome)
+#   - smux: 可选 (3档: web/video/download, 客户端侧) + 服务端 mux-option 联动
 #   - mTLS: 可选 (服务端 client-auth 双向认证)
 #   - ECH:  可选 (Cloudflare 侧自动检测/开启 + 客户端 enable)
 # ================================
@@ -43,6 +45,30 @@ CONF_DIR="$BASE_DIR/conf/config.d"
 OUT_DIR="$BASE_DIR/out"
 CERT_DIR="$BASE_DIR/conf/certs"
 PUB_DIR="$OUT_DIR/pub"
+
+# ================================
+# 传输 / 选配默认值 (重建时 read_features 会从片段注释回填)
+#   VLESS_TRANSPORT : ws | xhttp | grpc | h2 | tcp
+#   XHTTP_LEVEL     : std | strong | max   (x-padding 抗探测档位)
+#   CLIENT_FP       : client-fingerprint 取值 (adapter/outbound/vless.go:90)
+# ================================
+VLESS_TRANSPORT="ws"
+XHTTP_LEVEL="std"
+CLIENT_FP="chrome"
+GRPC_SERVICE=""
+H2_PATH=""
+XHTTP_PATH=""
+WS_PATH=""
+XHTTP_MODE="auto"
+# x-padding 抗探测字段 (listener/inbound/vless.go:42-47 与 adapter/outbound/vless.go:99-104 字段同名同义)
+XHTTP_PAD_BYTES="100-1000"
+XHTTP_PAD_OBFS=false
+XHTTP_PAD_KEY=""
+XHTTP_PAD_HEADER="X-Pad"
+XHTTP_PAD_PLACEMENT="query"
+XHTTP_PAD_METHOD="tokenish"
+XHTTP_SESSION_KEY="X-Session"
+XHTTP_SEQ_KEY="X-Seq"
 
 
 # ---------- 共享库 (src/lib/env.sh) ----------
@@ -204,26 +230,9 @@ random_path() {
 }
 
 safe_read_port() {
-    local default="$1"
-    local input
-
-    while true; do
-        printf "请输入监听端口 (默认: %s): " "$default" >&2
-        read input
-        input=$(clean_input "$input")
-        port="${input:-$default}"
-
-        [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
-        (( port >= 1 && port <= 65535 )) || { print_error "端口范围错误"; continue; }
-
-        ss -tuln | awk '{print $5}' | grep -E -q "(:|])$port$" && {
-            print_error "端口已占用"
-            continue
-        }
-
-        echo "$port"
-        return
-    done
+    # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
+    #   拒绝 1-1023 特权端口与系统常用端口, TCP/UDP 双查占用, EOF 安全退出。
+    m_safe_read_port "$1"
 }
 
 # ================================
@@ -264,30 +273,251 @@ smux_profile() {
     esac
 }
 
+# brutal (BBR 带宽声明) 档位 —— 客户端 smux.brutal-opts 与服务端 mux-option.brutal 必须成对,
+#   proxy: adapter/outbound/singmux.go:32-39 ; listener: listener/inbound/mux.go:7-13
+#   up/down 单位走 ^(\d+)\s*([KMGT]?)([Bb])ps$ (common/utils/mbps.go:9), 纯数字=Mbps, 不匹配静默 0
+BRUTAL_ENABLED=false
+BRUTAL_UP="200 Mbps"
+BRUTAL_DOWN="500 Mbps"
+
+# 生成 x-padding 抗探测密钥 (base64url, 16 字符, 无 '=' 填充)
+random_pad_key() {
+    openssl rand -base64 12 2>/dev/null | tr '+/' '-_'
+}
+
+# ================================
+# xhttp x-padding 抗探测档位 -> XHTTP_PAD_FIELDS
+# 同一份字符串同时喂给 listener 的 xhttp-config 与 proxy 的 xhttp-opts
+# (两侧字段同名同义, 缩进同为 6 空格; 铁律: 必须逐字段一致)
+#   x-padding-bytes     默认 "100-1000"            transport/xhttp/xpadding.go:180-186
+#   x-padding-obfs-mode 为 true 时才使用下面 4 项    transport/xhttp/config.go:503-512
+#   x-padding-placement queryInHeader/cookie/header/query/path/body/auto  config.go:21-29
+#   x-padding-method    repeat-x / tokenish        transport/xhttp/xpadding.go:14-18
+#   session-*/seq-*     默认 placement 是 path      transport/xhttp/config.go:266-277
+# ================================
+render_xhttp_pad() {
+    XHTTP_PAD_FIELDS="      x-padding-bytes: \"$XHTTP_PAD_BYTES\""
+    if $XHTTP_PAD_OBFS; then
+        XHTTP_PAD_FIELDS="${XHTTP_PAD_FIELDS}
+      x-padding-obfs-mode: true
+      x-padding-key: \"$XHTTP_PAD_KEY\"
+      x-padding-header: $XHTTP_PAD_HEADER
+      x-padding-placement: $XHTTP_PAD_PLACEMENT
+      x-padding-method: $XHTTP_PAD_METHOD"
+        # 极致档再把 session / seq 从默认 path 挪到 header, URL 长度不再抖动
+        if [[ "$XHTTP_LEVEL" = "max" ]]; then
+            XHTTP_PAD_FIELDS="${XHTTP_PAD_FIELDS}
+      session-placement: header
+      session-key: $XHTTP_SESSION_KEY
+      seq-placement: header
+      seq-key: $XHTTP_SEQ_KEY"
+        fi
+    fi
+}
+
+# ================================================================
+# 传输方式渲染 (四处出口共用同一套变量, 避免三处渲染写法漂移)
+#
+# listener 侧 (listener/inbound/vless.go:12-30):
+#   ws    -> ws-path            (:16)
+#   xhttp -> xhttp-config       (:17)
+#   grpc  -> grpc-service-name  (:18)
+#   h2    -> 无此字段; tcp -> 无传输键
+#   sing_vless 只在 ws-path / grpc-service-name / xhttp-config 非空时注册 HTTP handler
+#   (listener/sing_vless/server.go:167 / :181 / :199-239), 否则 httpServer.Handler 为 nil,
+#   每条连接直接走裸 VLESS (server.go:276-284)。=> listener 端结构性没有 h2。
+#
+# proxy 侧 (adapter/outbound/vless.go:72 + :78-82):
+#   ws    -> network: ws    + ws-opts{path,headers.Host}
+#   xhttp -> network: xhttp + xhttp-opts{mode,path,x-padding-*}
+#   grpc  -> network: grpc  + grpc-opts{grpc-service-name}
+#   h2    -> network: h2    + h2-opts{host[],path}
+#            ⚠️ h2-opts.host 为空会被注入 ["www.example.com"] (adapter/outbound/vless.go:561-564)
+#   tcp   -> network: tcp   (default 分支, vless.go:258-262)
+# ================================================================
+render_transport() {
+    LISTENER_TRANSPORT_BLOCK=""
+    CLIENT_TRANSPORT_BLOCK=""
+    case "$VLESS_TRANSPORT" in
+        ws)
+            LISTENER_TRANSPORT_BLOCK="    ws-path: $WS_PATH"
+            CLIENT_TRANSPORT_BLOCK="    network: ws
+    ws-opts:
+      path: $WS_PATH
+      headers:
+        Host: $CLIENT_HOST"
+            ;;
+        xhttp)
+            LISTENER_TRANSPORT_BLOCK="    xhttp-config:
+      mode: $XHTTP_MODE
+      path: $XHTTP_PATH
+${XHTTP_PAD_FIELDS}"
+            CLIENT_TRANSPORT_BLOCK="    network: xhttp
+    xhttp-opts:
+      mode: $XHTTP_MODE
+      path: $XHTTP_PATH
+${XHTTP_PAD_FIELDS}"
+            ;;
+        grpc)
+            LISTENER_TRANSPORT_BLOCK="    grpc-service-name: $GRPC_SERVICE"
+            CLIENT_TRANSPORT_BLOCK="    network: grpc
+    grpc-opts:
+      grpc-service-name: $GRPC_SERVICE"
+            ;;
+        h2)
+            # listener 无 h2 字段 (上面注释已说明), 客户端仍按内核结构输出
+            CLIENT_TRANSPORT_BLOCK="    network: h2
+    h2-opts:
+      host:
+        - $CLIENT_HOST
+      path: $H2_PATH"
+            ;;
+        *)
+            # tcp: 裸 TCP, 两侧都不写任何传输键
+            CLIENT_TRANSPORT_BLOCK="    network: tcp"
+            ;;
+    esac
+}
+
+# 分享链接 URI 参数 (内核导入口径见 common/convert/v.go:67-140:
+#   type=ws      -> path + host      (:109-136)
+#   type=xhttp   -> path + mode      (:141-163)
+#   type=grpc    -> serviceName      (:137-140)
+#   type=h2      -> path + host      (:98-108); type=http 亦被映射成 h2 (:73-76)
+#   type=tcp     -> 无额外参数       (:79-80)
+render_share_link() {
+    local fp="$CLIENT_FP" ech=""
+    $ECH_ENABLED && ech="&ech=$(urlencode "$ECH_QUERY_PARAM")"
+    case "$VLESS_TRANSPORT" in
+        xhttp) SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#VLESS-XHTTP-$INDEX" ;;
+        grpc)  SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#VLESS-GRPC-$INDEX" ;;
+        h2)    SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#VLESS-H2-$INDEX" ;;
+        tcp)   SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#VLESS-TCP-$INDEX" ;;
+        *)     SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#VLESS-WS-$INDEX" ;;
+    esac
+}
+
+# ================================================================
+# 四处渲染出口 ① : 服务端 config.d 片 -> $IN_FILE
+# 顶部注释行是重建客户端时的唯一信息来源 (read_features 回读)
+# ================================================================
+render_listener_frag() {
+    cat > "$IN_FILE" <<EOF
+# transport: $VLESS_TRANSPORT
+# server-name: $FRONT_DOMAIN
+# client-fp: $CLIENT_FP
+$([[ "$VLESS_TRANSPORT" = "xhttp" ]] && printf '# xhttp-level: %s' "$XHTTP_LEVEL")
+$([[ "$VLESS_TRANSPORT" = "h2" ]] && printf '# h2-path: %s' "$H2_PATH")
+# access: $ACCESS_MODE
+# mtls: $MTLS_ENABLED
+# ech: $ECH_ENABLED
+# smux: ${SMUX_PROFILE:-false}
+$(if $BRUTAL_ENABLED; then printf '# brutal: true
+# brutal-up: %s
+# brutal-down: %s' "$BRUTAL_UP" "$BRUTAL_DOWN"; fi)
+listeners:
+  - name: vless-$INDEX
+    type: vless
+    listen: "$LISTEN_ADDR"
+    port: $VLESS_PORT
+    users:
+      - username: vless-$INDEX
+        uuid: $UUID
+    certificate: $CERT_FILE
+    private-key: $KEY_FILE
+$LISTENER_TRANSPORT_BLOCK
+$MUX_OPTION_BLOCK
+$([ "$MTLS_ENABLED" = true ] && printf '    client-auth-type: RequireAndVerifyClientCert
+    client-auth-cert: %s' "$MTLS_CA")
+EOF
+}
+
+# ================================================================
+# 四处渲染出口 ② : 客户端 out/*.yaml -> $OUT_FILE
+# servername 而非 sni: vless proxy 只有 servername (adapter/outbound/vless.go:89),
+# 写 sni 会被静默丢弃 (common/structure/structure.go:566-581)
+# ================================================================
+render_client_yaml() {
+    cat > "$OUT_FILE" <<EOF
+$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
+proxies:
+  - name: vless-$INDEX
+    type: vless
+    server: $CLIENT_HOST
+    port: 443
+    uuid: $UUID
+    servername: $CLIENT_SNI
+    client-fingerprint: $CLIENT_FP
+    udp: true
+    tls: true
+    skip-cert-verify: true
+$CLIENT_TRANSPORT_BLOCK
+$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
+$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
+$SMUX_BLOCK
+EOF
+}
+
+# ================================================================
+# 四处渲染出口 ③④ : nginx 转发片段 (render_nginx_conf) 与分享链接 (render_share_link)
+# 已在各自函数中实现, 全部消费同一批全局渲染变量。
+# ================================================================
+
 # ================================
 # 特性询问（模式 + mTLS + smux）
 # 选择持久化到 config.d 片的注释行:
-#   # mode: tls|reality
+#   # transport: ws|xhttp|grpc|h2|tcp
+#   # xhttp-level: std|strong|max      (仅 xhttp)
+#   # client-fp: <client-fingerprint>
+#   # h2-path: /<path>                 (仅 h2, listener 无处存放只能记注释)
+#   # access: cdn|nginx
 #   # mtls: true
+#   # ech: true
 #   # smux: <档位>
+#   # brutal: true / # brutal-up: / # brutal-down:
 # ================================
 ask_features() {
     local yn
-    VLESS_TRANSPORT=""   # ws | xhttp (二选一)
+    VLESS_TRANSPORT="ws"  # ws | xhttp | grpc | h2 | tcp
+    XHTTP_LEVEL="std"
+    CLIENT_FP="chrome"
     ACCESS_MODE="cdn"    # cdn(CF直连 0.0.0.0) | nginx(nginx转发 127.0.0.1)
     MTLS_ENABLED=false
     SMUX_PROFILE=""
     ECH_ENABLED=false
+    BRUTAL_ENABLED=false
 
-    echo "  传输方式 (二选一):" >&2
+    echo "  传输方式:" >&2
     echo "  1) WS (WebSocket, CDN 最兼容, 推荐)" >&2
     echo "  2) XHTTP (XHTTP+CDN, 抗识别更强, 需 Cloudflare 支持)" >&2
+    echo "  3) gRPC (HTTP/2 多路复用, 无 CDN 场景)" >&2
+    echo "  4) HTTP/2 (h2, 直连)" >&2
+    echo "  5) 裸 TCP (raw)" >&2
     printf "  选择 (默认1): " >&2
     read -r yn
     case "$(clean_input "$yn")" in
         2) VLESS_TRANSPORT="xhttp" ;;
+        3) VLESS_TRANSPORT="grpc" ;;
+        4) VLESS_TRANSPORT="h2" ;;
+        5) VLESS_TRANSPORT="tcp" ;;
         *) VLESS_TRANSPORT="ws" ;;
     esac
+
+    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
+        ask_xhttp_level
+    fi
+
+    ask_client_fp
+
+    if [[ "$VLESS_TRANSPORT" = "h2" ]]; then
+        # mihomo 的 VLESS listener 结构性没有 h2 (listener/inbound/vless.go:12-30):
+        # sing_vless 只在 ws-path / grpc-service-name / xhttp-config 非空时才注册 HTTP handler
+        # (listener/sing_vless/server.go:167 / :181 / :199-239), 否则连接被直接按裸 VLESS 解析,
+        # 客户端发来的 HTTP/2 帧会被当成 VLESS 头 -> 必然握手失败。
+        print_warn "HTTP/2 (h2) 没有可用的服务端实现: mihomo 的 vless listener 不提供 h2 终止 (listener/inbound/vless.go:12-30 无该字段)"
+        print_warn "已自动改用 gRPC (同为 HTTP/2 + ALPN h2 多路复用, 且 listener 侧有 grpc-service-name 支持)"
+        VLESS_TRANSPORT="grpc"
+    fi
 
     echo "  接入方式:" >&2
     echo "  1) CF 直连 (监听 0.0.0.0, Cloudflare Origin Rules 直接回源到端口)" >&2
@@ -313,6 +543,20 @@ ask_features() {
             3) SMUX_PROFILE="download" ;;
             *) SMUX_PROFILE="web" ;;
         esac
+        printf "启用 brutal 带宽声明 (BBR, 写死上下行速率)? (y/N): " >&2
+        read -r yn
+        if [[ "$(clean_input "$yn")" =~ ^[yY]$ ]]; then
+            BRUTAL_ENABLED=true
+            printf "  brutal 上行带宽 (默认 %s): " "$BRUTAL_UP" >&2
+            read -r yn
+            yn=$(clean_input "$yn")
+            [[ -n "$yn" ]] && BRUTAL_UP="$yn"
+            printf "  brutal 下行带宽 (默认 %s): " "$BRUTAL_DOWN" >&2
+            read -r yn
+            yn=$(clean_input "$yn")
+            [[ -n "$yn" ]] && BRUTAL_DOWN="$yn"
+            print_warn "brutal 会把吞吐硬顶到上述速率 (up: $BRUTAL_UP / down: $BRUTAL_DOWN), 不匹配正则会静默变 0"
+        fi
     fi
 
     printf "启用 ECH (Encrypted Client Hello, 需 Cloudflare 支持)? (y/N): " >&2
@@ -330,18 +574,102 @@ ask_features() {
     fi
 }
 
+# 按档位填充 x-padding 字段 (询问与重建共用, 保证两侧生成逻辑唯一)
+apply_xhttp_level() {
+    case "$XHTTP_LEVEL" in
+        strong)
+            XHTTP_PAD_BYTES="256-4096"
+            XHTTP_PAD_OBFS=true
+            XHTTP_PAD_PLACEMENT="query"
+            ;;
+        max)
+            XHTTP_PAD_BYTES="512-8192"
+            XHTTP_PAD_OBFS=true
+            XHTTP_PAD_PLACEMENT="header"
+            ;;
+        *)
+            # 标准档显式写出内核默认值 "100-1000" (transport/xhttp/xpadding.go:180-186):
+            # 行为与不写完全一致, 只是配置里看得见
+            XHTTP_LEVEL="std"
+            XHTTP_PAD_BYTES="100-1000"
+            XHTTP_PAD_OBFS=false
+            XHTTP_PAD_PLACEMENT="query"
+            ;;
+    esac
+    render_xhttp_pad
+}
+
+# xhttp 抗探测档位 (spec §4.1 ②)
+# 铁律: x-padding-key / x-padding-header 只在 x-padding-obfs-mode: true 时生效
+#       (transport/xhttp/config.go:503-512), 且 listener 的 xhttp-config 与
+#       proxy 的 xhttp-opts 必须逐字段一致, 否则客户端 padding 服务端解不开。
+ask_xhttp_level() {
+    local yn
+    echo "  xhttp 抗探测档位:" >&2
+    echo "  1) 标准 (推荐) 只用内核默认 padding, 兼容性最好" >&2
+    echo "  2) 强化 调整 padding 区间 + 开 obfs mode" >&2
+    echo "  3) 极致 全面拉高 padding/session/seq 各维度" >&2
+    printf "  选择 (默认1): " >&2
+    read -r yn
+    case "$(clean_input "$yn")" in
+        2) XHTTP_LEVEL="strong"; XHTTP_PAD_KEY=$(random_pad_key) ;;
+        3) XHTTP_LEVEL="max";    XHTTP_PAD_KEY=$(random_pad_key) ;;
+        *) XHTTP_LEVEL="std";    XHTTP_PAD_KEY="" ;;
+    esac
+    apply_xhttp_level
+}
+
+# client-fingerprint (adapter/outbound/vless.go:90)
+# 全量枚举见 component/tls/utls.go:78-101; 这里只暴露未废弃的 7 个
+# (chrome_psk / chrome_psk_shuffle / chrome_padding_psk_shuffle / chrome_pq /
+#  chrome_pq_psk 在 utls.go:94-99 已标 deprecated; 写错值只会 log.Warn 后
+#  静默降级成原生 TLS, utls.go:56-59)
+ask_client_fp() {
+    local yn
+    echo "  TLS 客户端指纹 (client-fingerprint):" >&2
+    echo "  1) chrome (推荐, 与绝大多数 CDN 一致)" >&2
+    echo "  2) firefox" >&2
+    echo "  3) safari" >&2
+    echo "  4) edge" >&2
+    echo "  5) ios" >&2
+    echo "  6) android" >&2
+    echo "  7) random (每次连接加权随机, chrome 权重最高)" >&2
+    printf "  选择 (默认1): " >&2
+    read -r yn
+    case "$(clean_input "$yn")" in
+        2) CLIENT_FP="firefox" ;;
+        3) CLIENT_FP="safari" ;;
+        4) CLIENT_FP="edge" ;;
+        5) CLIENT_FP="ios" ;;
+        6) CLIENT_FP="android" ;;
+        7) CLIENT_FP="random" ;;
+        *) CLIENT_FP="chrome" ;;
+    esac
+}
+
 # 读取 config.d 片注释中的特性标记（供重建/导出时同步）
 # 兼容旧格式 "# smux: true" -> 视为 web 档
 read_features() {
     local f="$1"
-    VLESS_TRANSPORT=""
+    VLESS_TRANSPORT="ws"
+    XHTTP_LEVEL="std"
+    CLIENT_FP="chrome"
+    H2_PATH=""
     ACCESS_MODE="cdn"
     MTLS_ENABLED=false
     SMUX_PROFILE=""
     ECH_ENABLED=false
-    if grep -qE "^[[:space:]]*# transport: (ws|xhttp)" "$f"; then
-        VLESS_TRANSPORT=$(grep -oE "^[[:space:]]*# transport: (ws|xhttp)" "$f" | awk '{print $3}')
+    BRUTAL_ENABLED=false
+    if grep -qE "^[[:space:]]*# transport: (ws|xhttp|grpc|h2|tcp)" "$f"; then
+        VLESS_TRANSPORT=$(grep -oE "^[[:space:]]*# transport: (ws|xhttp|grpc|h2|tcp)" "$f" | awk '{print $3}')
     fi
+    if grep -qE "^[[:space:]]*# xhttp-level: (std|strong|max)" "$f"; then
+        XHTTP_LEVEL=$(grep -oE "^[[:space:]]*# xhttp-level: (std|strong|max)" "$f" | awk '{print $3}')
+    fi
+    if grep -qE "^[[:space:]]*# client-fp: [^[:space:]]+" "$f"; then
+        CLIENT_FP=$(grep -oE "^[[:space:]]*# client-fp: [^[:space:]]+" "$f" | awk '{print $3}')
+    fi
+    H2_PATH=$(grep -oE "^[[:space:]]*# h2-path: [^[:space:]]+" "$f" | awk '{print $3}')
     if grep -qE "^[[:space:]]*# access: (cdn|nginx)" "$f"; then
         ACCESS_MODE=$(grep -oE "^[[:space:]]*# access: (cdn|nginx)" "$f" | awk '{print $3}')
     fi
@@ -352,9 +680,16 @@ read_features() {
     elif grep -qE "^[[:space:]]*# smux: true" "$f"; then
         SMUX_PROFILE="web"
     fi
+    grep -qE "^[[:space:]]*# brutal: true" "$f" && BRUTAL_ENABLED=true
+    if $BRUTAL_ENABLED; then
+        BRUTAL_UP=$(grep -oE "^[[:space:]]*# brutal-up: .+" "$f" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//')
+        BRUTAL_DOWN=$(grep -oE "^[[:space:]]*# brutal-down: .+" "$f" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//')
+    fi
 }
 
 # 渲染 smux 客户端配置块（按档位）；输出到变量 SMUX_BLOCK
+# padding 与服务端 mux-option.padding 成对 (singmux.go:29 / listener/inbound/mux.go:6)
+# brutal-opts 与服务端 mux-option.brutal 成对 (singmux.go:32-39 / listener/inbound/mux.go:10-13)
 render_smux() {
     SMUX_BLOCK=""
     [[ -z "$SMUX_PROFILE" ]] && return
@@ -365,19 +700,49 @@ render_smux() {
       protocol: smux
       max-connections: $mc
       min-streams: $mn
-      max-streams: $ms"
+      max-streams: $ms
+      padding: true"
+    if $BRUTAL_ENABLED; then
+        SMUX_BLOCK="$SMUX_BLOCK
+      brutal-opts:
+        enabled: true
+        up: \"$BRUTAL_UP\"
+        down: \"$BRUTAL_DOWN\""
+    fi
+}
+
+# 渲染服务端 mux-option (listener/inbound/vless.go:29 -> listener/sing/sing.go:84-89)
+# 没有它, 客户端 smux 档位就只是客户端一侧自说自话
+render_mux_option() {
+    MUX_OPTION_BLOCK=""
+    [[ -z "$SMUX_PROFILE" ]] && return
+    MUX_OPTION_BLOCK="    mux-option:
+      padding: true"
+    if $BRUTAL_ENABLED; then
+        MUX_OPTION_BLOCK="$MUX_OPTION_BLOCK
+      brutal:
+        enabled: true
+        up: \"$BRUTAL_UP\"
+        down: \"$BRUTAL_DOWN\""
+    fi
 }
 
 # ================================
 # 生成 Nginx location 转发片段 (可选接入方式, 存文件供复制)
-# 输入: VLESS_TRANSPORT / VLESS_PORT / WS_PATH / XHTTP_PATH / ACCESS_MODE
+# 输入: VLESS_TRANSPORT / VLESS_PORT / WS_PATH / XHTTP_PATH / GRPC_SERVICE / H2_PATH
 # 输出: Nginx 配置片段写入 NGINX_FILE (out/${PROTO}_nginx-<index>.conf)
+# 注意: 裸 TCP 走的是 nginx stream{} 四层透传, 片段要放 nginx.conf 而不是 conf.d
 # ================================
 render_nginx_conf() {
     local path idx
-    idx="${index:-$num2}"
+    if [[ -z "$INDEX" ]]; then
+        print_warn "INDEX 未设置, 跳过 Nginx 转发片段生成"
+        return
+    fi
+    idx="$INDEX"
     NGINX_FILE="$OUT_DIR/${PROTO}_nginx-$idx.conf"
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
+    case "$VLESS_TRANSPORT" in
+        xhttp)
         path="$XHTTP_PATH"
         cat > "$NGINX_FILE" <<EOF
 # ${PROTO}-$idx (XHTTP, 端口 $VLESS_PORT)
@@ -388,7 +753,47 @@ location $path {
     proxy_http_version 1.1;
 }
 EOF
-    else
+        ;;
+        grpc)
+        cat > "$NGINX_FILE" <<EOF
+# ${PROTO}-$idx (gRPC, 服务名 $GRPC_SERVICE, 端口 $VLESS_PORT)
+# 放入 nginx conf.d 站点 server{} 块内即可 (需编译 --with-http_v2_module)
+# ⚠️ nginx 开源版 grpc_pass 只支持 grpc:// 明文上游; 上游是 TLS 监听时
+#    请改用 nginx stream{} 四层透传, 或让本节点走 CF 直连。
+location /$GRPC_SERVICE {
+    grpc_pass grpc://127.0.0.1:$VLESS_PORT;
+    grpc_set_header Host \$host;
+    grpc_read_timeout 600s;
+}
+EOF
+        ;;
+        h2)
+        path="$H2_PATH"
+        cat > "$NGINX_FILE" <<EOF
+# ${PROTO}-$idx (HTTP/2, 端口 $VLESS_PORT)
+# ⚠️ mihomo 的 vless listener 不提供 h2 终止, 本片段仅在自建 h2 终止层时参考
+location $path {
+    proxy_ssl_server_name on;
+    proxy_pass https://127.0.0.1:$VLESS_PORT;
+    proxy_http_version 2.0;
+}
+EOF
+        ;;
+        tcp)
+        cat > "$NGINX_FILE" <<EOF
+# ${PROTO}-$idx (裸 TCP, 端口 $VLESS_PORT)
+# ⚠️ 裸 TCP 只能四层透传: 放进 nginx.conf 的 stream{} 块 (不是 conf.d 的 http server{}),
+#    nginx 不终结 TLS, TLS + VLESS 全部由 127.0.0.1:$VLESS_PORT 上的 mihomo listener 处理。
+stream {
+    server {
+        listen 443;
+        proxy_pass 127.0.0.1:$VLESS_PORT;
+        proxy_timeout 300s;
+    }
+}
+EOF
+        ;;
+        *)
         path="$WS_PATH"
         cat > "$NGINX_FILE" <<EOF
 # ${PROTO}-$idx (WS, 端口 $VLESS_PORT)
@@ -401,17 +806,22 @@ location $path {
     proxy_set_header Connection \$connection_upgrade;
 }
 EOF
-    fi
+        ;;
+    esac
     print_ok "Nginx 转发片段: $NGINX_FILE"
     echo -e "${CYAN}  ----- Nginx 配置片段 -----${RESET}" >&2
     cat "$NGINX_FILE" >&2
 }
 # ================================
-# Cloudflare ECH 检测/开启 (可选特性)
-# 逻辑: 已有 API Key 缓存 -> 查询 zone -> GET ech setting -> 已开跳过 / 未开 PATCH 开启
+# Cloudflare ECH 检测 (可选特性)
+#
+# 这里只**读取** ECH 状态, 不再自己调 Cloudflare API 去改配置。
+# 开启 ECH 由独立的 cf-manager 负责 (之后单独配置), 本脚本不持有也不索要
+# Cloudflare API Key —— 既避免把 Global API Key 落在 conf/.cf_api_key,
+# 也避免"面板顺带改你的 DNS/ECH 设置"这种副作用。
+#
 # 输出: CF_ECH_READY=true 表示 ECH 已在 Cloudflare 侧生效
-# ================================
-CF_CRED_FILE="$BASE_DIR/conf/.cf_api_key"
+# =============================================================
 
 cf_ech_ensure() {
     local domain="$1"
@@ -426,76 +836,15 @@ cf_ech_ensure() {
             CF_ECH_READY=true
             return 0
         else
-            print_warn "cf-manager 开启 ECH 失败, 降级为手动 API..."
+            print_warn "cf-manager 开启 ECH 失败"
         fi
     else
-        print_warn "未找到 cf-manager, 使用手动 API 方式..."
+        print_warn "未找到 cf-manager"
     fi
 
-    # 1. 获取 Cloudflare API Key (优先读缓存)
-    if [[ -f "$CF_CRED_FILE" ]]; then
-        email=$(awk -F= '/^EMAIL=/{print $2}' "$CF_CRED_FILE")
-        key=$(awk -F= '/^KEY=/{print $2}' "$CF_CRED_FILE")
-        print_info "使用已保存的 Cloudflare API Key (缓存: $CF_CRED_FILE)"
-    else
-        printf "请输入 Cloudflare 登录邮箱: " >&2
-        read -r email
-        email=$(clean_input "$email")
-        printf "请输入 Cloudflare Global API Key: " >&2
-        read -r key
-        key=$(clean_input "$key")
-        # 缓存 (供后续重建复用)
-        mkdir -p "$BASE_DIR/conf"
-        echo "EMAIL=$email" > "$CF_CRED_FILE"
-        echo "KEY=$key" >> "$CF_CRED_FILE"
-        chmod 600 "$CF_CRED_FILE"
-        print_ok "API Key 已缓存到 $CF_CRED_FILE (可删除该文件重新输入)"
-    fi
-
-    # 2. 根据域名查找 zone_id (Bug fix: 逐级向上剥域名, CF API name= 只认根 zone 名)
-    print_info "正在查询域名 $domain 的 Cloudflare zone..."
-    zone_id=""
-    local try="$domain"
-    while [[ -n "$try" ]]; do
-        zone_id=$(curl -sS -4 -X GET "https://api.cloudflare.com/client/v4/zones?name=$try" \
-            -H "X-Auth-Email: $email" -H "X-Auth-Key: $key" 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result'][0]['id'] if d.get('success') and d['result'] else '')")
-        if [[ -n "$zone_id" ]]; then
-            print_ok "匹配到 zone: $try"
-            break
-        fi
-        # 剥掉最左一级 (a.b.c → b.c → c)
-        try="${try#*.}"
-        [[ "$try" == *"."* ]] || break
-    done
-    if [[ -z "$zone_id" ]]; then
-        print_error "无法找到域名 $domain 的 zone (API Key 可能无效或域名不在该账户)"
-        print_warn "请手动确认后重试; 节点仍会生成, 但 ECH 未启用"
-        return 1
-    fi
-    print_ok "zone_id: $zone_id"
-
-    # 3. 查询当前 ECH 状态
-    ech_status=$(curl -sS -4 -X GET "https://api.cloudflare.com/client/v4/zones/$zone_id/settings/ech" \
-        -H "X-Auth-Email: $email" -H "X-Auth-Key: $key" 2>/dev/null \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result']['value'] if d.get('success') else '')")
-
-    # 4. 已开启则跳过, 未开启则 PATCH
-    if [[ "$ech_status" == "on" ]]; then
-        print_ok "Cloudflare ECH 已开启, 跳过"
-        CF_ECH_READY=true
-        return 0
-    fi
-    print_warn "Cloudflare ECH 当前未开启, 正在通过 API 开启..."
-    if curl -sS -4 -X PATCH "https://api.cloudflare.com/client/v4/zones/$zone_id/settings/ech" \
-        -H "X-Auth-Email: $email" -H "X-Auth-Key: $key" \
-        -H "Content-Type: application/json" \
-        --data '{"value": "on"}' 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('OK' if d.get('success') else 'FAIL')" | grep -q OK; then
-        print_ok "Cloudflare ECH 已成功开启"
-        CF_ECH_READY=true
-    else
-        print_error "Cloudflare ECH 开启失败 (API 权限或配置问题), 请手动到 Cloudflare 后台确认"
-    fi
+    print_info "ECH 需要由 cf-manager 单独开启; 本脚本只读状态, 不再代改 Cloudflare 配置"
+    print_info "请先配置 cf-manager 后重新执行, 或先用普通 TLS 建节点 (不影响出网)"
+    return 1
 }
 
 # ================================
@@ -551,7 +900,7 @@ ask_cert() {
             printf "请输入要申请证书的域名: " >&2
             read -r domain
             domain=$(clean_input "$domain" | tr '[:upper:]' '[:lower:]')
-            [[ -z "$domain" ]] && { print_error "域名不能为空"; generate_cert "cloudflare.com"; CERT_DOMAIN="cloudflare.com"; return; }
+            [[ -z "$domain" ]] && { print_error "域名不能为空"; generate_cert "$M_NO_DOMAIN"; CERT_DOMAIN="$M_NO_DOMAIN"; return; }
             # 优先 cf-manager 签 Origin CA (15年, 走CF回源正确选择); 失败退 ssl.sh
             print_info "通过 cf-manager 申请 Origin CA 证书: $domain ..."
             if cfmgr && "$CFMGR" cert issue "$domain" 2>/dev/null; then
@@ -564,10 +913,10 @@ ask_cert() {
                 fi
             fi
             print_warn "cf-manager 签 Origin CA 失败, 退回 ssl.sh (acme.sh)..."
-            bash <(curl -fsSL https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/ssl.sh) || {
+            fetch_script "ssl.sh" "$CFMGR_DIR/ssl.sh" && bash "$CFMGR_DIR/ssl.sh" || {
                 print_error "ssl.sh 运行失败, 退回自签"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
                 return
             }
             # ssl.sh 产出 /root/catmi/<域名>.crt/.key; 让用户输入域名
@@ -580,13 +929,13 @@ ask_cert() {
                 CERT_DOMAIN="$domain"
             else
                 print_error "未找到 /root/catmi/$domain.crt, 退回自签"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
             fi
             ;;
         3)
-            generate_cert "cloudflare.com"
-            CERT_DOMAIN="cloudflare.com"
+            generate_cert "$M_NO_DOMAIN"
+            CERT_DOMAIN="$M_NO_DOMAIN"
             ;;
         *)
             # 默认1: 已有证书 (双路径: cf-manager Origin CA 优先 + 原 /root/catmi)
@@ -614,13 +963,13 @@ ask_cert() {
                 CERT_DOMAIN=$(basename "$chosen" .crt | sed 's/cert-//; s/\.crt//')
                 if [[ ! -f "$KEY_FILE" ]]; then
                     print_error "缺少私钥 ${CERT_FILE%.crt}.key, 退回自签"
-                    generate_cert "cloudflare.com"
-                    CERT_DOMAIN="cloudflare.com"
+                    generate_cert "$M_NO_DOMAIN"
+                    CERT_DOMAIN="$M_NO_DOMAIN"
                 fi
             else
                 print_info "无已有证书, 使用自签"
-                generate_cert "cloudflare.com"
-                CERT_DOMAIN="cloudflare.com"
+                generate_cert "$M_NO_DOMAIN"
+                CERT_DOMAIN="$M_NO_DOMAIN"
             fi
             ;;
     esac
@@ -678,7 +1027,7 @@ add_config() {
         LINK_IP="$SERVER_IP"
     fi
 
-    # 5. 询问特性 (传输二选一 / smux / mTLS / ECH)
+    # 5. 询问特性 (传输五选一 / xhttp 档位 / 指纹 / smux / mTLS / ECH)
     ask_features
 
     # 6. TLS 证书来源 (VLESS 恒 TLS, 无 Reality 分支)
@@ -706,6 +1055,10 @@ add_config() {
     # 7. 传输路径 (随机 8-16 位, 抗识别)
     WS_PATH="/$(random_path)"
     XHTTP_PATH="/$(random_path)"
+    H2_PATH="/$(random_path)"
+    # gRPC service name: 内核按 "/"+name+"/Tun" 组装实际 HTTP/2 路径
+    #   (transport/gun/gun.go:325-330), 名字本身随便取, 转小写避免大小写敏感的路由歧义
+    GRPC_SERVICE=$(random_path | tr '[:upper:]' '[:lower:]')
     XHTTP_MODE="auto"
     CF_ECH_READY=false
 
@@ -765,138 +1118,47 @@ add_config() {
         fi
     fi
 
+    # 客户端接入地址: 有真域名就用域名, 只有自签证书时必须落到服务器 IP
+    CLIENT_HOST=$(m_client_host "$CERT_DOMAIN")
+
     render_smux
+    render_mux_option
+    render_xhttp_pad
+    render_transport
 
     # 9.5 监听地址: cdn -> 0.0.0.0, nginx -> 127.0.0.1 (仅本机经 nginx 接入)
     LISTEN_ADDR="0.0.0.0"
     [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
 
-    # 10. 写入入站配置 (Nginx 片段无轮何种模式都生成)
+    # 10. 写入入站配置 (Nginx 片段无论何种模式都生成)
+    # INDEX 供 render_nginx_conf / render_listener_frag / render_client_yaml / render_share_link 复用
+    INDEX="$index"
     render_nginx_conf
 
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-cat > "$IN_FILE" <<EOF
-# transport: xhttp
-# server-name: $FRONT_DOMAIN
-# access: $ACCESS_MODE
-# mtls: $MTLS_ENABLED
-# ech: $ECH_ENABLED
-# smux: ${SMUX_PROFILE:-false}
-listeners:
-  - name: vless-$index
-    type: vless
-    listen: "$LISTEN_ADDR"
-    port: $VLESS_PORT
-    users:
-      - username: vless-$index
-        uuid: $UUID
-    certificate: $CERT_FILE
-    private-key: $KEY_FILE
-    xhttp-config:
-      mode: $XHTTP_MODE
-      path: $XHTTP_PATH
-$([ "$MTLS_ENABLED" = true ] && printf '    client-auth-type: RequireAndVerifyClientCert
-    client-auth-cert: %s' "$MTLS_CA")
-EOF
-    else
-cat > "$IN_FILE" <<EOF
-# transport: ws
-# server-name: $FRONT_DOMAIN
-# access: $ACCESS_MODE
-# mtls: $MTLS_ENABLED
-# ech: $ECH_ENABLED
-# smux: ${SMUX_PROFILE:-false}
-listeners:
-  - name: vless-$index
-    type: vless
-    listen: "$LISTEN_ADDR"
-    port: $VLESS_PORT
-    users:
-      - username: vless-$index
-        uuid: $UUID
-    certificate: $CERT_FILE
-    private-key: $KEY_FILE
-    ws-path: $WS_PATH
-$([ "$MTLS_ENABLED" = true ] && printf '    client-auth-type: RequireAndVerifyClientCert
-    client-auth-cert: %s' "$MTLS_CA")
-EOF
-    fi
+    render_listener_frag
 
-    # 11. 写入客户端配置
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
-proxies:
-  - name: vless-$index
-    type: vless
-    server: $CERT_DOMAIN
-    port: 443
-    uuid: $UUID
-    sni: $CLIENT_SNI
-    client-fingerprint: chrome
-    udp: true
-    network: xhttp
-    tls: true
-    skip-cert-verify: true
-    xhttp-opts:
-      mode: $XHTTP_MODE
-      path: $XHTTP_PATH
-$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:
-      enable: true
-      query-server-name: %s' "$CERT_DOMAIN")
-$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
-$SMUX_BLOCK
-EOF
-    else
-cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
-proxies:
-  - name: vless-$index
-    type: vless
-    server: $CERT_DOMAIN
-    port: 443
-    uuid: $UUID
-    sni: $CLIENT_SNI
-    client-fingerprint: chrome
-    udp: true
-    network: ws
-    tls: true
-    skip-cert-verify: true
-    ws-opts:
-      path: $WS_PATH
-      headers:
-        Host: $CERT_DOMAIN
-$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
-$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
-$SMUX_BLOCK
-EOF
-    fi
+    # 11. 写入客户端配置 + 分享链接
+    render_client_yaml
+    render_share_link
+    echo "$SHARE_LINK" > "$SHARE_FILE"
 
-    # 12. 写入分享链接
-    local ech_param=""
-    if $ECH_ENABLED; then
-        ech_param="&ech=$(urlencode "$ECH_QUERY_PARAM")"
-    fi
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-        echo "vless://$UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH${ech_param}#VLESS-XHTTP-$index" > "$SHARE_FILE"
-    else
-        echo "vless://$UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN${ech_param}#VLESS-WS-$index" > "$SHARE_FILE"
-    fi
-
-    # 13. 输出信息
+    # 12. 输出信息
     print_ok "VLESS 配置生成成功"
     echo -e "编号: $index" >&2
     echo -e "端口: $VLESS_PORT" >&2
     echo -e "UUID: $UUID" >&2
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-        echo -e "传输: xhttp (路径: $XHTTP_PATH)" >&2
-    else
-        echo -e "传输: ws (路径: $WS_PATH)" >&2
-    fi
+    case "$VLESS_TRANSPORT" in
+        xhttp) echo -e "传输: xhttp (路径: $XHTTP_PATH, 抗探测档位: $XHTTP_LEVEL)" >&2 ;;
+        grpc)  echo -e "传输: grpc (service-name: $GRPC_SERVICE)" >&2 ;;
+        h2)    echo -e "传输: h2 (路径: $H2_PATH)" >&2 ;;
+        tcp)   echo -e "传输: 裸 TCP" >&2 ;;
+        *)     echo -e "传输: ws (路径: $WS_PATH)" >&2 ;;
+    esac
+    echo -e "客户端指纹: $CLIENT_FP" >&2
     echo -e "域名: $CERT_DOMAIN" >&2
     $MTLS_ENABLED && echo -e "mTLS: 已启用 (客户端证书: $CERT_DIR/mtls-$PROTO-$index/)" >&2
     $ECH_ENABLED && echo -e "ECH: 已启用 (Cloudflare: ${CF_ECH_READY:-未确认})" >&2 || true
-    [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
+    [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档${BRUTAL_ENABLED:+, brutal $BRUTAL_UP/$BRUTAL_DOWN})" >&2
     echo -e "入站配置: $IN_FILE" >&2
     echo -e "客户端配置: $OUT_FILE" >&2
     echo -e "分享链接: $SHARE_FILE" >&2
@@ -920,7 +1182,7 @@ list_configs() {
         num=$(basename "$f" .yaml | sed -E 's/.*-([0-9]+)/\1/')
         port=$(grep -E "^[[:space:]]*port:" "$f" | awk '{print $2}')
         uuid=$(grep -E "uuid:" "$f" | head -1 | awk '{print $2}' | tr -d ' ')
-        transport=$(grep -oE "^[[:space:]]*# transport: (ws|xhttp)" "$f" | awk '{print $3}')
+        transport=$(grep -oE "^[[:space:]]*# transport: (ws|xhttp|grpc|h2|tcp)" "$f" | awk '{print $3}')
         transport=${transport:-ws}
 
         printf "${GREEN}%s${RESET}) " "$num" >&2
@@ -960,6 +1222,68 @@ delete_config() {
     print_ok "已删除 VLESS 配置 $num"
 }
 
+# ================================================================
+# 从服务端片段重建单个节点的客户端 YAML + 分享链接
+# 菜单项 4 与「导出订阅」共用, 保证两条路径永远产出同一份配置
+# 输出: SHARE_LINK ; 写入 $OUT_FILE 与 $SHARE_FILE
+# ================================================================
+rebuild_one() {
+    local n="$1"
+    IN_FILE="$CONF_DIR/$PROTO-$n.yaml"
+    OUT_FILE="$OUT_DIR/${PROTO}_client-$n.yaml"
+    SHARE_FILE="$OUT_DIR/${PROTO}_share-$n.txt"
+    [[ -f "$IN_FILE" ]] || return 0
+
+    UUID=$(grep -E "uuid:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
+    VLESS_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | awk '{print $2}')
+
+    read_features "$IN_FILE"
+
+    # 传输参数回读 (服务端片段是唯一真源):
+    #   ws -> ws-path ; xhttp -> xhttp-config.mode/path ; grpc -> grpc-service-name
+    #   h2 -> listener 侧无字段, 路径只存在 # h2-path 注释 (read_features 已读)
+    #   tcp -> 两侧都没有
+    WS_PATH=$(awk '/^[[:space:]]*ws-path:/{print $2; exit}' "$IN_FILE")
+    XHTTP_PATH=$(awk '/xhttp-config:/{f=1;next} f && $1=="path:"{print $2; exit}' "$IN_FILE")
+    XHTTP_MODE=$(awk '/xhttp-config:/{f=1;next} f && $1=="mode:"{print $2; exit}' "$IN_FILE")
+    GRPC_SERVICE=$(awk '/^[[:space:]]*grpc-service-name:/{print $2; exit}' "$IN_FILE")
+    # x-padding 密钥必须与服务端是同一个, 只能从片段里取
+    XHTTP_PAD_KEY=$(grep -oE "x-padding-key: [^[:space:]]+" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d '"')
+    [[ -z "$XHTTP_MODE" ]] && XHTTP_MODE="auto"
+    apply_xhttp_level
+    if $XHTTP_PAD_OBFS && [[ -z "$XHTTP_PAD_KEY" ]]; then
+        print_warn "片段中缺少 x-padding-key (档位 $XHTTP_LEVEL), 已重新生成; 请同步更新服务端 xhttp-config"
+        XHTTP_PAD_KEY=$(random_pad_key)
+        render_xhttp_pad
+    fi
+
+    server_name="$(extract_server_name "$IN_FILE")"
+    cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
+    CERT_DOMAIN=${server_name:-$(basename "$cert" .crt | sed -E 's/^cert-[0-9]+-//; s/^cert-//')}
+    CLIENT_SNI="$CERT_DOMAIN"
+    CLIENT_HOST=$(m_client_host "$CERT_DOMAIN")
+    LISTEN_ADDR="0.0.0.0"
+    [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
+
+    if $MTLS_ENABLED; then
+        MTLS_CLIENT_CERT=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$n/client.pem")
+        MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$n/client.key")
+    fi
+
+    SERVER_IP=$(m_server_ip)
+    [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
+
+    INDEX="$n"
+    render_smux
+    render_mux_option
+    render_transport
+    render_nginx_conf
+
+    render_client_yaml
+    render_share_link
+    echo "$SHARE_LINK" > "$SHARE_FILE"
+}
+
 # ================================
 # 手动重建客户端文件
 # ================================
@@ -982,85 +1306,7 @@ rebuild_client() {
         return
     fi
 
-    # 提取字段 (VLESS: uuid + 传输)
-    VLESS_UUID=$(grep -E "uuid:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
-    VLESS_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | awk '{print $2}')
-
-    read_features "$IN_FILE"
-    render_smux
-
-    # 传输路径 (ws-path 或 xhttp-config.path)
-    if grep -qE "ws-path:" "$IN_FILE"; then
-        WS_PATH=$(grep -E "ws-path:" "$IN_FILE" | awk '{print $2}' | tr -d ' ')
-    else
-        XHTTP_PATH=$(grep -A2 "xhttp-config:" "$IN_FILE" | grep "path:" | awk '{print $2}' | tr -d ' ')
-    fi
-
-    server_name="$(extract_server_name "$IN_FILE")"
-    cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
-    CERT_DOMAIN=${server_name:-$(basename "$cert" .crt | sed -E 's/^cert-[0-9]+-//; s/^cert-//')}
-    CLIENT_SNI="$CERT_DOMAIN"
-    LISTEN_ADDR="0.0.0.0"
-    [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
-    render_nginx_conf
-    if $MTLS_ENABLED; then
-        MTLS_CLIENT_CERT=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.pem")
-        MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
-    fi
-
-    SERVER_IP=$(m_server_ip)
-    [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
-
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
-proxies:
-  - name: vless-$num2
-    type: vless
-    server: $CERT_DOMAIN
-    port: 443
-    uuid: $VLESS_UUID
-    sni: $CLIENT_SNI
-    client-fingerprint: chrome
-    udp: true
-    network: xhttp
-    tls: true
-    skip-cert-verify: true
-    xhttp-opts:
-      mode: auto
-      path: $XHTTP_PATH
-$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
-$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
-$SMUX_BLOCK
-EOF
-        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=auto&path=$XHTTP_PATH$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-XHTTP-$num2"
-    else
-cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
-proxies:
-  - name: vless-$num2
-    type: vless
-    server: $CERT_DOMAIN
-    port: 443
-    uuid: $VLESS_UUID
-    sni: $CLIENT_SNI
-    client-fingerprint: chrome
-    udp: true
-    network: ws
-    tls: true
-    skip-cert-verify: true
-    ws-opts:
-      path: $WS_PATH
-      headers:
-        Host: $CERT_DOMAIN
-$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
-$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
-$SMUX_BLOCK
-EOF
-        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-WS-$num2"
-    fi
-
-    echo "$SHARE_LINK" > "$SHARE_FILE"
+    rebuild_one "$num2"
 
     print_ok "客户端文件已重建：$num2"
 
@@ -1107,91 +1353,7 @@ view_nginx_conf() {
 }
 
 rebuild_client_silent() {
-    local num2="$1"
-
-    IN_FILE="$CONF_DIR/$PROTO-$num2.yaml"
-    OUT_FILE="$OUT_DIR/${PROTO}_client-$num2.yaml"
-    SHARE_FILE="$OUT_DIR/${PROTO}_share-$num2.txt"
-
-    [[ -f "$IN_FILE" ]] || return 0
-
-    VLESS_UUID=$(grep -E "uuid:" "$IN_FILE" | head -1 | awk '{print $2}' | tr -d ' ')
-    VLESS_PORT=$(grep -E "^[[:space:]]*port:" "$IN_FILE" | awk '{print $2}')
-
-    read_features "$IN_FILE"
-    render_smux
-
-    if grep -qE "ws-path:" "$IN_FILE"; then
-        WS_PATH=$(grep -E "ws-path:" "$IN_FILE" | awk '{print $2}' | tr -d ' ')
-    else
-        XHTTP_PATH=$(grep -A2 "xhttp-config:" "$IN_FILE" | grep "path:" | awk '{print $2}' | tr -d ' ')
-    fi
-
-    server_name="$(extract_server_name "$IN_FILE")"
-    cert=$(grep -E "certificate:" "$IN_FILE" | awk '{print $2}')
-    CERT_DOMAIN=${server_name:-$(basename "$cert" .crt | sed -E 's/^cert-[0-9]+-//; s/^cert-//')}
-    CLIENT_SNI="$CERT_DOMAIN"
-    LISTEN_ADDR="0.0.0.0"
-    [[ "$ACCESS_MODE" = "nginx" ]] && LISTEN_ADDR="127.0.0.1"
-    render_nginx_conf
-    if $MTLS_ENABLED; then
-        MTLS_CLIENT_CERT=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.pem")
-        MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
-    fi
-
-    SERVER_IP=$(m_server_ip)
-    [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
-
-    if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
-cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
-proxies:
-  - name: vless-$num2
-    type: vless
-    server: $CERT_DOMAIN
-    port: 443
-    uuid: $VLESS_UUID
-    sni: $CLIENT_SNI
-    client-fingerprint: chrome
-    udp: true
-    network: xhttp
-    tls: true
-    skip-cert-verify: true
-    xhttp-opts:
-      mode: auto
-      path: $XHTTP_PATH
-$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
-$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
-$SMUX_BLOCK
-EOF
-        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=xhttp&mode=auto&path=$XHTTP_PATH$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-XHTTP-$num2"
-    else
-cat > "$OUT_FILE" <<EOF
-$([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
-proxies:
-  - name: vless-$num2
-    type: vless
-    server: $CERT_DOMAIN
-    port: 443
-    uuid: $VLESS_UUID
-    sni: $CLIENT_SNI
-    client-fingerprint: chrome
-    udp: true
-    network: ws
-    tls: true
-    skip-cert-verify: true
-    ws-opts:
-      path: $WS_PATH
-      headers:
-        Host: $CERT_DOMAIN
-$([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
-$([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")
-$SMUX_BLOCK
-EOF
-        SHARE_LINK="vless://$VLESS_UUID@$CERT_DOMAIN:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=chrome&type=ws&path=$WS_PATH&host=$CERT_DOMAIN$([ "$ECH_ENABLED" = true ] && echo "&ech=$(urlencode "$ECH_QUERY_PARAM")")#VLESS-WS-$num2"
-    fi
-
-    echo "$SHARE_LINK" > "$SHARE_FILE"
+    rebuild_one "$1"
 }
 
 # ================================
@@ -1250,7 +1412,7 @@ main_menu() {
         echo "0) 退出"
 
         printf "请选择: " >&2
-        read c
+        read c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         c=$(clean_input "$c")
 
         case $c in
@@ -1265,7 +1427,7 @@ main_menu() {
         esac
 
         printf "按回车继续..." >&2
-        read
+        read || break
     done
 }
 

@@ -59,26 +59,9 @@ trim() {
 }
 
 safe_read_port() {
-    local default="$1"
-    local input
-
-    while true; do
-        printf "请输入监听端口 (默认: %s): " "$default" >&2
-        read input
-        input=$(clean_input "$input")
-        port="${input:-$default}"
-
-        [[ "$port" =~ ^[0-9]+$ ]] || { print_error "端口必须是数字"; continue; }
-        (( port >= 1 && port <= 65535 )) || { print_error "端口范围错误"; continue; }
-
-        ss -tuln | awk '{print $5}' | grep -E -q "(:|])$port$" && {
-            print_error "端口已占用"
-            continue
-        }
-
-        echo "$port"
-        return
-    done
+    # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
+    #   拒绝 1-1023 特权端口与系统常用端口, TCP/UDP 双查占用, EOF 安全退出。
+    m_safe_read_port "$1"
 }
 
 random_port() { shuf -i 10000-60000 -n 1; }
@@ -147,10 +130,94 @@ smux_profile() {
     esac
 }
 
-# ================================
+# ================================================================
+# 选配 (M 内核 / mihomo v1.19.32 特有字段)
+# 每条都标了内核源码位置; 没有源码依据的一律不做。
+# ================================================================
+
+# ---------- ① client-fingerprint (★ Reality 的硬约束) ----------
+#   字段: adapter/outbound/vless.go:90
+#   ⚠ **硬约束**: REALITY 基于 uTLS, 不配 client-fingerprint 会在**首次 TLS 握手**报
+#     "REALITY is based on uTLS, please set a client-fingerprint"
+#     (transport/vmess/tls.go:130-132) —— `mihomo -t` 抓不到, 只有真连才炸。
+#   取值表 component/tls/utls.go:78-101 (init() 动态追加 randomized, :103-111)
+#   ⚠ 未知值只 log.Warnln 后**静默降级成原生 TLS** (utls.go:56-59) —— 必须从枚举里选
+CLIENT_FP="chrome"
+
+# ---------- ② xudp / packet-addr 二选一 ----------
+#   字段: adapter/outbound/vless.go:68 (packet-addr) / :69 (xudp)
+#   语义 adapter/outbound/vless.go:474-485:
+#     packet-encoding 只认 "packetaddr"/"packet" (:475); 其它值全落 default 分支,
+#     default 分支做的是 `if !PacketAddr { XUDP = true }` (:478-481) —— 所以原来写的
+#     `packet-encoding: xudp` 并不是"被忽略", 而是被 default 分支顺手打开了 xudp;
+#     但它是 legacy 别名, 语义不直白, 改成 `xudp: true` 更清楚。
+#     另外 :483-485 `if XUDP { PacketAddr = false }` —— 两者同时写时 xudp 赢,
+#     所以这里做成二选一, 不给用户"两个都开"的假选项。
+#   ⚠ 但要如实告知: 本脚本 listener 端固定 flow: xtls-rprx-vision, 而
+#     vision 流在**服务端根本不接受 UDP** (listener/sing_vless/service.go:136-139
+#     "xtls-rprx-vision flow does not support UDP"), 所以这两种封装方式在
+#     Reality+vision 组合下实际都是空转 —— 选了会明确提示。
+# PKT_MODE: xudp | packet-addr | off
+PKT_MODE="xudp"
+
+ask_client_fp() {
+    echo "  TLS 客户端指纹 client-fingerprint (REALITY 硬性要求, 缺失首次握手即报错):" >&2
+    echo "  1) chrome (默认)" >&2
+    echo "  2) firefox" >&2
+    echo "  3) safari" >&2
+    echo "  4) edge" >&2
+    echo "  5) ios" >&2
+    echo "  6) android" >&2
+    echo "  7) random (加权随机 chrome6/safari3/ios2/firefox1)" >&2
+    printf "  选择 (默认1): " >&2
+    local c=""
+    read -r c || c=""
+    c=$(clean_input "$c")
+    case "$c" in
+        2) CLIENT_FP="firefox" ;;
+        3) CLIENT_FP="safari" ;;
+        4) CLIENT_FP="edge" ;;
+        5) CLIENT_FP="ios" ;;
+        6) CLIENT_FP="android" ;;
+        7) CLIENT_FP="random" ;;
+        *) CLIENT_FP="chrome" ;;
+    esac
+}
+
+ask_pkt_mode() {
+    echo "  UDP 封装方式 (xudp / packet-addr 二选一, 内核里同时写时 xudp 优先):" >&2
+    echo "  1) xudp (默认; XUDP 封装)" >&2
+    echo "  2) packet-addr (全包地址)" >&2
+    echo "  3) 不写 (走内核默认)" >&2
+    printf "  选择 (默认1): " >&2
+    local c=""
+    read -r c || c=""
+    c=$(clean_input "$c")
+    case "$c" in
+        2) PKT_MODE="packet-addr" ;;
+        3) PKT_MODE="off" ;;
+        *) PKT_MODE="xudp" ;;
+    esac
+    if [[ "$PKT_MODE" != "off" ]]; then
+        print_warn "本脚本 Reality 服务端固定 flow: xtls-rprx-vision, 而 vision 流在服务端拒绝 UDP"
+        print_warn "(listener/sing_vless/service.go:136-139), 因此 ${PKT_MODE} 在本节点上不会真正生效"
+    fi
+    return 0
+}
+
+# 渲染 UDP 封装块 (缩进 4)
+render_pkt_block() {
+    case "$PKT_MODE" in
+        xudp)       echo "    xudp: true" ;;
+        packet-addr) echo "    packet-addr: true" ;;
+    esac
+    return 0
+}
+
+# ================================================================
 # 特性询问（smux / xudp 可选项）
-# 选择持久化到 config.d 片的注释行: # smux: <档位> / # xudp: true
-# ================================
+# 选择持久化到 config.d 片的注释行: # smux: <档位> / # xudp: true / # fp: <指纹>
+# ================================================================
 ask_features() {
     local yn
     SMUX_PROFILE=""
@@ -172,9 +239,11 @@ ask_features() {
         esac
     fi
 
-    printf "启用 xudp 数据包封装 (packet-encoding)? (y/N): " >&2
-    read -r yn
-    [[ "$(clean_input "$yn")" =~ ^[yY]$ ]] && XUDP_ENABLED=true
+    # ---- 选配: UDP 封装 (原来是 legacy 的 packet-encoding: xudp) ----
+    ask_pkt_mode
+
+    # ---- 选配: client-fingerprint (原本硬编码 chrome) ----
+    ask_client_fp
 }
 
 # 读取 config.d 片注释中的特性标记（供重建/导出时同步）
@@ -183,12 +252,27 @@ read_features() {
     local f="$1"
     SMUX_PROFILE=""
     XUDP_ENABLED=false
+    CLIENT_FP="chrome"
+    PKT_MODE="xudp"
     if grep -qE "^[[:space:]]*# smux: (web|video|download)" "$f"; then
         SMUX_PROFILE=$(grep -oE "^[[:space:]]*# smux: (web|video|download)" "$f" | awk '{print $3}')
     elif grep -qE "^[[:space:]]*# smux: true" "$f"; then
         SMUX_PROFILE="web"
     fi
     grep -qE "^[[:space:]]*# xudp: true" "$f" && XUDP_ENABLED=true
+    # 选配回读: 新写法优先; 没有注释的老配置按老标记 (xudp: true -> xudp, 否则 off)
+    local v
+    v=$(grep -E "^[[:space:]]*# pkt-mode:" "$f" | head -1 | sed -E 's/.*# pkt-mode:[[:space:]]*//')
+    if [[ -n "$v" ]]; then
+        PKT_MODE="$v"
+    elif grep -qE "^[[:space:]]*# xudp: true" "$f"; then
+        PKT_MODE="xudp"
+    else
+        PKT_MODE="off"
+    fi
+    v=$(grep -E "^[[:space:]]*# fp:" "$f" | head -1 | sed -E 's/.*# fp:[[:space:]]*//')
+    [[ -n "$v" ]] && CLIENT_FP="$v"
+    return 0
 }
 
 # 渲染 smux 客户端配置块（按档位）；输出到变量 SMUX_BLOCK
@@ -260,6 +344,8 @@ add_config() {
 cat > "$IN_FILE" <<EOF
 # smux: ${SMUX_PROFILE:-false}
 # xudp: $XUDP_ENABLED
+# pkt-mode: $PKT_MODE
+# fp: $CLIENT_FP
 listeners:
   - name: reality-$index
     type: vless
@@ -297,13 +383,13 @@ proxies:
     reality-opts:
       public-key: $PUBLIC_KEY
       short-id: $SHORT_ID
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FP
 $SMUX_BLOCK
-$([ "$XUDP_ENABLED" = true ] && printf '    packet-encoding: xudp')
+$(render_pkt_block)
 EOF
 
     # 写 Reality 分享链接
-echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
+echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=$CLIENT_FP&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
 
     print_ok "Reality 配置生成成功"
     echo -e "编号: $index" >&2
@@ -403,12 +489,12 @@ proxies:
     reality-opts:
       public-key: $public_key
       short-id: $short_id
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FP
 $SMUX_BLOCK
-$([ "$XUDP_ENABLED" = true ] && printf '    packet-encoding: xudp')
+$(render_pkt_block)
 EOF
 
-    SHARE_LINK="vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num"
+    SHARE_LINK="vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$CLIENT_FP&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num"
 
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
@@ -463,12 +549,12 @@ proxies:
     reality-opts:
       public-key: $public_key
       short-id: $short_id
-    client-fingerprint: chrome
+    client-fingerprint: $CLIENT_FP
 $SMUX_BLOCK
-$([ "$XUDP_ENABLED" = true ] && printf '    packet-encoding: xudp')
+$(render_pkt_block)
 EOF
 
-    echo "vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num" > "$SHARE_FILE"
+    echo "vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$CLIENT_FP&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num" > "$SHARE_FILE"
 }
 
 # ================================
@@ -541,7 +627,7 @@ main_menu() {
         echo "0) 退出" >&2
 
         printf "请选择: " >&2
-        read c
+        read c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         c=$(clean_input "$c")
 
         case $c in
@@ -555,7 +641,7 @@ main_menu() {
         esac
 
         printf "按回车继续..." >&2
-        read
+        read || break
     done
 }
 

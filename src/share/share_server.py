@@ -40,6 +40,8 @@ import contextlib
 
 SHARE_DIR = os.environ.get("SHARE_DIR", "/root/catmi/mihomo/share")
 OUT_DIR = os.environ.get("OUT_DIR", "/root/catmi/mihomo/out")
+# 客户端侧节点来自 proxy-providers (服务端侧是空目录, 见 build_sub.py --providers-dir)
+PROVIDERS_DIR = os.environ.get("PROVIDERS_DIR", "")
 PORT = int(os.environ.get("SHARE_PORT", "9443"))
 SERVICE = os.environ.get("MIHOMO_SERVICE", "mihomo")
 SHARES = os.path.join(SHARE_DIR, "shares")
@@ -101,10 +103,10 @@ def build_payload(tag: str) -> bytes | None:
     if not BUILD_SUB or not os.path.isfile(BUILD_SUB):
         return None
     try:
-        out = subprocess.run(
-            [sys.executable, BUILD_SUB, "--out-dir", OUT_DIR, "--tag", tag],
-            capture_output=True, timeout=20, check=False,
-        )
+        cmd = [sys.executable, BUILD_SUB, "--out-dir", OUT_DIR, "--tag", tag]
+        if PROVIDERS_DIR:
+            cmd += ["--providers-dir", PROVIDERS_DIR]
+        out = subprocess.run(cmd, capture_output=True, timeout=20, check=False)
     except subprocess.TimeoutExpired:
         return None
     if out.returncode != 0 or not out.stdout.strip():
