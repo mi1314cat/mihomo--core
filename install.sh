@@ -11,7 +11,15 @@
 set -uo pipefail
 
 REPO_RAW="${REPO_RAW:-https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
-REPO_PROXY="${REPO_PROXY:-https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
+
+# 镜像链: 国内机器经常连不上 github.com, 单个镜像又不够稳 (实测
+# cfgithub 在一台机器超时、jsdelivr 在另一台可用), 所以按顺序全试一遍。
+# 每个前缀后面直接拼 <相对路径> 即可, 结构一致。
+REPO_MIRRORS=(
+    "${REPO_PROXY:-https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}"
+    "https://cdn.jsdelivr.net/gh/mi1314cat/mihomo--core@main"
+    "https://fastly.jsdelivr.net/gh/mi1314cat/mihomo--core@main"
+)
 
 SRV_ROOT="${SRV_ROOT:-/root/catmi/mihomo}"
 CLI_ROOT="${CLI_ROOT:-/root/catmi/mihomo-client}"
@@ -44,12 +52,17 @@ ensure_yaml() {
 }
 
 fetch() {  # fetch <远端相对路径> <本地路径>
-    local rel="$1" dst="$2"
+    local rel="$1" dst="$2" base
     mkdir -p "$(dirname "$dst")"
-    curl -fsSL --max-time 60 "$REPO_RAW/$rel" -o "$dst" 2>/dev/null \
-        || curl -fsSL --max-time 90 "$REPO_PROXY/$rel" -o "$dst" 2>/dev/null \
-        || return 1
-    [[ -s "$dst" ]]
+    [[ -s "$dst" ]] && { rm -f "$dst"; }
+    for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
+        if curl -fsSL --max-time 45 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+            [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已走镜像: $(echo "$base" | cut -d/ -f3)"
+            return 0
+        fi
+        rm -f "$dst"
+    done
+    return 1
 }
 
 fetch_repo() {  # 把面板需要的文件拉到本地
