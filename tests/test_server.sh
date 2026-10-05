@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # 服务端面板冒烟测试 (非交互)
 set -uo pipefail
-SRC=/root/catmi/mihomo-core/src
+# 从仓库内跑就用旁边的 src/, 被拷到别处时退回各机器的安装位置
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="${SRC:-$HERE/../src}"
+[[ -f "$SRC/server.sh" ]] || SRC=/root/catmi/mihomo/src
 PASS=0; FAIL=0
 ok()  { printf "  \033[32m✓\033[0m %s\n" "$1"; PASS=$((PASS+1)); }
 bad() { printf "  \033[31m✗\033[0m %s\n" "$1"; FAIL=$((FAIL+1)); }
@@ -85,7 +88,7 @@ err=$(grep -ci "level=fatal" "$SRV/mihomo.log" 2>/dev/null); err=${err:-0}
 [[ "$err" == "0" ]] && ok "无 fatal 日志" || bad "有 $err 条 fatal"
 
 hdr "6. 分享服务"
-bash -c 'HERE=/root/catmi/mihomo-core/src/share; source '"$SRC"'/share/share.sh; share_service_status' >/tmp/sh.txt 2>&1
+bash -c 'source '"$SRC"'/share/share.sh; share_service_status' >/tmp/sh.txt 2>&1
 sed 's/^/    /' /tmp/sh.txt
 
 hdr "7. 拉取节点 (导入一份公开测试订阅)"
