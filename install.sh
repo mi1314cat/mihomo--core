@@ -58,7 +58,7 @@ fetch_repo() {  # 把面板需要的文件拉到本地
         "src/lib/env.sh" "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
         "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
         "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
-        "src/conf/XRevise.sh"
+        "src/conf/all.sh" "src/conf/XRevise.sh"
         "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
         "src/core_install.sh"
     )
