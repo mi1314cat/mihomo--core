@@ -1581,7 +1581,25 @@ if [[ "$USE_TLS" == "0" ]]; then
     printf "     ${GREEN}[OK]${RESET} 证书: 不使用 ${DIM}(按 --no-tls 要求)${RESET}\n" >&2
 else
     # 这里已经在函数外, 写 local 会报 "can only be used in a function"
+    #
+    # 先数一遍本机可用证书。scan_certs 搜 8 处 (本项目 conf/certs / nginx /
+    # letsencrypt / acme.sh / cloudflare / docker nginx 挂载点 ...)。
+    # 注意: 不能写 local (此处不在函数内)。
+    ALL_CERT_N=0
+    if declare -F scan_certs >/dev/null 2>&1; then
+        scan_certs >/dev/null 2>&1 && ALL_CERT_N=${#FOUND_CERTS[@]}
+    fi
     pair=$(find_cert)
+    # find_cert 只搜 $CERTS_DIR **一个**目录, 而证书常躺在别处 —— 实测服务端
+    # 就是这样: 真证书在 nginx 的 certs 目录, conf/certs 是空的, 于是 7 个
+    # TLS 协议被**整批跳过**, 面板却显示"本机没有可用证书"。
+    # 所以 find_cert 空时退回 scan_certs 的结果 (它已按优先级排好)。
+    # 只扩大搜索范围、不缩小, 因此不会把原本能找到的证书弄丢。
+    if [[ -z "$pair" ]] && (( ALL_CERT_N > 0 )); then
+        __ce="${FOUND_CERTS[0]}"
+        __cc="${__ce%%|*}"; __cr="${__ce#*|}"; __ck="${__cr%%|*}"
+        pair="${__cc}"$'\t'"${__ck}"$'\t'"$(cert_extract_domain "$__cc" 2>/dev/null)"
+    fi
     if [[ -n "$pair" ]]; then
         IFS=$'\t' read -r CRT KEY SNI <<<"$pair"
     fi
@@ -1590,11 +1608,6 @@ else
         # 把"本机到底有几张可用证书"这个事实直接摆出来。
         # 选项写成 "1) 使用本机真实证书 (检测到 4 张 CA 可信证书)" ——
         # 用户一眼知道有多少备选, 而不是进去之后才发现只有一张。
-        # 注意: 不能写 local (此处不在函数内)。
-        ALL_CERT_N=0
-        if declare -F scan_certs >/dev/null 2>&1; then
-            scan_certs >/dev/null 2>&1 && ALL_CERT_N=${#FOUND_CERTS[@]}
-        fi
         printf "     ${GREEN}✅${RESET} %s ${DIM}(域名 %s)${RESET}\n" "$(basename "$CRT")" "$SNI" >&2
         if (( ALL_CERT_N > 1 )); then
             printf "     ${DIM}本机共检测到 %d 张 CA 可信证书, 已自动选优先级最高的这张${RESET}\n" "$ALL_CERT_N" >&2
