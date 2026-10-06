@@ -1,5 +1,80 @@
 #!/usr/bin/env bash
 # =============================================================
+# 证书路径安全区 (mihomo 的 SAFE_PATHS 限制)
+#
+# ★ 这是 mihomo 的一个硬性限制, 而且**只在 listener 启动时才报错**,
+#   `mihomo -t` 完全不报 —— 属于"面板全绿但连不上"那一类。
+#
+# 实测:
+#   证书在 -d 目录内                          -> ✅ 可用
+#   证书在 $HOME 下但不在 -d 内               -> ❌ 拒绝
+#   证书在 /tmp 且未设 SAFE_PATHS             -> ❌ 拒绝
+#   SAFE_PATHS=<目录>                          -> ✅ 可用
+#   SAFE_PATHS=<目录1>:<目录2>  (冒号分隔)     -> ✅ 可用
+#   SAFE_PATHS=<目录1>;<目录2>  (分号分隔)     -> ❌ 不生效 (只认冒号)
+#
+# 报错原文:
+#   listener 0: parse certificate failed, maybe format error:
+#   tls: failed to find any PEM data in certificate input, or path error:
+#   path is not subpath of home directory or SAFE_PATHS: <路径>
+#   allowed paths: [<-d 指向的配置目录>]
+#
+# 注意: 报错里的 "home directory" **不是 $HOME**, 而是 -d 指向的配置目录
+# (实测放在 /root 下、但 -d 指向 /tmp/xx 时依然被拒)。
+#
+# 现实影响: 用户从 /etc/letsencrypt/live/<域名>/ 选证书是极常见的做法,
+# 那条路径几乎必然在 -d 之外 -> 节点建好却永远连不上。
+# =============================================================
+
+# 某路径是否在配置目录 (-d) 之内
+cert_path_in_confdir() { # <路径>
+    local p="${1:-}" conf="${SRV_CONF:-}"
+    [[ -n "$p" && -n "$conf" ]] || return 1
+    # 先归一化, 再比前缀 —— 否则 /root/catmi/mihomo/conf2 会被误判为在
+    # /root/catmi/mihomo/conf 之内
+    local rp rc
+    rp=$(readlink -f "$p" 2>/dev/null)   || rp="$p"
+    rc=$(readlink -f "$conf" 2>/dev/null) || rc="$conf"
+    [[ "$rp" == "$rc" || "$rp" == "$rc"/* ]]
+}
+
+# 若用户给的证书不在配置目录内, 把它复制进来并改写 CERT_FILE/KEY_FILE。
+# 返回 0 = 已可用 (可能已复制), 1 = 无法处理
+cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FILE)
+    local cert="${1:-$CERT_FILE}" key="${2:-$KEY_FILE}"
+    [[ -n "$cert" && -f "$cert" ]] || return 1
+    if cert_path_in_confdir "$cert"; then
+        return 0
+    fi
+
+    mkdir -p "$CERT_DIR"
+    local base cdest kdest dom
+    dom=$(cert_extract_domain "$cert" 2>/dev/null)
+    [[ -n "$dom" ]] || dom="imported-$(date +%s)"
+    base=$(basename "$cert")
+    cdest="$CERT_DIR/${base}"
+    kdest=""
+    # 同名文件直接覆盖用, 避免每次导入都堆一份新的
+    cp -f "$cert" "$cdest" || return 1
+    if [[ -n "$key" && -f "$key" ]]; then
+        kdest="$CERT_DIR/$(basename "$key")"
+        cp -f "$key" "$kdest" || return 1
+    fi
+    CERT_FILE="$cdest"; KEY_FILE="$kdest"
+    print_warn "证书不在配置目录内, mihomo 会拒绝加载 (SAFE_PATHS 限制)"
+    print_info "已自动复制到配置目录: $cdest"
+    if [[ -L "$cert" ]]; then
+        print_warn "原路径是符号链接 (常见于 Let's Encrypt) —— 复制件**不会随续期自动更新**"
+        print_info "续期后请重新导入, 或改用 SAFE_PATHS 方案 (见下)"
+    fi
+    print_info "另一种做法: 在 systemd unit 里加"
+    print_info "  Environment=SAFE_PATHS=$(dirname "$(readlink -f "$cert")")"
+    print_info "  (多个目录用**冒号**分隔; 分号不生效, 实测过)"
+    print_info "然后 systemctl daemon-reload && systemctl restart mihomo"
+    return 0
+}
+
+# =============================================================
 # cert.sh — 证书的唯一真源 (扫描 / 识别 / 生成 / 钉扎 / 回收)
 #
 # 为什么要有这个文件:
@@ -296,6 +371,10 @@ ask_cert() {
             printf '  证书 key 路径: ' >&2; read -r f; KEY_FILE=$(clean_input "$f")
             if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
                 cert_not_expired "$CERT_FILE" || { print_error "证书已过期"; return 1; }
+                # 必须在写进配置**之前**处理: mihomo 只接受 -d 配置目录内的
+                # 证书路径 (或 SAFE_PATHS 放行的), 否则 listener 起不来而
+                # `mihomo -t` 不报错。用户手输的路径多半在 /etc/letsencrypt 下。
+                cert_ensure_safe_path || { print_error "证书无法放入配置目录"; return 1; }
                 CERT_DOMAIN=$(cert_extract_domain "$CERT_FILE")
                 if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
                 print_ok "使用手动证书: $CERT_DOMAIN"
@@ -333,6 +412,9 @@ ask_cert() {
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#FOUND_CERTS[@]} )); then
         e="${FOUND_CERTS[$((choice-1))]}"
         CERT_FILE="${e%%|*}"; k="${e#*|}"; KEY_FILE="${k%%|*}"
+        # 扫描结果里常有 /etc/letsencrypt/live/... 这类路径 —— 同样在配置
+        # 目录之外, 同样会被 mihomo 拒绝, 所以这里也要过一遍。
+        cert_ensure_safe_path || { print_warn "证书无法放入配置目录, 改用自签"; generate_cert; return $?; }
         CERT_DOMAIN=$(cert_extract_domain "$CERT_FILE")
         if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
         print_ok "已选证书: $CERT_DOMAIN"

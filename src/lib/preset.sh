@@ -37,10 +37,15 @@
 
 M_PRESETS=(
   # ---------- VLESS (M 内核变体最多) ----------
+  # ★ 这里**没有 h2 预置**, 不是遗漏: mihomo 的 vless listener 结构性不支持 h2。
+  #   listener 侧 sing_vless 只在 ws-path / grpc-service-name / xhttp-config
+  #   非空时才注册 HTTP handler (listener/sing_vless/server.go:167/181/199-239),
+  #   否则客户端发来的 HTTP/2 帧会被当成 VLESS 头 -> 必然握手失败。
+  #   实测 vless+h2 恒为 0/5, 而对照 vless+grpc 5/5 (二者同为 HTTP/2)。
+  #   VLESS.sh 会在用户选 h2 时自动改道到 grpc。
   "vless|tcp-vision|① 隐匿优先 · REALITY|tcp|off|xtls-rprx-vision|reality|裸TCP + XTLS Vision; 抗 DPI 最强; 不用证书|REALITY|"
   "vless|grpc-video|② gRPC 伪装 · REALITY|grpc|video||reality|gRPC 套一层正常 HTTP/2; 观感最像普通应用|REALITY|"
   "vless|grpc-dl|③ gRPC 高并发 · REALITY|grpc|download||reality|多路复用扛并发; 适合大量小请求|REALITY|"
-  "vless|h2-video|④ HTTP/2 伪装 · REALITY|h2|video||reality|HTTP/2 传输; 形状对 CDN 最友好|REALITY|"
   "vless|xhttp-reality|⑤ xHTTP · REALITY (M 独有)|xhttp|video||reality|xHTTP 伪装成普通 HTTP 接口调用; 仅 M 内核支持|REALITY+xHTTP|"
   "vless|xhttp-tls|⑥ xHTTP · 真证书 (M 独有)|xhttp|video||真证书|xHTTP 走 TLS; 可直连也可过 CDN|真证书+xHTTP|"
   "vless|ws-cdn|⑦ CDN 网页党 · 真证书|ws|web||真证书|走 Cloudflare 回源; 网页浏览档, 最省资源|CDN|cdn"
