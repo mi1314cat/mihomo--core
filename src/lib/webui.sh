@@ -38,16 +38,20 @@ webui_state() {   # 输出: 已启用(<目录>) / 未安装 / 已装未启用
 webui_download() {
     local tmp; tmp=$(mktemp -d)
     local u
+    # 走下载通道的 ui 作用域。UI 包在 GitHub 上, 国内直连基本拉不动 ——
+    # 这正是"下载通道"最该生效的地方。
+    local _px; _px=$(dl_route_resolve ui "$(dl_mixed_port)")
     for u in "${WEBUI_URLS[@]}"; do
-        print_info "下载 $WEBUI_NAME ..."
+        print_info "下载 $WEBUI_NAME ...${_px:+ (经 $_px)}"
         print_hint_url "$u"
-        if curl -fsSL --max-time 180 "$u" -o "$tmp/ui.zip" 2>/dev/null; then
+        if dl_curl "$u" "$tmp/ui.zip" ui 2>/dev/null; then
             break
         fi
         rm -f "$tmp/ui.zip"
     done
     if [[ ! -s "$tmp/ui.zip" ]]; then
         print_error "下载失败 (试了 ${#WEBUI_URLS[@]} 个源)"
+        print_info "去「13) 下载通道 → 4) UI 下载单独设置」换个通道试试"
         print_info "也可以手动下载后解压到: $CLI_UI"
         rm -rf "$tmp"; return 1
     fi

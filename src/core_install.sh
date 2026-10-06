@@ -179,8 +179,59 @@ _collect_proxy_candidates() {
     _PCAND=("${uniq[@]}")
 }
 
+# ---------------------------------------------------------------
+# 读面板里设的「下载通道 → 内核下载」
+# ---------------------------------------------------------------
+#
+# 面板的内核管理会 `bash core_install.sh` —— 那是**独立进程**, source 不到
+# src/lib/dl_route.sh。所以这里直接读那个文件。
+#
+# 这是本项目"必然有两份实现"的又一处 (引导/独立脚本不能 source 库),
+# 所以读取口径由 tools/check_mirrors.sh 机械比对, 不靠"记得同步"。
+#
+# 文件格式: 一行一个 `scope=mode`
+#     global=local
+#     kernel=direct
+#
+# 输出: curl --proxy 可用的值 (空 = 直连); 返回 0 表示"文件里明确设过",
+#       返回 1 表示"没设过, 交给 pick_proxy 现场探测"。
+_route_proxy_from_file() {
+    local f="${DL_ROUTE_FILE:-${INSTALL_DIR:-/root/catmi/mihomo}/.dl-route}"
+    [[ -f "$f" ]] || return 1
+    local k g
+    k=$(sed -n 's/^kernel=//p' "$f" 2>/dev/null | tail -1)
+    # 分项 unset -> 跟随全局
+    if [[ -z "$k" || "$k" == "unset" ]]; then
+        g=$(sed -n 's/^global=//p' "$f" 2>/dev/null | tail -1)
+        k="${g:-unset}"
+    fi
+    [[ -z "$k" || "$k" == "unset" ]] && return 1   # 没设过 -> 交给 pick_proxy
+
+    case "$k" in
+        direct) printf ''; return 0 ;;
+        local)
+            # mixed-port 从 settings.env / config.yaml 读, 读不到才退 7890
+            local mp="" root="${INSTALL_DIR:-/root/catmi/mihomo}"
+            mp=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\+\)["]*$/\1/p' "$root/settings.env" 2>/dev/null | head -1)
+            [[ "$mp" =~ ^[0-9]+$ ]] || \
+                mp=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\+\)$/\1/p' "$root/conf/config.yaml" 2>/dev/null | head -1)
+            [[ "$mp" =~ ^[0-9]+$ ]] || mp=7890
+            printf 'http://127.0.0.1:%s' "$mp"; return 0 ;;
+        custom)
+            cat "${f}.custom" 2>/dev/null; return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # 选一个代理打印到 stdout; 没有可用代理返回 1
 pick_proxy() {
+    # 面板里明确设过通道 -> 以它为准, 不再现场探测/追问。
+    # 用户既然在面板里做过选择, 就不该在这里被再问一遍, 更不该被忽略。
+    local _pfx
+    if _pfx=$(_route_proxy_from_file); then
+        [[ -n "$_pfx" ]] && say "使用面板设定的下载通道: $_pfx"
+        printf '%s' "$_pfx"; return 0
+    fi
     # 非交互: 有环境变量就用, 没有就静默直连 (与 SB 一致)
     if [[ ! -t 0 ]]; then
         [[ -n "${https_proxy:-}${http_proxy:-}" ]] && { printf '%s' "${https_proxy:-$http_proxy}"; return 0; }

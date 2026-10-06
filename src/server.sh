@@ -457,10 +457,16 @@ show_client_files() {
 
 log_menu() {
     print_title "日志"
+    # 同 svc_menu: 菜单编号必须和 case 分支号逐一对应。
+    # 这里原来写的是 1/2/4/5 而 case 是 1/2/3/4 —— 于是:
+    #     按 "4) 清空日志"        -> 执行的是"查看内核最近 100 行"
+    #     按 "5) 查看内核最近100行"-> **什么都不发生** (没有 case 5)
+    #     真正清空日志的分支 3, 菜单里**根本没列出来**
+    # 由 tools/check_menu_ids.sh 机械拦截。
     ui_menu 1 "实时查看运行日志 (tail -f)"
     ui_menu 2 "查看错误日志"
-    ui_menu 4 "清空日志文件"
-    ui_menu 5 "查看内核最近 100 行"
+    ui_menu 3 "清空日志文件"
+    ui_menu 4 "查看内核最近 100 行"
     echo >&2
     printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
     c=$(clean_input "$c")
@@ -631,12 +637,22 @@ show_logs() {
 
 svc_menu() {
     print_title "服务管理"
+    # 菜单编号必须和下面 case 的分支号**逐一对应**。
+    #
+    # 实测 bug: 这里原来写的是 1/2/4/5/6/7 —— 从 2 直接跳到 4,
+    # 而 case 里是 1/2/3/4/5/6 连续排的。于是每个操作都**错位一格**:
+    #     菜单显示 "4) 重启"       -> 按下 4 得到的是"状态"
+    #     菜单显示 "5) 状态"       -> 按下 5 得到的是"开机自启"
+    #     菜单显示 "6) 开机自启"   -> 按下 6 得到的是"手动上传内核"
+    #     菜单显示 "7) 手动上传内核"-> 按下 7 **什么都不发生** (没有 case 7)
+    # 六个操作全错, 最后一个彻底失效。这类"标签和分支号不一致"不会报错,
+    # 只会安静地做错事 —— 由 tools/check_menu_ids.sh 机械拦截。
     ui_menu 1 "启动"
     ui_menu 2 "停止"
-    ui_menu 4 "重启"
-    ui_menu 5 "状态"
-    ui_menu 6 "开机自启"
-    ui_menu 7 "手动上传内核 (下载不通时用)"
+    ui_menu 3 "重启"
+    ui_menu 4 "状态"
+    ui_menu 5 "开机自启"
+    ui_menu 6 "手动上传内核 (下载不通时用)"
     printf "请选择: "; local c; read -r c
     case "$c" in
         1) systemctl start "$SRV_SERVICE" && print_ok "已启动" ;;

@@ -97,7 +97,7 @@ unset M_NO_SRV_DIRS
 #                            拿它当 URL 只会得到一个连不上的链接。
 #
 # SB 的做法 (client.sh: lan_ip / host_addr) 是这个思路, 但**它的实现有兜底缺陷,
-# 我们补上** (详见 docs/private/SB-DIVERGENCE.md 的 D-2):
+# 我们补上** (详见 docs/private/sb/SB-DIVERGENCE.md 的 D-2):
 #   SB 只靠 `ip route get 1.1.1.1`, 没有默认路由时返回空 —— 而"没有默认路由"正是
 #   纯局域网/离线机器 (也就是最需要走本机代理的那类机器) 的常见状态。空了之后
 #   URL 会拼成 "http://:9090/ui/", 一个点不开的坏链接。
@@ -559,14 +559,24 @@ node_add() {
     local body="$tmp/sub.yaml"
 
     if [[ "$src" == http://* || "$src" == https://* ]]; then
-        print_info "正在拉取..."
+        # 走下载通道的 sub 作用域 —— 这正是"到服务器拉配置"那条路。
+        #
+        # 会走代理的。它有一个专门设置的地方, 我们这边有吗?"
+        # 之前是裸 curl, 完全不走代理 —— 而「下载通道」菜单里明明有这个开关,
+        # 设了却没人读 (见 dl_route.sh 头部说明)。
+        local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
+        print_info "正在拉取...${_px:+ (经 $_px)}"
         local code
-        code=$(curl -sSL --max-time 30 -o "$body" -w '%{http_code}' "$src" 2>/dev/null)
+        code=$(dl_curl_code "$src" "$body" sub)
         case "$code" in
             200) ;;
             404) print_error "链接不存在"; rm -rf "$tmp"; return 1 ;;
             410) print_error "链接已失效 (用尽 / 过期 / 已禁用)"; rm -rf "$tmp"; return 1 ;;
             503) print_error "服务端暂时不可用 (未消耗次数)"; rm -rf "$tmp"; return 1 ;;
+            000|"")
+                print_error "连不上订阅服务器${_px:+ (经 $_px)}"
+                print_info "去「13) 下载通道 → 3) 订阅拉取单独设置」换直连试试"
+                rm -rf "$tmp"; return 1 ;;
             *)   print_error "拉取失败 HTTP $code"; rm -rf "$tmp"; return 1 ;;
         esac
     elif [[ -f "$src" ]]; then
@@ -646,15 +656,21 @@ node_update() {
     ensure_dirs
     subs_file_init
     local rec pre url
+    # 一次性把通道解析出来, 循环里复用 (resolve 每次都要读文件)
+    local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
     while read -r pre url; do
         [[ -z "$pre" ]] && continue
-        print_info "更新 $pre ..."
+        print_info "更新 $pre ...${_px:+ (经 $_px)}"
         # 先备份, 拉取成功才替换 —— 一次性链接失败时不能把现有节点弄丢
         local tmp; tmp=$(mktemp -d)
         local code
-        code=$(curl -sSL --max-time 30 -o "$tmp/sub.yaml" -w '%{http_code}' "$url" 2>/dev/null)
+        code=$(dl_curl_code "$url" "$tmp/sub.yaml" sub)
         if [[ "$code" != "200" ]]; then
-            print_warn "  跳过 $pre (HTTP $code), 保留原有节点"
+            if [[ "$code" == "000" || -z "$code" ]]; then
+                print_warn "  跳过 $pre (连不上订阅服务器${_px:+ 经 $_px}), 保留原有节点"
+            else
+                print_warn "  跳过 $pre (HTTP $code), 保留原有节点"
+            fi
             rm -rf "$tmp"; continue
         fi
         local bak=""; [[ -f "$CLI_PROVIDERS/$pre.yaml" ]] && bak=$(mktemp) && cp -f "$CLI_PROVIDERS/$pre.yaml" "$bak"
@@ -1055,10 +1071,15 @@ cli_share_menu() {
 
 svc_menu() {
     print_title "服务管理"
+    # 与服务端的 svc_menu 保持同一套编号与项目 —— 两边不一致会让人换端后按错。
+    # 手动上传内核放在这里 (而不是只藏在"配置检查"里), 是因为下载不通时用户
+    # 第一个去的地方就是服务/内核相关菜单。
     ui_menu 1 "启动"
     ui_menu 2 "停止"
     ui_menu 3 "重启"
     ui_menu 4 "查看状态"
+    ui_menu 5 "开机自启"
+    ui_menu 6 "手动上传内核 (下载不通时用)"
     echo >&2
     printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
     c=$(clean_input "$c")
@@ -1067,6 +1088,8 @@ svc_menu() {
         2) systemctl stop "$CLI_SERVICE" && print_ok "已停止" ;;
         3) systemctl restart "$CLI_SERVICE" && print_ok "已重启" ;;
         4) systemctl status "$CLI_SERVICE" --no-pager | head -12 ;;
+        5) systemctl enable "$CLI_SERVICE" && print_ok "已设置开机自启" ;;
+        6) kernel_upload_menu ;;
     esac
 }
 
