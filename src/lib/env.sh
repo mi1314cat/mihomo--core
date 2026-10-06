@@ -195,7 +195,134 @@ m_port_in_use() {
     ss -tulHn 2>/dev/null | awk '{print $5}' | grep -oE '[0-9]+$' | grep -qx "$1"
 }
 
+# m_cert_in_use <证书路径>
+#
+# 该证书是否还被**其它**片段引用。删除节点时必须先问一遍, 否则会连带
+# 删掉别的节点正在用的证书。
+#
+# 踩过的坑: 一个 cert-<域名>....crt 被 5 个片段共用
+# (vless-ws / hysteria2 / anytls / tuicv5 / trojan-tls), 删掉其中任一个
+# 导致另外 4 个 TLS 节点全部 listen err: parse certificate failed ——
+# 而面板当时还显示"服务: 运行中"。
+#
+# 传入的路径会被规范化成绝对路径再比对, 避免相对/绝对写法不同导致漏判。
+m_cert_in_use() {
+    local want="$1" f
+    [[ -n "$want" ]] || return 1
+    want=$(readlink -f "$want" 2>/dev/null || printf '%s' "$want")
+    for f in "$SRV_CONFIGD"/*.yaml; do
+        [[ -f "$f" ]] || continue
+        # 片段里出现该证书的绝对路径即算引用
+        grep -qF -- "$want" "$f" 2>/dev/null && return 0
+        # 也认文件名形式 (conf/certs/xxx.crt)
+        grep -qF -- "$(basename "$want")" "$f" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# m_cert_gc <要删的证书路径...> —— 只删真正没人用的证书
+# 逐个确认, 有引用就跳过并告警, 不静默删。
+m_cert_gc() {
+    local c base
+    for c in "$@"; do
+        [[ -e "$c" ]] || continue
+        base=$(basename "$c")
+        if m_cert_in_use "$c"; then
+            print_warn "证书仍被其它节点引用, 已保留: $base"
+            continue
+        fi
+        rm -f "$c" && print_ok "已删除未使用的证书: $base"
+    done
+}
+
+# ================================================================
+# 节点命名
+# ================================================================
+#
+# 之前同一个节点在三处有三个不同的名字, 用户完全对不上:
+#   分享链接 # 片段 : VLESS-XHTTP-01   (VLESS.sh:392)
+#   all.sh 生成的名字: VLESS-WSS-01
+#   片段文件名       : vless-01.yaml    (VLESS.sh:419,444 的 listener/proxy 名)
+# 更麻烦的是 Trojan.sh 三个变体 (reality/tls) 的 listener 全叫 trojan-01,
+# all.sh 却拆成 Trojan-Reality-01 / Trojan-TLS-01 —— 同一条节点两个身份。
+#
+# 现在统一到一个函数。规则直接对齐 SB 上游 (lib.sh:2114-2138 的 tag_form_suffix):
+#
+#   <协议><两位编号>-<形态后缀>[-<方案标签>]
+#
+#   形态后缀: -REALITY / -TLS / -plain   (只有这三种)
+#   方案标签: CDN / ECH / pad / 真证书 / 自签 ...
+#
+# **传输方式 (ws/grpc/xhttp/h2/tcp) 不进名字** —— 这是 SB 明确的取舍:
+#   形态后缀只有三个值, 传输变体不参与。SB 自己的注释 lib.sh:2106 写的是
+#   "从名字看出传输方式", 但实现从来只区分 TLS 形态, 注释已过期。
+#   照搬实现而不是过期注释。
+#
+# m_node_tag <协议> <索引> <形态:reality|tls|plain> [方案标签]
+# 例: m_node_tag VLESS 01 tls        → mVLESS01-TLS
+#     m_node_tag VLESS 01 reality     → mVLESS01-REALITY
+#     m_node_tag Trojan 02 plain ECH  → mTrojan02-plain-ECH
+#
+# 统一前缀 m: 客户端里 mihomo-core 生成的节点一律以 m 开头, 和别的项目/手工
+# 加的节点一眼分得开。要改前缀设 M_TAG_PREFIX 即可, 留空则不加。
+m_node_tag() {
+    local proto="$1" idx="$2" form="${3:-plain}" extra="${4:-}"
+    [[ -n "$proto" && -n "$idx" ]] || return 1
+    # 索引补零到两位。10# 强制十进制: 否则 08/09 会被当成八进制非法数
+    idx=$(printf '%02d' "$((10#$idx))" 2>/dev/null) || idx="$idx"
+
+    local base
+    case "$form" in
+        reality) base="REALITY" ;;
+        tls)     base="TLS" ;;
+        *)       base="plain" ;;
+    esac
+    # 形态已经表达过的词, 标签里不要重复, 否则拼出 "-REALITY-REALITY"。
+    # 比较要大小写不敏感: 用户可能传 "TLS" 或 "tls", 但 base 是固定写法。
+    case "$form" in
+        reality) extra="${extra//REALITY/}"; extra="${extra//reality/}" ;;
+        tls)     extra="${extra//TLS/}";     extra="${extra//tls/}" ;;
+    esac
+    # 标签里的 "+" 是给人看的分隔 (ECH+pad), 拼进名字要换掉, 否则
+    # 会得到 "TLS-ECHpad" 这种看不出边界的东西
+    extra="${extra//+/-}"
+    while [[ "$extra" == -* ]]; do extra="${extra#-}"; done
+    while [[ "$extra" == *- ]]; do extra="${extra%-}"; done
+    while [[ "$extra" == *,* ]]; do extra="${extra/,/}"; done
+
+    # base 不自带前导连字符, 分隔统一在这里加 —— 否则容易拼出双横线
+    # 前缀。用 ${VAR-m} 而不是 ${VAR:-m}: 前者只在"未设置"时用默认值,
+    # 后者把显式设成空串也当未设置 —— 那样 M_TAG_PREFIX="" 关不掉前缀。
+    local pfx="${M_TAG_PREFIX-m}"
+    local tag
+    if [[ -n "$extra" ]]; then
+        tag="${pfx}${proto}${idx}-${base}-${extra}"
+    else
+        tag="${pfx}${proto}${idx}-${base}"
+    fi
+    printf -- "%s\n" "$tag"
+}
+
+# 从已生成的 tag 反推形态, 供列表页按形态分组显示
+m_tag_form() {
+    case "$1" in
+        *-REALITY*) echo "REALITY" ;;
+        *-TLS*)     echo "TLS" ;;
+        *)          echo "plain" ;;
+    esac
+}
+
 # m_safe_read_port <默认值> —— 六个协议脚本共用的端口提问
+#
+# 失败时返回 1 且**不输出任何东西**。调用方必须写成
+#   port=$(m_safe_read_port X) || return 1
+# 而不是裸写 $(m_safe_read_port X) —— 后者在 EOF 时会得到空串并继续往下走,
+# 写出一个 `port:` 为空的节点。实测这种节点:
+#   mihomo -t   → successful
+#   validate.py → 严格校验通过
+#   面板        → 显示"节点: N"
+#   实际        → 端口为空, 完全不能工作
+# 所以下面这个函数额外保证: 万一走到成功分支, 端口绝不会为空。
 m_safe_read_port() {
     local default="$1" input port
     while true; do
@@ -284,34 +411,95 @@ m_sync() {
     return 0
 }
 
+# 该地址是否挂在本机某个接口上
+# (与 share.sh 的同名函数保持一致; 两处都要有, 因为 env.sh 不依赖 share.sh)
+m_addr_is_local() {
+    local a="$1"
+    [[ -n "$a" ]] || return 1
+    ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$a"
+}
+
+# 本机第一个全局单播地址 (优先 IPv4, 兼容性最好)
+m_local_addr() {
+    local v4 v6
+    v4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [[ -n "$v4" ]] && { printf '%s' "$v4"; return 0; }
+    v6=$(ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v '^fe80:' | head -1)
+    [[ -n "$v6" ]] && { printf '%s' "$v6"; return 0; }
+    return 1
+}
+
 # m_server_ip —— 生成分享链接 / 客户端配置时对外写的那个地址
 #
 # 顺序刻意这样排:
 #   1. 传参进来的
 #   2. install_info.env 里管理员确认过的 PUBLIC_IP
-#   3. 实在没有才现探测, 并**明确告警**
+#   3. 外部探测, 但**必须先自检**: 不在本机接口上的地址直接丢弃
+#   4. 兜底用本机接口地址
 #
 # 为什么不能把探测放前面: 开了透明代理 (tproxy/redirect) 的机器上,
 # --noproxy 对 curl 无效, api.ipify 拿回来的是**代理出口 IP**。
 # 把它写进客户端配置, 节点就成了"连自己都连不上"的死节点。
-# 踩过的坑: 有节点的 server 被写成了 CDN 出口 IP, 而服务器本身是另一个地址,
-# 客户端连过去直接 i/o timeout。
+#
+# 踩过的坑: all.sh 用未校验的 m_server_ip, 13 个节点的 server
+# 全被写成 WARP 出口 <WARP_EXIT_IP>, 真实 IP 是 <REAL_SERVER_IP>。
+# 那个地址端口全不通, 客户端 13/13 全部连不上。
+# 而 share.sh 的 _share_addr 早已有自检, 于是**分享地址对、节点地址错** ——
+# 同一个项目两套 IP 探测逻辑, 这次把它们统一。
 m_server_ip() {
     [[ -n "${1:-}" ]] && { printf '%s' "$1"; return 0; }
-    [[ -n "${PUBLIC_IP:-}" ]] && { printf '%s' "$PUBLIC_IP"; return 0; }
+    # 内存里已加载的值
+    if [[ -n "${PUBLIC_IP:-}" ]]; then
+        if m_addr_is_local "$PUBLIC_IP" || [[ "${PUBLIC_IP_VERIFIED:-}" == "1" ]]; then
+            printf '%s' "$PUBLIC_IP"; return 0
+        fi
+        print_warn "已记录的 PUBLIC_IP=$PUBLIC_IP 不在本机接口上, 忽略"
+        unset PUBLIC_IP
+    fi
+    # 从 install_info.env 读。存的旧值同样要过自检 —— 修复前的版本在这里
+    # 直接返回, 于是 install_info.env 里那个 WARP 出口地址 (<WARP_EXIT_IP>)
+    # 会被一直沿用, 自检形同虚设 (实测 2026-10-06, 修复后仍返回旧值)。
     if [[ -f "${SRV_ENV:-}" ]]; then
         m_load_env "$SRV_ENV" 2>/dev/null || true
-        [[ -n "${PUBLIC_IP:-}" ]] && { printf '%s' "$PUBLIC_IP"; return 0; }
+        if [[ -n "${PUBLIC_IP:-}" ]]; then
+            if m_addr_is_local "$PUBLIC_IP" || [[ "${PUBLIC_IP_VERIFIED:-}" == "1" ]]; then
+                printf '%s' "$PUBLIC_IP"; return 0
+            fi
+            print_warn "install_info.env 里的 PUBLIC_IP=$PUBLIC_IP 不在本机接口上, 已忽略"
+            print_warn "  (多半是 WARP/透明代理的出口地址, 客户端连不上)"
+            print_warn "  确认要改成正确值请执行:"
+            print_warn "    python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
+            unset PUBLIC_IP
+        fi
     fi
-    local ip
-    ip=$(curl -s4 --max-time 8 https://api.ipify.org 2>/dev/null)
-    [[ -z "$ip" ]] && ip=$(curl -s6 --max-time 8 https://api64.ipify.org 2>/dev/null)
-    if [[ -n "$ip" ]]; then
-        print_warn "install_info.env 里没有 PUBLIC_IP, 现探测到 $ip"
-        print_warn "若本机开了透明代理, 这很可能是**代理出口 IP**而不是你的服务器 IP"
-        print_warn "请确认无误后写回:  python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
+
+    local cand
+    for cand in \
+        "$(curl -s4 --max-time 8 https://api.ipify.org 2>/dev/null)" \
+        "$(curl -s6 --max-time 8 https://api64.ipify.org 2>/dev/null)"; do
+        [[ -n "$cand" ]] || continue
+        # 关键: 挂在本机接口上才认。多网卡/多 IP 的机器外部探测常给出
+        # 另一个地址, 这时宁可退回本机地址也不要写一个连不上的。
+        if m_addr_is_local "$cand"; then
+            printf '%s' "$cand"
+            return 0
+        fi
+        print_warn "探测到地址 $cand 不在本机接口上 (多半是 WARP/透明代理的出口), 已丢弃"
+    done
+
+    # 兜底: 本机接口地址。NAT 后仍需管理员确认, 但至少是个真实可达的地址,
+    # 比写一个代理出口地址强。
+    if cand=$(m_local_addr); then
+        print_warn "外部探测未通过自检, 改用本机接口地址: $cand"
+        print_warn "若本机在 NAT 后面, 请确认客户端能直连, 或手动设置:"
+        print_warn "  python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
+        printf '%s' "$cand"
+        return 0
     fi
-    printf '%s' "$ip"
+
+    print_error "无法确定对外地址, 且本机没有全局单播地址"
+    print_error "请手动设置:  python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
+    return 1
 }
 
 # m_sync_reload —— 校验通过才重载; 失败保留旧配置

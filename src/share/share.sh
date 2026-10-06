@@ -252,6 +252,21 @@ PY
 }
 
 # ---------- 列表 ----------
+# 展示用: 表格一律打到 stdout, 仅供人看。
+# 注意 share_list 与 share_pick 必须严格分开:
+#   share_list  → 只负责"看", 全部走 stdout
+#   share_pick  → 只负责"选", 选中的路径走全局变量 _SHARE_PICKED
+# 早期版本让 share_pick 把 share_list 的表格和文件名一起 printf, 捕获方
+# 拿到的是"整张表 + 末行文件名", 于是 rm -f 对着垃圾执行返回 0 → 假成功。
+_SHARE_PICKED=""
+
+_share_sorted_files() {
+    shopt -s nullglob
+    local files=("$SHARES"/*.json)
+    shopt -u nullglob
+    printf '%s\n' "${files[@]}" | sort
+}
+
 share_list() {
     print_title "分享链接列表"
     [[ -d "$SHARES" ]] || { print_info "还没有任何分享链接"; return; }
@@ -263,7 +278,7 @@ share_list() {
     printf '\n%-4s %-12s %-34s %-8s %-10s %-18s\n' "编号" "节点" "Token" "状态" "已用/上限" "过期时间"
     printf '%s\n' "────────────────────────────────────────────────────────────────────────────────"
     local i=1 f meta
-    for f in $(printf '%s\n' "${files[@]}" | sort); do
+    for f in $(_share_sorted_files); do
         meta=$(cat "$f" 2>/dev/null) || continue
         local tag tok st used maxu exp
         tag=$(printf '%s' "$meta"  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag","?"))' 2>/dev/null)
@@ -281,50 +296,83 @@ share_list() {
     printf '\n'
 }
 
-_share_pick() {
-    share_list
-    printf '请输入编号 [回车取消]: '
+# 交互式选一条分享链接。
+# 选中的完整路径写入全局 _SHARE_PICKED, **不往 stdout 打任何东西** ——
+# 调用方一律用 _SHARE_PICKED 取值, 绝不要写 f=$(share_pick)。
+# 成功返回 0, 取消/无效返回 1。
+share_pick() {
+    _SHARE_PICKED=""
+    # 表格必须走 stderr。
+    #
+    # 这个函数会被包在命令替换里: f=$(share_pick)。share_list 的 printf 默认
+    # 走 stdout, 于是**整张表格和文件名一起被捕获**成 f, 实测后果:
+    #   share_delete → rm -f "<整张表格>\n<文件名>" 对不存在的路径返回 0
+    #                 → 打印"已删除"而文件纹丝不动
+    #   share_toggle → 文件名不合法 → FileNotFoundError, 整张表格进 traceback
+    #   share_regen  → 静默什么都没做
+    # print_title / print_info 本来就写 stderr, 只有表格这几行 printf 是
+    # stdout, 所以这里只重定向 share_list。
+    share_list >&2
+    printf '请输入编号 [回车取消]: ' >&2
     local n; read -r n
     [[ -n "$n" && "$n" =~ ^[0-9]+$ ]] || { print_info "已取消"; return 1; }
-    shopt -s nullglob
-    local files=("$SHARES"/*.json)
-    shopt -u nullglob
+    local -a files=()
+    local line
+    while IFS= read -r line; do [[ -n "$line" ]] && files+=("$line"); done < <(_share_sorted_files)
     (( n >= 1 && n <= ${#files[@]} )) || { print_error "编号不存在"; return 1; }
-    printf '%s' "${files[$((n-1))]}"
+    _SHARE_PICKED="${files[$((n-1))]}"
+    [[ -f "$_SHARE_PICKED" ]] || { print_error "文件不存在: $_SHARE_PICKED"; _SHARE_PICKED=""; return 1; }
+    return 0
 }
 
 # ---------- 操作 ----------
 share_delete() {
     print_title "删除分享链接"
-    local f; f=$(_share_pick) || return
-    rm -f "$f"
-    print_ok "已删除"
+    share_pick || return
+    local f="$_SHARE_PICKED"
+    local tok; tok=$(python3 -c 'import sys,json;print(json.load(open(sys.argv[1])).get("share_token","?"))' "$f" 2>/dev/null || echo "?")
+    rm -f "$f" || { print_error "删除失败: $f"; return; }
+    # 必须回读确认, 否则 rm 静默失败时仍会报"已删除"(实测过的假成功)
+    [[ -e "$f" ]] && { print_error "删除失败, 文件仍在: $f"; return; }
+    print_ok "已删除分享链接 (token ${tok:0:12}...)"
 }
 
 share_toggle() {
     print_title "启用 / 禁用分享链接"
-    local f; f=$(_share_pick) || return
-    python3 - "$f" <<'PY'
-import json, os, sys
+    share_pick || return
+    local f="$_SHARE_PICKED"
+    # python 的输出要自己收, 不能裸跑 (裸跑时 stdout 混进面板流)
+    local out rc
+    out=$(python3 - "$f" <<'PY'
+import json, sys
 p = sys.argv[1]
 m = json.load(open(p))
 m["enabled"] = not m.get("enabled", True)
 with open(p, "w", encoding="utf-8") as fh:
     json.dump(m, fh, indent=1)
-print("已启用" if m["enabled"] else "已禁用")
+print("enabled" if m["enabled"] else "disabled")
 PY
+) || { print_error "切换失败: $f"; return; }
+    # 回读确认真的落盘了
+    local now; now=$(python3 -c 'import sys,json;print(json.load(open(sys.argv[1])).get("enabled"))' "$f" 2>/dev/null)
+    case "$out" in
+        enabled)  [[ "$now" == "True" ]] && print_ok "已启用" || print_error "启用未生效" ;;
+        disabled) [[ "$now" == "False" ]] && print_ok "已禁用" || print_error "禁用未生效" ;;
+        *) print_error "切换失败 (未知返回: $out)" ;;
+    esac
 }
 
 share_regen() {
     print_title "重新生成 Token"
-    local f; f=$(_share_pick) || return
+    share_pick || return
+    local f="$_SHARE_PICKED"
     local old; old=$(basename "$f" .json)
     printf '重新生成后旧链接立即失效 (404)。确认? (y/N): '
     local c; read -r c
     [[ "$c" =~ ^[yY]$ ]] || { print_info "已取消"; return; }
     local new; new=$(openssl rand -hex 16)
-    mv -f "$f" "$SHARES/$new.json"
-    python3 - "$SHARES/$new.json" "$new" <<'PY'
+    mv -f "$f" "$SHARES/$new.json" || { print_error "移动失败"; return; }
+    python3 - "$SHARES/$new.json" "$new" <<'PY' || { print_error "写入新 token 失败"; return; }
 import json, sys
 p, tok = sys.argv[1], sys.argv[2]
 m = json.load(open(p))
@@ -332,13 +380,17 @@ m["share_token"] = tok
 with open(p, "w", encoding="utf-8") as fh:
     json.dump(m, fh, indent=1)
 PY
+    # 回读确认 token 真的换了 (实测过静默不生效)
+    local got; got=$(python3 -c 'import sys,json;print(json.load(open(sys.argv[1])).get("share_token"))' "$SHARES/$new.json" 2>/dev/null)
+    [[ "$got" == "$new" ]] || { print_error "token 未生效 (当前: ${got:-无})"; return; }
     print_ok "已重新生成"
     printf '  旧: %s\n  新: %s\n' "$old" "$new"
 }
 
 share_show_url() {
     print_title "查看分享链接"
-    local f; f=$(_share_pick) || return
+    share_pick || return
+    local f="$_SHARE_PICKED"
     local tag addr
     tag=$(python3 -c 'import sys,json;print(json.load(open(sys.argv[1])).get("tag","all"))' "$f")
     addr=$(_share_addr)
@@ -401,12 +453,26 @@ EOF
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$SHARE_PORT/status" 2>/dev/null)
     [[ "$code" == "200" ]] && print_ok "健康检查通过" || print_warn "健康检查未通过 (HTTP $code)"
 
-    # 防火墙提示 (不擅自改防火墙, 只提示)
+    # 防火墙: 只提示, 不擅自改。
+    # 真正放行了的话登记进 .fw-ports, 卸载时按清单精确回收 ——
+    # 借鉴 参考实现 的做法: 不扫防火墙全表, 避免误删用户自己的规则。
     printf '\n'
-    # 注意: print_info 只接收一个参数, 带占位符要用 printf 直接输出
     printf "  %s[信息]%s 若外部访问不通, 请放行端口:\n" "$CYAN" "$RESET" >&2
     printf "    firewall-cmd --add-port=%s/tcp --permanent && firewall-cmd --reload\n" "$SHARE_PORT" >&2
     printf "    或 ufw allow %s/tcp\n" "$SHARE_PORT" >&2
+    printf "    (手动放行的端口卸载时不会自动回收, 需要的话请自己撤)\n" >&2
+
+    # 顺带检查: 端口在本机监听但防火墙没放行, 是"生成分享链接却拉不到"
+    # 的最常见原因, 值得当场指出
+    if ss -lntH 2>/dev/null | grep -qE ":${SHARE_PORT}[[:space:]]"; then
+        if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+            ufw status 2>/dev/null | grep -q "${SHARE_PORT}/tcp" \
+                || print_warn "ufw 已启用但未放行 ${SHARE_PORT}/tcp, 外部将无法访问"
+        elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+            firewall-cmd --list-ports 2>/dev/null | grep -q "${SHARE_PORT}" \
+                || print_warn "firewalld 已启用但未放行 ${SHARE_PORT}/tcp, 外部将无法访问"
+        fi
+    fi
 }
 
 share_service_restart() {

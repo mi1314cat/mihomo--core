@@ -341,13 +341,14 @@ add_config() {
     render_smux
 
     # 写 Reality 入站配置
+NODE_TAG="$(m_node_tag VLESS "$index" reality)"
 cat > "$IN_FILE" <<EOF
 # smux: ${SMUX_PROFILE:-false}
 # xudp: $XUDP_ENABLED
 # pkt-mode: $PKT_MODE
 # fp: $CLIENT_FP
 listeners:
-  - name: reality-$index
+  - name: $NODE_TAG
     type: vless
     listen: "0.0.0.0"
     port: $REALITY_PORT
@@ -368,9 +369,10 @@ EOF
     echo "PUBKEY_${index}=$PUBLIC_KEY" >> "$PUB_ENV"
 
     # 写 Reality 客户端配置（Clash Meta）
+NODE_TAG="$(m_node_tag VLESS "$num" reality)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: Reality-$index
+  - name: $NODE_TAG
     type: vless
     server: $PUBLIC_IP
     port: $REALITY_PORT
@@ -474,9 +476,10 @@ rebuild_client() {
 
     SERVER_IP=$(m_server_ip)
 
+NODE_TAG="$(m_node_tag VLESS "$num" reality)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: Reality-$num
+  - name: $NODE_TAG
     type: vless
     server: $SERVER_IP
     port: $port
@@ -534,9 +537,10 @@ rebuild_client_silent() {
 
     SERVER_IP=$(m_server_ip)
 
+NODE_TAG="$(m_node_tag VLESS "$num" reality)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: Reality-$num
+  - name: $NODE_TAG
     type: vless
     server: $SERVER_IP
     port: $port

@@ -420,7 +420,13 @@ add_config() {
 
     # 3. 自动生成端口
     default_port=$(random_port)
-    ANYTLS_PORT=$(safe_read_port "$default_port")
+    # 必须检查返回值: m_safe_read_port 在 stdin 关闭 (EOF) 时返回 1 且不输出,
+    # 不检查就会写出一个 `port:` 为空的死节点, 而校验链全放行
+    ANYTLS_PORT=$(safe_read_port "$default_port") || {
+        print_error "未指定端口, 已取消创建"
+        return 1
+    }
+    [[ -n "$ANYTLS_PORT" ]] || { print_error "端口为空, 已取消创建"; return 1; }
 
     # 4. 自动生成域名（证书）
     DOMAIN="cloudflare.com"
@@ -453,13 +459,14 @@ add_config() {
     ask_padding
 
     # 8. 写入入站配置（Mihomo AnyTLS）
+NODE_TAG="$(m_node_tag AnyTLS "$index" tls)"
 cat > "$IN_FILE" <<EOF
 # mtls: $MTLS_ENABLED
 # smux: ${SMUX_PROFILE:-false}
 # fp: $CLIENT_FP
 # idle: $IDLE_CHECK/$IDLE_TIMEOUT
 listeners:
-  - name: anytls-$index
+  - name: $NODE_TAG
     type: anytls
     listen: "0.0.0.0"
     port: $ANYTLS_PORT
@@ -472,6 +479,7 @@ $PADDING_BLOCK
 EOF
 
     # 9. 写入客户端配置（Clash Meta）
+NODE_TAG="$(m_node_tag AnyTLS "$num2" tls)"
 cat > "$OUT_FILE" <<EOF
 proxies:
   - name: anytls
@@ -613,9 +621,10 @@ rebuild_client() {
         MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
     fi
 
+NODE_TAG="$(m_node_tag AnyTLS "$num2" tls)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: anytls-$num2
+  - name: $NODE_TAG
     type: anytls
     server: $SERVER_IP
     port: $ANYTLS_PORT
@@ -678,7 +687,7 @@ cat >> "$SUB_FILE" <<EOF
 # ============================
 # AnyTLS-$num2$($MTLS_ENABLED && echo " (mTLS)")$([[ -n "$SMUX_PROFILE" ]] && echo " ($SMUX_PROFILE smux)")
 # ============================
-  - name: anytls-$num2
+  - name: $NODE_TAG
     type: anytls
     server: $SERVER_IP
     port: $ANYTLS_PORT
@@ -732,9 +741,10 @@ rebuild_client_silent() {
         MTLS_CLIENT_KEY=$(awk 'NF' "$CERT_DIR/mtls-$PROTO-$num2/client.key")
     fi
 
+NODE_TAG="$(m_node_tag AnyTLS "$num2" tls)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: anytls-$num2
+  - name: $NODE_TAG
     type: anytls
     server: $SERVER_IP
     port: $ANYTLS_PORT

@@ -638,10 +638,11 @@ export HOME_WEBCERTS="/home/web/certs"
 # ================================
 render_client_yaml() {
     local out_file="$1" num="$2" server_ip="$3" port="$4" password="$5"
+    NODE_TAG="$(m_node_tag Hysteria2 "$num" tls)"
     calc_pin "$CERT_FILE"
     {
         echo "proxies:"
-        echo "  - name: Hysteria2-$num"
+        echo "  - name: $NODE_TAG"
         echo "    type: hysteria2"
         echo "    server: $server_ip"
         echo "    port: $port"
@@ -842,9 +843,10 @@ add_config() {
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
     META_FILE="$OUT_DIR/${PROTO}_meta-$index.json"
 
+    NODE_TAG="$(m_node_tag Hysteria2 "$index" tls)"
     cat > "$IN_FILE" <<EOF
 listeners:
-  - name: hysteria2-$index
+  - name: $NODE_TAG
     type: hysteria2
     listen: "$listen_ip"
     port: $port
@@ -968,8 +970,13 @@ delete_config() {
         if [[ "$cert_file" == "$CERT_DIR"/cert-* ]]; then
             local dom
             dom=$(extract_cert_domain "$cert_file")
-            rm -f "$CERT_DIR/cert-$dom.crt" "$CERT_DIR/key-$dom.key"
-            print_ok "已删除 $pad（含自签证书）"
+            # 即使是自签, 也可能有别的节点在用同一份 —— 实测一个 cert 被
+            # 5 个节点共用, 删掉会让其余 TLS 节点全部 parse certificate
+            # failed, 而面板当时还显示"运行中"。m_cert_gc 会先查引用。
+            if m_cert_gc "$CERT_DIR/cert-$dom.crt" "$CERT_DIR/key-$dom.key"; then
+                : # 已按引用情况处理
+            fi
+            print_ok "已删除 $pad"
         else
             print_ok "已删除 $pad（外部证书保留: $cert_file）"
         fi

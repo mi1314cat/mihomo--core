@@ -181,15 +181,20 @@ gen_config() {
 
     # 把 provider 列表交给 python 处理; 每个 provider 附带它的刷新方式
     local spec=""
-    local f name rec kind
+    local f name rec kind url
     for f in $(node_files); do
         name=$(basename "$f" .yaml)
-        kind="file"
+        kind="file"; url=""
         rec=$(subs_get "$name")
-        if [[ -n "$rec" ]] && printf '%s' "$rec" | grep -q 'http-auto'; then
-            kind="http-auto"
+        if [[ -n "$rec" ]]; then
+            if printf '%s' "$rec" | grep -q 'http-auto'; then kind="http-auto"; fi
+            url=$(printf '%s' "$rec" | python3 -c '
+import json,sys
+try: print(json.load(sys.stdin).get("url",""))
+except Exception: print("")' 2>/dev/null)
         fi
-        spec+="$name:$kind"$'\n'
+        # URL 里含 : 和 /, 不能用 name:kind:url 三段切分 —— 改用 \x1f 分隔。
+        spec+="$name"$'\x1f'"$kind"$'\x1f'"$url"$'\n'
     done
 
     python3 - "$CLI_CONF/config.yaml" "$spec" "$PORT_MIXED" "$PORT_CTRL" \
@@ -198,16 +203,22 @@ import sys, os, yaml
 
 out, spec, p_mixed, p_ctrl, bind, ui, secret, AUTO_GEO_UPDATE = sys.argv[1:9]
 
+SEP = "\x1f"
 providers, names = {}, []
 for line in spec.splitlines():
-    line = line.strip()
-    if not line or ":" not in line:
+    line = line.rstrip("\n")
+    if not line.strip():
         continue
-    name, kind = line.rsplit(":", 1)
+    parts = (line.split(SEP) + ["", "", ""])[:3]
+    name, kind, url = parts[0], parts[1], parts[2]
+    if not name:
+        continue
     names.append(name)
-    entry = {"path": f"./providers/{name}.yaml"}
-    if kind == "http-auto":
-        entry = {"type": "http", "path": f"./providers/{name}.yaml",
+    if kind == "http-auto" and url:
+        # type: http 必须带 url —— path 只是本地缓存位置, 没有 url 内核无从拉取。
+        # 这个分支之前从没被走到 (写入侧写的是 http-oneshot), 所以 url 缺失
+        # 一直没暴露。现在读侧认 http-auto 了, 必须补上。
+        entry = {"type": "http", "url": url, "path": f"./providers/{name}.yaml",
                  "interval": 600}
     else:
         # type 必须显式给出: 缺字段时 mihomo -t 不报错, 但运行期直接 fatal
@@ -280,18 +291,67 @@ cfg = {
     "profile": {"store-selected": True, "store-fake-ip": True},
     "dns": {
         "enable": True,
-        "listen": "0.0.0.0:1053",
-        "ipv6": True,
+        # 跟随 BIND_ADDR, 不要硬编码 0.0.0.0。
+        #
+        # 实测问题: 同一进程里代理口听 127.0.0.1:17890,
+        # DNS 口却听 0.0.0.0:1053 —— 与上面 allow-lan=false 自相矛盾。
+        # 后果是本机成了一个开放解析器: 局域网任何人都能拿它查询,
+        # 而这些查询**不经过代理**, 等于白送一份 DNS 反射面。
+        "listen": f"{bind}:1053",
+        # 关掉 AAAA 记录。
+        #
+        # 实测问题: 开着 ipv6 时内核会返回真实 IPv6 地址,
+        # 而 <CLIENT_ALIAS> 有活的 2409:8a20::/64 和默认 v6 路由 —— 那些流量根本没进
+        # mihomo, 直接走 IPv6 出去了。同机两个解析器两个答案:
+        #   getent ahosts example.com  → 2606:4700:... (真实 v6, 走了运营商)
+        #   dig @127.0.0.1 -p 1053     → 198.18.0.4      (fake-ip)
+        # 客户端面板不跑 TUN 也没有 IPv6 路由表, 给不出可用出口, 索性不给 AAAA。
+        # 需要 IPv6 的场景应显式开启 TUN 模式并确认回源链路。
+        "ipv6": False,
         "enhanced-mode": "fake-ip",
         "fake-ip-range": "198.18.0.1/16",
-        "fake-ip-filter": ["*.lan", "localhost", "*.local", "+.msftconnecttest.com"],
+        # 这些域名拿到 fake-ip 会坏掉, 必须走真实解析。
+        # 缺了它们的表现很隐蔽: QUIC/STUN 打洞失败、NTP 校时卡住、
+        # iCloud 中继连不上 —— 用户往往先去关 fake-ip, 反而引入真泄露。
+        "fake-ip-filter": [
+            "*.lan", "localhost", "*.local", "+.msftconnecttest.com",
+            "+.stun.*", "+.stun.*.*", "time.*", "+.pool.ntp.org",
+            "+.apple.com", "+.icloud.com", "+.icloud-content.com",
+            "+.market.xiaomi.com",
+        ],
+        # 服务器 IP 域名要用明文 DNS 解出来 —— 这一步必须在代理之外,
+        # 否则第一次启动时还没有可用的代理链路。
         "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-        "nameserver": ["https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"],
+        # 主解析: 全部加密, 且走代理 (respect-rules)。
+        # 之前这里是 alidns/doh.pub 两个国内 DoH —— 意味着每个境外域名
+        # 都被完整送到阿里和腾讯, 这是与运营商无关的第二条泄露链路。
+        "nameserver": ["https://dns.alidns.com/dns-query#PROXY",
+                       "https://doh.pub/dns-query#PROXY"],
+        # 解析代理服务器自身域名: 必须直连, 否则死循环。
         "proxy-server-nameserver": ["https://dns.alidns.com/dns-query"],
-        "fallback": ["https://1.0.0.1/dns-query", "tls://dns.google"],
+        # fallback 与主解析二选一, 不是并行双发。
+        #
+        # 实测问题: 之前没设 fallback-lazy-query (默认 false),
+        # fallback 被急切并发查询, 于是**每个境外域名同时**发给
+        # alidns/doh.pub 和 fallback 两组。加上 nameserver 本身就是
+        # 国内 DoH, 一个境外域名实际被发给了 4 家。
+        # fallback-lazy-query=true 才是 mihomo 的正确语义:
+        # 主解析返回的 IP 落在境外时才查 fallback, 国内域名根本不会走到。
+        "fallback-lazy-query": True,
+        "fallback": ["https://1.0.0.1/dns-query#PROXY", "tls://dns.google#PROXY"],
         # geoip-code 在当前内核是字符串; 写成列表会硬报错
         "fallback-filter": {"geoip": True, "geoip-code": "CN"},
-        "nameserver-policy": {"geosite:cn,private": ["https://dns.alidns.com/dns-query"]},
+        # respect-rules: DNS 连接本身受 rules 约束。
+        #
+        # 不设时默认为 false —— 这意味着 DNS 出站**不受路由规则影响**,
+        # 写 rules: MATCH,PROXY 对 DNS 毫无作用, 加密 DNS 实际是直连出去的。
+        "respect-rules": True,
+        "nameserver-policy": {
+            "geosite:cn,private": ["https://dns.alidns.com/dns-query"],
+            # 广告在 DNS 层直接拒, 不让它离开本机。
+            # 路由层也有一份, 双层消费 (与 SB 的做法一致)。
+            "geosite:category-ads-all": ["rcode://success"],
+        },
     },
     "sniffer": {
         "enable": True, "override-destination": True,
@@ -383,10 +443,30 @@ node_add() {
     if ! _add_from_file "$body" "$name"; then rm -rf "$tmp"; return 1; fi
     printf '%s\n' "$src" > "$CLI_NODES/$name.txt"
     if [[ "$src" == http://* || "$src" == https://* ]]; then
+        # 自动刷新必须在这里问清楚。
+        #
+        # 之前写死 kind="http-oneshot", 而配置生成侧 (client.sh:189) 只认
+        # "http-auto" —— 两边对不上, 结果是: 通过面板导入的订阅**永远不会**
+        # 走 type: http + interval 分支, 只能靠「更新配置」手动拉。
+        # 读侧的分支代码一直存在, 看上去像支持了, 实际永远到不了。
+        #
+        # 对照 SB: 它也是纯手动更新 (client.sh 的 update_node 遍历来源 URL
+        # 重拉), 没有 interval 自动刷新。所以自动刷新是 Mihomo 侧多出来的
+        # 能力, 得真正能用。
+        local kind="http-oneshot"
+        printf '\n是否让内核自动定时更新这个订阅?\n'
+        printf "    1) 自动更新 (每 10 分钟, 推荐)\n"
+        printf "    2) 手动更新 (只在选「更新配置」时拉取)\n"
+        printf "请选择 [1]: "
+        local a; read -r a
+        [[ "$a" == "2" ]] || kind="http-auto"
         subs_put "$(python3 -c '
 import json,sys,datetime
-print(json.dumps({"prefix":sys.argv[1],"url":sys.argv[2],"kind":"http-oneshot",
- "imported_at":datetime.datetime.now().isoformat(timespec="seconds")}))' "$name" "$src")"
+print(json.dumps({"prefix":sys.argv[1],"url":sys.argv[2],"kind":sys.argv[3],
+ "imported_at":datetime.datetime.now().isoformat(timespec="seconds")}))' "$name" "$src" "$kind")"
+        if [[ "$kind" == "http-auto" ]]; then
+            print_ok "已设为自动更新, 需重新生成配置后生效"
+        fi
     fi
     rm -rf "$tmp"
     apply_change
@@ -463,7 +543,23 @@ status_block() {
     svc_active && svc="${GREEN}运行中${RESET}"
     if [[ -x "$CLI_BIN" ]]; then ver=$("$CLI_BIN" -v 2>/dev/null | head -1); fi
     printf "  服务: %-14s 节点: %-4s 内核: %s\n" "$svc" "$n" "$ver"
-    printf "  HTTP/SOCKS: %s:%s   控制面板: http://%s:%s/ui/\n" "$BIND_ADDR" "$PORT_MIXED" "$BIND_ADDR" "$PORT_CTRL"
+    # 端口要显示**内核实际在用的**, 不能只显示 settings.env 里的值。
+    # 实测: 全新安装写的是 mixed-port: 0, 面板却显示 7890 ——
+    # 而 7890 恰好是本机另一个 mihomo 的端口, 等于显示"别人的端口"。
+    # 该端口在本进程名下真有 socket 才算一致, 否则去内核实际监听里找。
+    local eff_mixed="$PORT_MIXED" nm real
+    nm=$(basename "$CLI_BIN")
+    if ! ss -lntpH 2>/dev/null | grep -E ":${PORT_MIXED}[[:space:]]" | grep -q "(\"$nm\","; then
+        real=$(ss -lntpH 2>/dev/null | grep "(\"$nm\"," \
+               | awk '{print $4}' | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
+        [[ -n "$real" ]] && eff_mixed="$real"
+    fi
+    printf "  HTTP/SOCKS: %s:%s   控制面板: http://%s:%s/ui/\n" \
+        "$BIND_ADDR" "$eff_mixed" "$BIND_ADDR" "$PORT_CTRL"
+    if [[ "$eff_mixed" != "$PORT_MIXED" ]]; then
+        print_info "面板设置端口 $PORT_MIXED, 但内核实际在用 $eff_mixed"
+        print_info "改端口后需「6) 服务管理 → 3) 重启」才会生效"
+    fi
 }
 
 api() { curl -s -m 8 -H "Authorization: Bearer $(cat "$CLI_ROOT/.secret" 2>/dev/null)" "http://$BIND_ADDR:$PORT_CTRL$1"; }
@@ -534,6 +630,7 @@ client_menu() {
         echo "8) 节点测速"
         echo "9) 客户端设置 (端口 / 绑定 / 面板密钥)"
         echo "10) 分享订阅 (把我的节点发给别人)"
+        echo "d) 卸载客户端"
         echo "0) 退出"
         printf "\n请选择: "
         local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
@@ -548,11 +645,134 @@ client_menu() {
             8) node_test ;;
             9) settings_menu ;;
             10) cli_share_menu ;;
+            d|D) cli_uninstall ;;
             0) exit 0 ;;
             *) print_error "无效选项" ;;
         esac
         printf "\n按回车继续..."; read -r || break
     done
+}
+
+# =============================================================
+# 卸载客户端
+#
+# 服务端本来就有卸载, 客户端一直没有 —— 只能手动 rm -rf, 而安装路径
+# 因人而定, 很多人根本不知道删哪。两种粒度:
+#   1) 仅卸载服务  保留配置与节点
+#   2) 彻底删除    本脚本在本机创建的全部内容
+# 与服务端对齐, 并额外回收自己登记的防火墙端口 (见 .fw-ports)。
+# =============================================================
+cli_uninstall() {
+    print_title "卸载 Mihomo 客户端"
+    # 分享服务名与 cli_share_menu 里 export 的保持一致, 不能各处各写一份
+    # (之前这里硬编码, 改另一处就会漏)
+    local svc="$CLI_SERVICE" shsvc="mihomo-client-share"
+    # 作用域校验: 安装目录被改到别处时 (CLI_ROOT 可被环境变量覆盖),
+    # 这两个服务名可能属于**别的** mihomo 实例, 删 unit 就是误删。
+    # 单元文件里记了安装路径, 对不上就只提示不动手。
+    _unit_owned_by_me "$svc" || { svc=""; print_warn "$svc 的 unit 不属于 $CLI_ROOT, 不会删除"; }
+    _unit_owned_by_me "$shsvc" || { shsvc=""; print_warn "$shsvc 的 unit 不属于 $CLI_ROOT, 不会删除"; }
+    cat <<EOF
+  1) 仅卸载服务     停服务+删 unit, 保留配置/节点
+  2) 彻底删除       本脚本在本机创建的全部内容, 见下方清单
+
+  当前安装目录: $CLI_ROOT
+  服务: ${svc:-无} (本机)  分享服务: ${shsvc:-无} (本机)
+EOF
+    printf '\n请选择 [1-2, 回车取消]: '
+    local mode; read -r mode
+    case "$mode" in
+        1) [[ -n "$svc" ]]   && _cli_uninstall_unit "$svc"
+           [[ -n "$shsvc" ]] && _cli_uninstall_unit "$shsvc"
+           print_info "配置与节点已保留在 $CLI_ROOT" ;;
+        2) _cli_uninstall_all "$svc" "$shsvc" ;;
+        "") print_info "已取消" ;;
+        *)  print_error "无效选项" ;;
+    esac
+}
+
+# 该 systemd unit 是不是本安装目录的?
+# unit 文件里写着 ExecStart=<CLI_ROOT>/mihomo, 对不上就不能碰 ——
+# 否则 CLI_ROOT 被改过时, 卸载会删掉另一个 mihomo 实例的服务。
+_cli_unit_owned_by_me() {
+    local s="${1:-}" f
+    # set -u 下 "$1" 未传会直接报错中断整个面板 —— 这类"内部工具函数"
+    # 必须容错, 传空就当"不归我管"
+    [[ -n "$s" ]] || return 1
+    f="/etc/systemd/system/$s.service"
+    [[ -f "$f" ]] || return 1
+    grep -qF -- "$CLI_ROOT" "$f" 2>/dev/null || return 1
+    return 0
+}
+
+_cli_uninstall_unit() {
+    local s="$1"
+    systemctl stop "$s" 2>/dev/null
+    systemctl disable "$s" 2>/dev/null
+    rm -f "/etc/systemd/system/$s.service"
+    systemctl daemon-reload 2>/dev/null
+    print_ok "服务已移除: $s"
+}
+
+_cli_uninstall_all() {
+    local svc="$1" shsvc="$2"
+    cat <<EOF
+
+  即将【永久删除】以下内容 (不可恢复, 建议先备份):
+
+    服务      : ${svc:-无}${svc:+, }${shsvc:-无} 的 systemd unit
+    目录      : $CLI_ROOT
+                ├─ mihomo            内核
+                ├─ src/              面板脚本
+                ├─ conf/             配置、providers、节点、密钥
+                ├─ share/            分享服务与分享记录
+                ├─ settings.env      端口等设置
+                └─ .secret           面板密钥
+    防火墙    : 只回收本程序登记在 .fw-ports 里的端口, 不动其它规则
+
+  注意: 本机若还有别的 mihomo 实例 (例如另一个项目), 不要删它们的目录。
+
+  确认彻底删除? 输入 DELETE 继续 (其它任何输入都取消):
+EOF
+    local a; read -r a
+    [[ "$a" == "DELETE" ]] || { print_info "已取消, 未删除任何内容"; return; }
+
+    # 传空串就跳过 —— cli_uninstall 已按 unit 归属做过校验
+    [[ -n "$svc" ]]   && _cli_uninstall_unit "$svc"
+    [[ -n "$shsvc" ]] && _cli_uninstall_unit "$shsvc"
+
+    # 端口回收: 只按自己的台账删, 不扫防火墙全表
+    local fw="$CLI_ROOT/.fw-ports" p
+    if [[ -f "$fw" ]]; then
+        while IFS= read -r p; do
+            [[ "$p" =~ ^[0-9]+$ ]] || continue
+            if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+                ufw delete allow "$p/tcp" >/dev/null 2>&1
+                ufw delete allow "$p/udp" >/dev/null 2>&1
+            elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+                firewall-cmd --zone=public --remove-port="$p/tcp" --permanent >/dev/null 2>&1
+                firewall-cmd --zone=public --remove-port="$p/udp" --permanent >/dev/null 2>&1
+            elif command -v iptables >/dev/null; then
+                iptables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null
+                iptables -D INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null
+            fi
+        done < "$fw"
+        print_ok "已回收登记的防火墙端口: $(wc -l < "$fw") 个"
+    fi
+
+    rm -rf "$CLI_ROOT"
+    if [[ -e "$CLI_ROOT" ]]; then
+        print_error "删除失败, 目录仍在: $CLI_ROOT"
+        print_error "请检查权限 (是否有进程占用), 或手动执行: rm -rf $CLI_ROOT"
+        return 1
+    fi
+    print_ok "已彻底删除: $CLI_ROOT"
+
+    # 确认代理口确实释放
+    if ss -lntH 2>/dev/null | grep -qE ":${PORT_MIXED}[[:space:]]"; then
+        print_warn "端口 $PORT_MIXED 仍在监听 —— 本机可能还有别的 mihomo 实例在使用它"
+    fi
+    return 0
 }
 
 # =============================================================
@@ -632,6 +852,202 @@ check_menu() {
     print_info "1) 内核检查 (mihomo -t)"; cfg_check
     print_info "2) 严格字段校验"; cfg_check_strict
     print_info "3) 服务状态"; systemctl status "$CLI_SERVICE" --no-pager | head -8
+    print_info "4) 手动上传内核 (下载不通时用)"
+    printf "请选择: "; local c; read -r c
+    case "$c" in
+        1) cfg_check ;;
+        2) cfg_check_strict ;;
+        3) systemctl status "$CLI_SERVICE" --no-pager | head -8 ;;
+        4) kernel_upload_menu ;;
+    esac
+}
+
+# ---------- 手动上传内核 ----------
+#
+# 内核下载是整个安装/升级流程里唯一依赖外网的一步。实测
+# GitHub 主站不通、5 个镜像只有 ghproxy.net 勉强能通但只有 11KB/s,
+# 20.8MB 要 31 分钟。此时"自己下个包传上来"比继续折腾网络可靠得多。
+#
+# 认架构不靠猜文件名: 直接读 ELF 头的 e_machine 字段, 再真跑一次看它能否
+# 自报版本。两个判据都过才算可用 —— 只看文件名的话, 一个 amd64 的包传到
+# arm64 机器上会一路装完, 直到 systemctl start 才炸。
+kernel_upload_menu() {
+    print_title "手动上传内核"
+    local kdir="${MIHOMO_KERNEL_DIR:-${CLI_ROOT%/*}/mihomo-kernels}"
+    local want; want=$(kernel_want_arch)
+    # printf 而非 cat <<EOF: heredoc 不解释 \033, 会把转义码当字面量打印出来
+    printf "\n  把 mihomo 内核压缩包传到这台机器的:\n\n"
+    printf "    \033[36m%s\033[0m\n" "$kdir"
+    printf "\n  支持三种格式 (脚本都能认):\n"
+    printf "    - .gz          mihomo-linux-%s-vX.Y.Z.gz   (GitHub 官方就是这种)\n" "$want"
+    printf "    - .zip         里面套一层目录也没关系\n"
+    printf "    - 裸二进制     直接就是 mihomo 这个文件\n"
+    printf "\n  下载地址: https://github.com/MetaCubeX/mihomo/releases/latest\n"
+    printf "\n  传完后选择操作:\n"
+    printf "    1) 校验已上传的内核 (不动现有内核)\n"
+    printf "    2) 用上传的内核重装并重启\n"
+    printf "    0) 返回\n"
+    printf "请选择: "; local c; read -r c
+    case "$c" in
+        1) kernel_verify "$kdir" ;;
+        2) kernel_install "$kdir" ;;
+    esac
+}
+
+# 本机需要的架构标识 (与 core_install.sh 保持一致)
+kernel_want_arch() {
+    [[ "$(uname -m)" == "x86_64" ]] && echo amd64 || echo arm64
+}
+
+# 从 ELF 头的 e_machine (第 18-19 字节) 读架构。
+#   0x3e = x86-64   0xb7 = AArch64
+kernel_arch_of() {
+    local f="$1" m
+    [[ -f "$f" ]] || { echo "?"; return; }
+    m=$(od -An -tx1 -j18 -N2 "$f" 2>/dev/null | tr -d ' \n')
+    case "$m" in
+        3e00) echo amd64 ;;
+        b700) echo arm64 ;;
+        *)    echo "未知($m)" ;;
+    esac
+}
+
+# 把上传的文件解出可执行内核, 并真的跑一下取版本号
+kernel_probe() {   # $1=文件  $2=解包目标
+    local f="$1" out="$2" inner
+    case "${f,,}" in
+        *.gz)
+            gunzip -c "$f" > "$out" 2>/dev/null || return 1 ;;
+        *.zip)
+            command -v unzip >/dev/null || return 1
+            inner=$(unzip -Z1 "$f" 2>/dev/null | grep -E '(^|/)mihomo$' | head -1)
+            [[ -n "$inner" ]] || return 1
+            unzip -p "$f" "$inner" > "$out" 2>/dev/null || return 1 ;;
+        *)
+            cp -f "$f" "$out" || return 1 ;;
+    esac
+    chmod +x "$out" 2>/dev/null
+    [[ -s "$out" ]] || return 1
+    # 真跑 —— 这是唯一可靠的判据
+    "$out" -v 2>/dev/null | grep -qi mihomo || return 1
+    return 0
+}
+
+# 只校验, 不动现有内核
+kernel_verify() {
+    local kdir="$1"
+    if [[ ! -d "$kdir" ]]; then
+        print_error "目录不存在: $kdir"
+        print_info "先执行: mkdir -p $kdir, 再把内核文件传进来"
+        return 1
+    fi
+    # 直接输出, 不包 $(...)。同服务端的原因: print_* 走 stderr,
+    # 用 $(...) 捕获 stdout 会让成功/失败提示与文件内容交错, 对不上号。
+    local probe found="" any=0 base ver arch f
+    shopt -s nullglob
+    local files=("$kdir"/*)
+    shopt -u nullglob
+
+    if (( ${#files[@]} == 0 )); then
+        print_error "目录里没有任何文件: $kdir"
+        print_info "先 mkdir -p $kdir, 再把内核文件传进来"
+        return 1
+    fi
+
+    probe=$(mktemp)
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] || continue
+        [[ "$f" == *.part ]] && continue
+        any=1
+        base=$(basename "$f")
+        if ! kernel_probe "$f" "$probe"; then
+            print_error "$base"
+            printf "    不是可用的 mihomo 内核 (无法解压或无法执行)\n\n" >&2
+            continue
+        fi
+        ver=$("$probe" -v 2>/dev/null | head -1)
+        arch=$(kernel_arch_of "$probe")
+        print_ok "$base"
+        printf "    版本: %s\n" "$ver" >&2
+        printf "    架构: %s\n" "$arch" >&2
+        if [[ "$arch" == "$(kernel_want_arch)" ]]; then
+            printf "    \033[32m✓ 与本机架构匹配\033[0m (%s)\n\n" "$(uname -m)" >&2
+            found=1
+        else
+            printf "    \033[33m✗ 架构不匹配\033[0m 本机是 %s, 这个是 %s\n\n" \
+                "$(uname -m)" "$arch" >&2
+        fi
+    done
+    rm -f "$probe"
+
+    (( any )) || { print_error "目录里没有可用的文件: $kdir"; return 1; }
+    if [[ -z "$found" ]]; then
+        print_error "没有找到与本机架构匹配的可执行内核"
+        print_info "本机需要: linux-$(kernel_want_arch)"
+        print_info "下载地址: https://github.com/MetaCubeX/mihomo/releases/latest"
+        return 1
+    fi
+    print_ok "有可用内核, 可选择「2) 用上传的内核重装并重启」"
+    return 0
+}
+
+# 用上传的内核重装并重启
+kernel_install() {
+    local kdir="$1"
+    kernel_verify "$kdir" || return 1
+    printf "确认用上传的内核重装? [y/N]: "; local a; read -r a
+    [[ "$a" =~ ^[yY]$ ]] || { print_info "已取消"; return; }
+
+    [[ -f "$CLI_ROOT/src/core_install.sh" ]] || {
+        print_error "缺少 src/core_install.sh, 无法重装"
+        return 1
+    }
+    local backup="$CLI_ROOT/mihomo.bak.$(date +%Y%m%d-%H%M%S)"
+    cp -f "$CLI_ROOT/mihomo" "$backup" 2>/dev/null \
+        && print_ok "已备份当前内核: $(basename "$backup")"
+
+    if bash "$CLI_ROOT/src/core_install.sh" \
+           INSTALL_DIR="$CLI_ROOT" SERVICE_NAME="$CLI_SERVICE" \
+           MIHOMO_KERNEL_DIR="$kdir" < /dev/null; then
+        systemctl restart "$CLI_SERVICE" 2>/dev/null
+        print_ok "内核已更新并重启"
+        return 0
+    fi
+    print_error "重装失败, 正在回滚"
+    if [[ -f "$backup" ]]; then
+        cp -f "$backup" "$CLI_ROOT/mihomo"
+        systemctl restart "$CLI_SERVICE" 2>/dev/null
+        print_ok "已回滚到原内核"
+    fi
+    return 1
+}
+
+# 端口提问。$1=变量名  $2=显示名
+# 必须自己校验: 原来 read 完直接 save_settings, 而 save_settings 里的
+# python 会 int(p_mixed) —— 直接回车得到空串, 抛
+#   ValueError: invalid literal for int() with base 10: ''
+# 面板带着 traceback 退出去, 设置没生效但用户以为已经改了。
+ask_port() {
+    local __var="$1" __label="$2" __cur="${!1}" __in
+    printf "新端口 (回车保持 %s): " "$__cur"
+    read -r __in
+    __in=$(printf '%s' "$__in" | tr -d '[:space:]')
+    if [[ -z "$__in" ]]; then
+        print_info "未修改, 保持 $__cur"
+        return 1
+    fi
+    if ! [[ "$__in" =~ ^[0-9]+$ ]] || (( __in < 1024 || __in > 65535 )); then
+        print_error "端口必须是 1024-65535 之间的数字 (1-1023 会顶掉系统服务)"
+        return 1
+    fi
+    # 已被占用要拦, 否则内核起不来, 而面板还会显示旧端口
+    if ss -lntH 2>/dev/null | awk '{print $4}' | grep -qE ":${__in}$"; then
+        print_error "端口 $__in 已被占用, 换一个"
+        return 1
+    fi
+    printf -v "$__var" '%s' "$__in"
+    print_ok "$__label 端口: $__cur → $__in"
+    return 0
 }
 
 save_settings() {
@@ -661,9 +1077,10 @@ settings_menu() {
     echo "6) geo 自动更新                当前: ${GEO_AUTO_UPDATE:-0}"
     printf "请选择: "; local c; read -r c
     case "$c" in
-        1) printf "新端口: "; read -r PORT_MIXED; save_settings; apply_change ;;
-        2) printf "新端口: "; read -r PORT_CTRL; save_settings; apply_change ;;
-        3) printf "新地址 (127.0.0.1 / 0.0.0.0): "; read -r BIND_ADDR; save_settings; apply_change ;;
+        1) ask_port PORT_MIXED "HTTP/SOCKS" && { save_settings; apply_change; } ;;
+        2) ask_port PORT_CTRL "控制面板" && { save_settings; apply_change; } ;;
+        3) printf "新地址 (127.0.0.1 / 0.0.0.0): "; read -r BIND_ADDR
+           [[ -n "$BIND_ADDR" ]] && { save_settings; apply_change; } ;;
         4) cat "$CLI_ROOT/.secret" ;;
         5) gen_secret > "$CLI_ROOT/.secret"; chmod 600 "$CLI_ROOT/.secret"
            print_ok "已重新生成"; apply_change ;;

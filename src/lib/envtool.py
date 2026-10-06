@@ -64,6 +64,19 @@ def cmd_set(path: str, key: str, value: str) -> int:
         fcntl.flock(fd, fcntl.LOCK_EX)
         lines = [l for l in read_lines(path) if not l.startswith(key + "=")]
         lines.append(f'{key}="{esc(value)}"')
+        # 手动设置 PUBLIC_IP 时同时标记 PUBLIC_IP_VERIFIED=1。
+        #
+        # 为什么需要: m_server_ip 会拿记下来的地址和本机接口做自检, 不在本机
+        # 接口上的地址会被当成 WARP 出口丢弃。但手动设置的值恰恰常常**就是**
+        # NAT 后面的公网地址 —— 它按定义不会出现在任何接口上, 于是自检会把
+        # 用户明确指定的正确值也一起丢掉 (实测 2026-10-06 修复后
+        # m_server_ip 仍返回旧的 WARP 出口地址, 差别只是从"无条件信任"
+        # 变成"无条件丢弃")。
+        #
+        # 手动设置 = 用户断言"这个地址是对的", 应当优先于任何自动判断。
+        if key == "PUBLIC_IP":
+            lines = [l for l in lines if not l.startswith("PUBLIC_IP_VERIFIED=")]
+            lines.append('PUBLIC_IP_VERIFIED="1"')
         mode = os.stat(path).st_mode & 0o7777
         tfd, tmp = tempfile.mkstemp(dir=d, prefix=".env.")
         os.close(tfd)

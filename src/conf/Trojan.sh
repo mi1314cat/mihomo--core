@@ -243,10 +243,16 @@ render_share_link() {
         ws)   transport_uri="type=ws&path=$WS_PATH&host=$WS_HOST" ;;
         grpc) transport_uri="type=grpc&serviceName=$GRPC_SERVICE" ;;
     esac
+    # 显示名与 listener / client yaml 同源 (m_node_tag)。
+    # 以前是 "Trojan-$idx", 两个形态的节点在客户端里名字一模一样,
+    # 分不出哪个是 Reality 哪个是 TLS。
+    local tag
     if [[ "$TROJAN_MODE" = "reality" ]]; then
-        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&$transport_uri&fp=$CLIENT_FINGERPRINT&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#Trojan-$idx"
+        tag="$(m_node_tag Trojan "$idx" reality)"
+        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&$transport_uri&fp=$CLIENT_FINGERPRINT&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#$tag"
     else
-        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&$transport_uri&fp=$CLIENT_FINGERPRINT#Trojan-$idx"
+        tag="$(m_node_tag Trojan "$idx" tls)"
+        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&$transport_uri&fp=$CLIENT_FINGERPRINT#$tag"
     fi
 }
 
@@ -658,7 +664,15 @@ add_config() {
 
     # 2. 自动生成端口
     default_port=$(random_port)
-    TROJAN_PORT=$(safe_read_port "$default_port")
+    # 必须检查返回值: m_safe_read_port 在 stdin 关闭 (EOF) 时返回 1 且不输出。
+    # 原来写成 $(safe_read_port) 不检查, 于是端口变量为空, 但流程继续往下走,
+    # 写出一个 `port:` 为空的节点 —— 而 mihomo -t 和 validate.py 都会放行,
+    # 面板也显示"节点: N", 实际这个节点完全不能工作 (实测 2026-10-06)。
+    TROJAN_PORT=$(safe_read_port "$default_port") || {
+        print_error "未指定端口, 已取消创建"
+        return 1
+    }
+    [[ -n "$TROJAN_PORT" ]] || { print_error "端口为空, 已取消创建"; return 1; }
 
     # 3. 自动编号
     index=$(get_next_index)
@@ -710,6 +724,13 @@ add_config() {
 
     # 7. 写入入站配置
     render_listener_transport
+    # 节点名统一走 m_node_tag。之前 reality/tls 两个变体的 listener
+    # 都叫 trojan-01, 客户端列表里分不出哪个是哪个。
+    # 用 [[ ]] && || 而不是 if/fi: 下面紧接着就是原有的
+    # if/then/else 两分支渲染, 这里必须保持单条语句。
+    [[ "$TROJAN_MODE" = "reality" ]] \
+        && NODE_TAG="$(m_node_tag Trojan "$index" reality)" \
+        || NODE_TAG="$(m_node_tag Trojan "$index" tls)"
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$IN_FILE" <<EOF
 # mode: reality
@@ -717,7 +738,7 @@ cat > "$IN_FILE" <<EOF
 # fingerprint: $CLIENT_FINGERPRINT
 # smux: ${SMUX_PROFILE:-false}
 listeners:
-  - name: trojan-$index
+  - name: $NODE_TAG
     type: trojan
     listen: "0.0.0.0"
     port: $TROJAN_PORT
@@ -743,7 +764,7 @@ cat > "$IN_FILE" <<EOF
 # ws-http-upgrade: $WS_HTTP_UPGRADE
 # smux: ${SMUX_PROFILE:-false}
 listeners:
-  - name: trojan-$index
+  - name: $NODE_TAG
     type: trojan
     listen: "0.0.0.0"
     port: $TROJAN_PORT
@@ -772,7 +793,7 @@ EOF
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: trojan-$index
+  - name: $NODE_TAG
     type: trojan
     server: $SERVER_IP
     port: $TROJAN_PORT
@@ -789,7 +810,7 @@ EOF
     else
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: trojan-$index
+  - name: $NODE_TAG
     type: trojan
     server: $SERVER_IP
     port: $TROJAN_PORT
@@ -954,7 +975,7 @@ rebuild_client() {
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: trojan-$num2
+  - name: $NODE_TAG
     type: trojan
     server: $SERVER_IP
     port: $TROJAN_PORT
@@ -971,7 +992,7 @@ EOF
     else
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: trojan-$num2
+  - name: $NODE_TAG
     type: trojan
     server: $SERVER_IP
     port: $TROJAN_PORT
@@ -1041,7 +1062,7 @@ rebuild_client_silent() {
     if [[ "$TROJAN_MODE" = "reality" ]]; then
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: trojan-$num2
+  - name: $NODE_TAG
     type: trojan
     server: $SERVER_IP
     port: $TROJAN_PORT
@@ -1058,7 +1079,7 @@ EOF
     else
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: trojan-$num2
+  - name: $NODE_TAG
     type: trojan
     server: $SERVER_IP
     port: $TROJAN_PORT

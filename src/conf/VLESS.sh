@@ -388,12 +388,17 @@ ${XHTTP_PAD_FIELDS}"
 render_share_link() {
     local fp="$CLIENT_FP" ech=""
     $ECH_ENABLED && ech="&ech=$(urlencode "$ECH_QUERY_PARAM")"
+    # 显示名复用 NODE_TAG —— 和 listener / proxy 同源。
+    # 传输方式不进名字, 对齐 SB 上游 tag_form_suffix 的取舍 (只分 TLS 形态)。
+    # 以前这里是 VLESS-XHTTP-01 / VLESS-WS-01, 而 listener 叫 vless-01,
+    # 用户在客户端看到的和面板里列的是两个东西。
+    local tag="${NODE_TAG:-$(m_node_tag VLESS "$INDEX" tls)}"
     case "$VLESS_TRANSPORT" in
-        xhttp) SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#VLESS-XHTTP-$INDEX" ;;
-        grpc)  SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#VLESS-GRPC-$INDEX" ;;
-        h2)    SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#VLESS-H2-$INDEX" ;;
-        tcp)   SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#VLESS-TCP-$INDEX" ;;
-        *)     SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#VLESS-WS-$INDEX" ;;
+        xhttp) SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#$tag" ;;
+        grpc)  SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#$tag" ;;
+        h2)    SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#$tag" ;;
+        tcp)   SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#$tag" ;;
+        *)     SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#$tag" ;;
     esac
 }
 
@@ -402,6 +407,10 @@ render_share_link() {
 # 顶部注释行是重建客户端时的唯一信息来源 (read_features 回读)
 # ================================================================
 render_listener_frag() {
+    # 兜底: 单独调用本函数时 NODE_TAG 可能没设。name: 为空的话 mihomo -t
+    # 照样通过 (它不校验空名字), 但节点在客户端列表里就是个无名项,
+    # 排查起来极难 —— 和之前空端口 bug 同一类问题, 所以这里主动补。
+    NODE_TAG="${NODE_TAG:-$(m_node_tag VLESS "${INDEX:-01}" tls)}"
     cat > "$IN_FILE" <<EOF
 # transport: $VLESS_TRANSPORT
 # server-name: $FRONT_DOMAIN
@@ -416,12 +425,12 @@ $(if $BRUTAL_ENABLED; then printf '# brutal: true
 # brutal-up: %s
 # brutal-down: %s' "$BRUTAL_UP" "$BRUTAL_DOWN"; fi)
 listeners:
-  - name: vless-$INDEX
+  - name: $NODE_TAG
     type: vless
     listen: "$LISTEN_ADDR"
     port: $VLESS_PORT
     users:
-      - username: vless-$INDEX
+      - username: $NODE_TAG
         uuid: $UUID
     certificate: $CERT_FILE
     private-key: $KEY_FILE
@@ -438,10 +447,11 @@ EOF
 # 写 sni 会被静默丢弃 (common/structure/structure.go:566-581)
 # ================================================================
 render_client_yaml() {
+    NODE_TAG="${NODE_TAG:-$(m_node_tag VLESS "${INDEX:-01}" tls)}"
     cat > "$OUT_FILE" <<EOF
 $([ "$ECH_ENABLED" = true ] && printf '# ECH: 已启用 (mihomo ech-opts 自动发现 Cloudflare ECH, 外层 SNI=cloudflare-ech.com)\n')
 proxies:
-  - name: vless-$INDEX
+  - name: $NODE_TAG
     type: vless
     server: $CLIENT_HOST
     port: 443
@@ -755,15 +765,32 @@ location $path {
 EOF
         ;;
         grpc)
+        # grpc_pass 的 grpcs:// 与 grpc:// 必须和上游监听方式对上。
+        # mihomo 的 listener 默认对 127.0.0.1 是明文回源 (nginx 终结外层 TLS,
+        # 到 mihomo 这一跳走明文), 所以默认 grpc://; 但若本节点启用了
+        # 内部 TLS 回源, 必须改成 grpcs:// —— 用错就是稳定 502,
+        # 而且日志里看不出原因 (SB 上游为此专门踩过)。
+        # gscheme 只存 "grpc"/"grpcs", "://" 由模板补上 ——
+        # 两边都写的话会生成 "grpc://://127.0.0.1:..." , nginx 报
+        # invalid host in upstream 而拒绝加载。
+        local gscheme="grpc" gnote=""
+        if [[ "${VLESS_UPSTREAM_TLS:-0}" == "1" ]]; then
+            gscheme="grpcs"
+            gnote="    # 上游 mihomo 开了 TLS 回源, 必须用 grpcs://"
+        fi
         cat > "$NGINX_FILE" <<EOF
 # ${PROTO}-$idx (gRPC, 服务名 $GRPC_SERVICE, 端口 $VLESS_PORT)
 # 放入 nginx conf.d 站点 server{} 块内即可 (需编译 --with-http_v2_module)
-# ⚠️ nginx 开源版 grpc_pass 只支持 grpc:// 明文上游; 上游是 TLS 监听时
-#    请改用 nginx stream{} 四层透传, 或让本节点走 CF 直连。
+# 【选对 grpc_pass 的 scheme】上游是明文回源用 grpc://, 上游开了 TLS 用 grpcs://。
+#   用错的表现是稳定 502, 日志里看不出原因 —— 先按这里说明确认一遍。
 location /$GRPC_SERVICE {
-    grpc_pass grpc://127.0.0.1:$VLESS_PORT;
+${gnote}
+    grpc_pass $gscheme://127.0.0.1:$VLESS_PORT;
     grpc_set_header Host \$host;
+    grpc_set_header X-Real-IP \$remote_addr;
+    grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     grpc_read_timeout 600s;
+    grpc_send_timeout 600s;
 }
 EOF
         ;;
@@ -802,15 +829,54 @@ location $path {
     proxy_ssl_server_name on;                 # 回源时 TLS SNI
     proxy_pass https://127.0.0.1:$VLESS_PORT; # https:// -> nginx 做 TLS 回源
     proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;      # WebSocket 升级 (map.conf 已备)
+    proxy_set_header Upgrade \$http_upgrade;      # WebSocket 升级
     proxy_set_header Connection \$connection_upgrade;
 }
 EOF
-        ;;
+            # $connection_upgrade 是 map 指令产生的变量, nginx 没有内置 ——
+            # 不定义就用, nginx 启动报 "unknown variable" 而失败。
+            # 之前这里只写了句注释说 "map.conf 已备", 但全项目从来没生成过
+            # 那个文件, 用户照着粘贴必然起不来。片段自带依赖, 一起给出。
+            write_upgrade_map
+            ;;
     esac
     print_ok "Nginx 转发片段: $NGINX_FILE"
     echo -e "${CYAN}  ----- Nginx 配置片段 -----${RESET}" >&2
     cat "$NGINX_FILE" >&2
+}
+
+# 生成 WebSocket 升级所需的 map 块。
+#
+# 必须和引用它的 location 一起给出, 否则 nginx -t 直接失败:
+#   nginx: [emerg] unknown "connection_upgrade" variable
+#
+# 放在 http{} 层 (conf.d/*.conf, 或 nginx.conf 的 http 块内) ——
+# nginx 的 map 只允许在 http 层声明, 放 server{} 里会报 "map directive
+# is not allowed here"。
+write_upgrade_map() {
+    local mapfile
+    mapfile="$OUT_DIR/${PROTO}_nginx-map-$INDEX.conf"
+    cat > "$mapfile" <<'EOF'
+# WebSocket 升级所需的 map 块
+#
+# 【放在哪】nginx 的 http{} 层, 也就是 /etc/nginx/conf.d/*.conf
+#          (或 nginx.conf 的 http { } 块内) —— 不能放 server{} 里,
+#          nginx 的 map 指令不允许出现在 server 块中。
+#
+# 【为什么需要】location 里的 $connection_upgrade 由这个 map 产生,
+#          nginx 没有内置。缺了它 nginx -t 就报 unknown variable 直接起不来。
+#
+# 【验证】两个文件都粘完后先 nginx -t, 通过再 nginx -s reload
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+EOF
+    print_ok "Nginx map 块: $mapfile"
+    echo -e "${CYAN}  ----- Nginx map 块 (与上面的片段一起用) -----${RESET}" >&2
+    cat "$mapfile" >&2
+    echo -e "${YELLOW}  ! 两段都要放进 nginx 的 http 层; 只粘 location 段会启动失败${RESET}" >&2
 }
 # ================================
 # Cloudflare ECH 检测 (可选特性)
@@ -1003,7 +1069,13 @@ add_config() {
 
     # 2. 自动生成端口
     default_port=$(random_port)
-    VLESS_PORT=$(safe_read_port "$default_port")
+    # 必须检查返回值: m_safe_read_port 在 stdin 关闭 (EOF) 时返回 1 且不输出,
+    # 不检查就会写出一个 `port:` 为空的死节点, 而校验链全放行
+    VLESS_PORT=$(safe_read_port "$default_port") || {
+        print_error "未指定端口, 已取消创建"
+        return 1
+    }
+    [[ -n "$VLESS_PORT" ]] || { print_error "端口为空, 已取消创建"; return 1; }
 
     # 3. 自动编号
     index=$(get_next_index)
@@ -1133,6 +1205,10 @@ add_config() {
     # 10. 写入入站配置 (Nginx 片段无论何种模式都生成)
     # INDEX 供 render_nginx_conf / render_listener_frag / render_client_yaml / render_share_link 复用
     INDEX="$index"
+    # NODE_TAG 是这条节点的唯一身份, 四个渲染出口全部用它, 保证
+    # 分享链接 / listener / proxy / 列表显示是同一个名字。
+    # VLESS.sh 本身只做 TLS 形态, 所以形态参数固定 tls。
+    NODE_TAG="$(m_node_tag VLESS "$index" tls)"
     render_nginx_conf
 
     render_listener_frag
@@ -1274,6 +1350,7 @@ rebuild_one() {
     [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
     INDEX="$n"
+    NODE_TAG="$(m_node_tag VLESS "$n" tls)"
     render_smux
     render_mux_option
     render_transport

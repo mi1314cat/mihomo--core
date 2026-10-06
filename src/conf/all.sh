@@ -157,19 +157,111 @@ for l in (d.get("listeners") or []):
     if isinstance(l, dict) and l.get("port"):
         print(l["port"])
 PY
-    ss -tln 2>/dev/null | awk 'NR>1{print $4}' | sed 's/.*://' >> "$USED_PORTS_FILE"
+    # TCP + UDP 都要扫。
+    #
+    # 只扫 ss -tln 会漏掉 hysteria2 和 tuic —— 它们是 QUIC 协议, **只监听
+    # UDP**。实测 13 个节点里有 2 个是 UDP-only; 只查 TCP
+    # 的话这些端口会被当成"空闲"分配出去, 生成的节点启动即 bind 失败。
+    { ss -tln 2>/dev/null; ss -uln 2>/dev/null; } \
+        | awk 'NR>1{print $4}' | sed 's/.*://' >> "$USED_PORTS_FILE"
 }
 
-next_port() {
-    local p=$(( ${1:-20000} ))
-    for _ in $(seq 1 4000); do
-        if ! grep -qx "$p" "$USED_PORTS_FILE"; then
-            echo "$p" >> "$USED_PORTS_FILE"
-            printf '%s' "$p"; return 0
-        fi
-        p=$((p + 1))
+# =============================================================
+# 端口区间与游标
+# =============================================================
+# 对齐 SB 的 batch_next_port (lib.sh:83-110): 一次问一个区间,
+# 默认随机起点, 区间内顺延, 耗尽后回落随机端口。
+#
+# 与之前"固定从 20000 起扫 4000 次"的区别:
+#   1. 用户能挑区间 —— 大批量生成时避开自己在用的段位;
+#   2. 顺序递增而不是每次从头扫, 批量生成 O(n) 而不是 O(n^2);
+#   3. 区间用完不直接失败, 回落随机可用端口 (SB: range exhausted 后
+#      静默回落), 否则精心选的区间一满就得从头再来。
+PORT_RANGE_START=20000
+PORT_RANGE_END=24999
+PORT_CURSOR=20000
+
+ask_port_range() {
+    printf '\n  端口区间 (留空 = 自动选一个):\n' >&2
+    printf "    起止: 20000-25000    只给起点: 30000 (到 39999)\n" >&2
+    printf "请输入 [默认自动]: " >&2
+    local v
+    read -r v || v=""
+    v=$(printf '%s' "$v" | tr -d '[:space:]')
+
+    if [[ -z "$v" ]]; then
+        # 默认随机起点, 宽 5000 (与 SB batch.sh:287-319 一致)。
+        # 随机是为了让多台机器/多批次的分布不同, 撞车概率更低。
+        local s=$(( 20000 + RANDOM % 10000 ))
+        PORT_RANGE_START=$s
+        PORT_RANGE_END=$(( s + 4999 ))
+    elif [[ "$v" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        PORT_RANGE_START="${BASH_REMATCH[1]}"
+        PORT_RANGE_END="${BASH_REMATCH[2]}"
+    elif [[ "$v" =~ ^[0-9]+$ ]]; then
+        PORT_RANGE_START="$v"
+        PORT_RANGE_END=$(( v + 9999 ))
+    else
+        print_warn "无法识别的区间: $v, 改用默认" >&2
+        PORT_RANGE_START=20000
+        PORT_RANGE_END=24999
+    fi
+
+    # 用户可能写成 25000-20000
+    (( PORT_RANGE_END < PORT_RANGE_START )) && {
+        local t=$PORT_RANGE_START
+        PORT_RANGE_START=$PORT_RANGE_END
+        PORT_RANGE_END=$t
+    }
+    (( PORT_RANGE_START < 1024 )) && PORT_RANGE_START=1024
+    (( PORT_RANGE_END > 65535 )) && PORT_RANGE_END=65535
+
+    printf "  端口区间: %s - %s (%d 个)\n" \
+        "$PORT_RANGE_START" "$PORT_RANGE_END" \
+        "$(( PORT_RANGE_END - PORT_RANGE_START + 1 ))" >&2
+}
+
+# 区间耗尽时的回落: 在 10000-60000 随机找一个没被占用的。
+# SB 同样静默回落不报错 (batch.sh:311) —— 用户选的区间是偏好, 不是硬约束。
+random_free_port() {
+    local p
+    for _ in $(seq 1 500); do
+        p=$(( 10000 + RANDOM % 50000 ))
+        grep -qx "$p" "$USED_PORTS_FILE" && continue
+        echo "$p" >> "$USED_PORTS_FILE"
+        printf '%s' "$p"
+        return 0
     done
     return 1
+}
+
+# next_port —— 从游标处顺序取一个空闲端口。
+#
+# 游标在进程内 (PORT_CURSOR), 每领一个就 +1, 所以批量生成是 O(n)。
+# 之前每次都从 PORT_BASE 重新扫, 第 n 个节点要扫 n 次, O(n^2)。
+#
+# 参数兼容旧的 next_port <base> 形式: 传了 base 就先重置游标到那里。
+next_port() {
+    if [[ -n "${1:-}" ]]; then PORT_CURSOR=$(( $1 )); fi
+    local p
+    while (( PORT_CURSOR <= PORT_RANGE_END )); do
+        p=$PORT_CURSOR
+        PORT_CURSOR=$(( p + 1 ))
+        grep -qx "$p" "$USED_PORTS_FILE" && continue
+        echo "$p" >> "$USED_PORTS_FILE"
+        printf '%s' "$p"
+        return 0
+    done
+    # 区间用完 —— 回落随机, 不直接失败 (对齐 SB)。
+    # 只提示一次: 13 个协议会连着触发 13 次, 刷屏把结果表都冲掉了。
+    # 注意 next_port 是在 $(...) 里被调用的, 那是子 shell —— 变量赋值传不回
+    # 父进程 (实测 _RANGE_WARNED=1 设了也没用, 照样打 13 次)。用文件标记。
+    local wf="${USED_PORTS_FILE}.warned"
+    if [[ ! -f "$wf" ]]; then
+        print_warn "端口区间 ${PORT_RANGE_START}-${PORT_RANGE_END} 已用完, 后续改用随机端口" >&2
+        : > "$wf"
+    fi
+    random_free_port
 }
 
 next_index() {  # next_index <proto>
@@ -315,10 +407,23 @@ want() {  # 是否选中该协议
     [[ ",$ONLY," == *",$1,"* ]]
 }
 
-# gen <proto> <标签> <需要reality> <需要tls>
+# gen <proto> <标签> <需要reality> <需要tls> [管理协议]
+#
+# 第 5 个参数是**管理协议名**, 决定这个节点能在哪个单协议面板里被删除。
+#
+# 为什么必须有它: 片段文件名和 listener 名是两套东西, 而各单协议脚本删除时
+# 只会去找 "<管理协议>-NN.yaml"。早期这里只用 $proto 做文件名, 于是
+#   片段 vless-ws-01.yaml → listener vless-wss-01
+# VLESS.sh 删除时找的是 vless-01.yaml, 永远找不到 —— 面板**列得出、删不掉**,
+# 报"编号不存在"。trojan-tls 同理。
+#
+# 修法不是改各协议脚本 (那 6 份都要动, 且会破坏它们自己的编号序列),
+# 而是让 all.sh 用管理协议名做文件名, listener 名保持不变 —— 单协议脚本
+# 于是既能列也能删。
 gen() {
-    local proto="$1" label="$2" need_reality="$3" need_tls="$4"
+    local proto="$1" label="$2" need_reality="$3" need_tls="$4" mproto="${5:-$1}"
     shift 4
+    [[ $# -gt 0 ]] && shift        # 吃掉可选的第 5 参数
     local body="$*"          # 实际生成 listener 的函数名 + 参数
 
     if ! want "$proto"; then return; fi
@@ -335,18 +440,26 @@ gen() {
     # 幂等: 已存在的同名节点**一律不覆盖**, 本次接着往后排新序号。
     # 这与原有行为一致 (next_index 永远返回第一个空位), 只是现在明确讲出来,
     # 不然"我明明选了 Trojan, 为什么列表里多了一个 Trojan-02"没人说得清。
-    local n_exist; n_exist=$(count_indexed "$proto")
+    # 编号按**管理协议**排, 而不是按 proto。all.sh 一次会生成多个 vless 变体
+    # (ws / ws+tls / xhttp / xhttp+tls), 若各按 "vless-NN" 排号, 四个生成器
+    # 会抢同一个空位互相覆盖; 按 mproto 排则它们共享一条序列, 各占一个号,
+    # 互不冲突, 且都能被 VLESS.sh 列出和删除。
+    local n_exist; n_exist=$(count_indexed "$mproto")
     if [[ "$n_exist" != "0" ]]; then
-        info "$label: 已有 $n_exist 个同名节点, 本次**追加**新序号 (不覆盖已有配置)"
+        info "$label: 已有 $n_exist 个 $mproto 节点, 本次**追加**新序号 (不覆盖已有配置)"
     fi
 
     local idx port
-    idx=$(next_index "$proto")
-    port=$(next_port "$PORT_BASE") || { record "$label" "-" "失败" "无可用端口"; return; }
+    idx=$(next_index "$mproto")
+    # 不传参数: 传了会把游标重置回 PORT_BASE, 区间设置就白设了
+    port=$(next_port) || { record "$label" "-" "失败" "无可用端口"; return; }
 
     local in_file out_file
-    in_file=$(printf '%s/%s-%s.yaml' "$CONF_DIR" "$proto" "$idx")
-    out_file=$(printf '%s/%s_client-%s.yaml' "$OUT_DIR" "$proto" "$idx")
+    in_file=$(printf '%s/%s-%s.yaml' "$CONF_DIR" "$mproto" "$idx")
+    # out/ 里的客户端文件仍按 proto 命名 (文件名要能看出是哪种传输),
+    # 但要带上管理协议前缀避免同名覆盖 —— 例如 WS 与 WSS 两个客户端文件
+    # 都叫 vless_client-01.yaml 时后者会覆盖前者, 分享订阅就少一个节点。
+    out_file=$(printf '%s/%s_%s_client-%s.yaml' "$OUT_DIR" "$mproto" "$proto" "$idx")
 
     if [[ "$DRY_RUN" == "1" ]]; then
         record "$label" "$port" "预览" "将写入 $(basename "$in_file")"
@@ -938,20 +1051,49 @@ info "XHTTP 客户端地址: $XHTTP_CLIENT_HOST (xhttp 的 Host 头直接取自�
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERTS_DIR"
 collect_used_ports
 
+
+# 端口区间只在真正交互时问。
+#
+# 批量模式的约定是"公共参数一律走显式环境变量, 绝不读应答串"
+# (脚本头注释第 21 行), 所以非 TTY 场景不能在这里停顿。
+# 提供 ALL_PORT_RANGE=起-止 走非交互, 否则用默认区间。
+if [[ -n "${ALL_PORT_RANGE:-}" ]]; then
+    if [[ "$ALL_PORT_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        PORT_RANGE_START="${BASH_REMATCH[1]}"
+        PORT_RANGE_END="${BASH_REMATCH[2]}"
+    fi
+    if (( PORT_RANGE_END < PORT_RANGE_START )); then
+        _t=$PORT_RANGE_START; PORT_RANGE_START=$PORT_RANGE_END; PORT_RANGE_END=$_t
+    fi
+    PORT_CURSOR=$PORT_RANGE_START
+    printf '  端口区间: %s - %s (来自 ALL_PORT_RANGE)\n' \
+        "$PORT_RANGE_START" "$PORT_RANGE_END" >&2
+elif [[ -t 0 ]]; then
+    ask_port_range
+    PORT_CURSOR=$PORT_RANGE_START
+else
+    # 非交互: 用 ALL_PORT_BASE 起的一段, 行为与旧版一致
+    PORT_CURSOR=${ALL_PORT_BASE:-20000}
+    PORT_RANGE_END=$(( PORT_CURSOR + 4999 ))
+fi
+
 printf '\n'
-gen reality        "VLESS+Reality"  1 0 g_reality
-gen trojan         "Trojan+Reality" 1 0 g_trojan_reality
-gen trojan-tls     "Trojan+TLS"     0 1 g_trojan_tls
-gen vless          "VLESS+WS"       0 0 g_vless_ws
-gen vless-ws       "VLESS+WS+TLS"   0 1 g_vless_ws_tls
-gen xhttp          "VLESS+XHTTP"      0 0 g_vless_xhttp
-gen xhttp-tls      "VLESS+XHTTP+TLS"  0 1 g_vless_xhttp_tls
-gen vmess          "VMess+WS"       0 0 g_vmess_ws
-gen hysteria2      "Hysteria2"      0 1 g_hysteria2
-gen tuicv5         "TUIC v5"        0 1 g_tuicv5
-gen anytls         "AnyTLS"         0 1 g_anytls
-gen ss             "Shadowsocks"    0 0 g_shadowsocks
-gen snell          "Snell"          0 0 g_snell
+#                        proto           标签                 reality tls  管理协议  生成器
+# vmess / ss / snell 仍没有对应的单协议面板, 只能在这里生成、也删不掉 ——
+# 想删请用「面板 5) 更新配置」或直接删 conf/config.d 下的文件。
+gen reality        "VLESS+Reality"  1 0 reality   g_reality
+gen trojan         "Trojan+Reality" 1 0 trojan    g_trojan_reality
+gen trojan-tls     "Trojan+TLS"     0 1 trojan    g_trojan_tls
+gen vless          "VLESS+WS"       0 0 vless     g_vless_ws
+gen vless-ws       "VLESS+WS+TLS"   0 1 vless     g_vless_ws_tls
+gen xhttp          "VLESS+XHTTP"      0 0 vless  g_vless_xhttp
+gen xhttp-tls      "VLESS+XHTTP+TLS"  0 1 vless  g_vless_xhttp_tls
+gen vmess          "VMess+WS"       0 0 vmess     g_vmess_ws
+gen hysteria2      "Hysteria2"      0 1 hysteria2 g_hysteria2
+gen tuicv5         "TUIC v5"        0 1 tuicv5    g_tuicv5
+gen anytls         "AnyTLS"         0 1 anytls    g_anytls
+gen ss             "Shadowsocks"    0 0 ss        g_shadowsocks
+gen snell          "Snell"          0 0 snell     g_snell
 
 # ---------- 汇总 ----------
 printf "\n${BOLD}生成结果${RESET}\n"

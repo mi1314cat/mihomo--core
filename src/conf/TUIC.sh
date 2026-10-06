@@ -306,7 +306,13 @@ add_config() {
     detect=$(detect_listen_ip_mode)
     listen_ip=$(choose_listen_ip "$detect")
 
-    port=$(safe_read_port "$(random_free_port)")
+    # 必须检查返回值: m_safe_read_port 在 stdin 关闭 (EOF) 时返回 1 且不输出,
+    # 不检查就会写出一个 `port:` 为空的死节点, 而校验链全放行
+    port=$(safe_read_port "$(random_free_port)") || {
+        print_error "未指定端口, 已取消创建"
+        return 1
+    }
+    [[ -n "$port" ]] || { print_error "端口为空, 已取消创建"; return 1; }
 
     printf "证书域名 (默认: bing.com): " >&2
     read -r domain
@@ -329,12 +335,13 @@ add_config() {
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
+    NODE_TAG="$(m_node_tag TUIC "$index" tls)"
     cat > "$IN_FILE" <<EOF
 # udp-relay-mode: $UDP_RELAY
 # reduce-rtt: $REDUCE_RTT
 # heartbeat-interval: $HEARTBEAT_MS
 listeners:
-  - name: ${PROTO}-$index
+  - name: $NODE_TAG
     type: tuic
     port: $port
     listen: "$listen_ip"
@@ -350,9 +357,10 @@ listeners:
     max-udp-relay-packet-size: 1500
 EOF
 
+    NODE_TAG="$(m_node_tag TUIC "$num" tls)"
     cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: TUICv5-$index
+  - name: $NODE_TAG
     type: tuic
     server: $PUBLIC_IP
     port: $port
@@ -436,11 +444,24 @@ delete_config() {
     read -r -p "确认删除? (y/N): " c
 
     if [[ "$c" =~ ^[yY]$ ]]; then
+        # 删前记下这个节点用的证书 —— 多个节点常常共用同一份证书,
+        # 删完再判断还有没有人用, 没人用才回收 (见 env.sh m_cert_gc)
+        local old_cert=""
+        if [[ -f "$CONF_DIR/${PROTO}-$num.yaml" ]]; then
+            old_cert=$(grep -m1 -oE '(certificate|ca):[[:space:]]*[^[:space:]#]+' \
+                          "$CONF_DIR/${PROTO}-$num.yaml" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//')
+        fi
         rm -f "$CONF_DIR/${PROTO}-$num.yaml" \
               "$OUT_DIR/${PROTO}_client-$num.yaml" \
               "$OUT_DIR/${PROTO}_share-$num.txt"
 
-        print_ok "已删除 $num"
+        # 已删干净? 原来不管删没删掉都报"已删除"
+        if [[ -e "$CONF_DIR/${PROTO}-$num.yaml" ]]; then
+            print_error "删除失败, 文件仍在: $CONF_DIR/${PROTO}-$num.yaml"
+        else
+            print_ok "已删除 TUIC 配置 $num"
+        fi
+        [[ -n "$old_cert" ]] && m_cert_gc "$old_cert"
     else
         print_info "已取消删除"
     fi
@@ -478,9 +499,10 @@ rebuild_client() {
 
     SERVER_IP=$(m_server_ip)
 
+NODE_TAG="$(m_node_tag TUIC "$num" tls)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: TUICv5-$num
+  - name: $NODE_TAG
     type: tuic
     server: $SERVER_IP
     port: $port
@@ -531,9 +553,10 @@ rebuild_client_silent() {
 
     SERVER_IP=$(m_server_ip)
 
+NODE_TAG="$(m_node_tag TUIC "$num" tls)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: TUICv5-$num
+  - name: $NODE_TAG
     type: tuic
     server: $SERVER_IP
     port: $port
