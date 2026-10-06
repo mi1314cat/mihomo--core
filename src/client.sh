@@ -96,10 +96,24 @@ unset M_NO_SRV_DIRS
 #   * 显示地址             —— 给用户看/复制进浏览器的。**0.0.0.0 不是可访问地址**,
 #                            拿它当 URL 只会得到一个连不上的链接。
 #
-# SB 的做法 (client.sh: lan_ip / host_addr) 就是这个, 直接照搬。
+# SB 的做法 (client.sh: lan_ip / host_addr) 是这个思路, 但**它的实现有兜底缺陷,
+# 我们补上** (详见 docs/private/SB-DIVERGENCE.md 的 D-2):
+#   SB 只靠 `ip route get 1.1.1.1`, 没有默认路由时返回空 —— 而"没有默认路由"正是
+#   纯局域网/离线机器 (也就是最需要走本机代理的那类机器) 的常见状态。空了之后
+#   URL 会拼成 "http://:9090/ui/", 一个点不开的坏链接。
+# 所以这里加两级兜底: 路由探测 -> 本机第一个非回环 IPv4 -> 127.0.0.1。
 lan_ip() {
-    ip -4 route get 1.1.1.1 2>/dev/null \
-        | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
+    local v
+    # ① 默认路由上的源地址 (最准: 就是这台机器对外用的那个地址)
+    v=$(ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+    # ② 没有默认路由 (纯局域网/离线) -> 拿第一个非回环 IPv4
+    v=$(ip -4 -o addr show scope global 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | grep -vE '^127\.' | head -1)
+    [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+    # ③ 连网卡地址都拿不到 -> 退回回环, 至少不是空字符串
+    printf '127.0.0.1'
 }
 
 # 把监听地址解析成"真的能连上"的地址
