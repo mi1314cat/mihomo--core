@@ -37,10 +37,7 @@ mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR"
 # ================================
 # 端口工具
 # ================================
-port_in_use() {
-    local p="$1"
-    ss -tuln 2>/dev/null | awk '{print $5}' | grep -E -q "(:|])$p$"
-}
+port_in_use() { m_port_listening "$1"; }
 
 random_port() { shuf -i 10000-60000 -n 1; }
 

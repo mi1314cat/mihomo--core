@@ -44,6 +44,63 @@ OUT_DIR = os.environ.get("OUT_DIR", "/root/catmi/mihomo/out")
 PROVIDERS_DIR = os.environ.get("PROVIDERS_DIR", "")
 PORT = int(os.environ.get("SHARE_PORT", "9443"))
 SERVICE = os.environ.get("MIHOMO_SERVICE", "mihomo")
+# ---- 局域网配置分发 (mode=lan) ----
+# 只用环境变量传参, 不引 argparse: 这个脚本原来就靠环境变量配置,
+# 再加一套命令行解析会让两套配置方式并存, 迟早记错用哪个。
+LAN_ROOT = os.environ.get("LAN_ROOT", "/root/catmi/mihomo-client")
+LAN_TOKEN = os.environ.get("LAN_TOKEN", "")
+LAN_TMP = os.environ.get("LAN_TMP", "/tmp/mihomo-lan-sub")
+# 分发前必须剥掉的段 —— 换台机器全都对不上:
+#   mixed-port / allow-lan / bind-address     端口与监听是它自己的事
+#   external-controller / external-ui         本机绝对路径, 那边不存在
+#   secret                                   本机密钥, 传过去等于没设
+# 注意: 不带尾部冒号 —— 比较的是 line.split(":", 1)[0], 带了就永远匹配不上,
+# 剥除静默失效, 分发出去的还是带着本机端口和密钥的原配置 (踩过的坑)。
+LAN_DROP = ("mixed-port", "port", "socks-port", "redir-port", "tproxy-port",
+            "allow-lan", "bind-address", "external-controller", "external-ui",
+            "secret", "log-level", "mode", "profile")
+
+
+def build_lan_config(out_path: str) -> int:
+    """实时合并 conf/ 下所有片段, 剥掉本机专属段, 写到 out_path。
+
+    返回节点数 —— 为 0 说明没有可分发的内容 (调用方据此返回 503)。
+    实时生成而不是读快照: 快照会滞后, 别的设备会拿到已删除的节点。
+    """
+    confdir = os.path.join(LAN_ROOT, "conf")
+    main = os.path.join(confdir, "config.yaml")
+    try:
+        txt = open(main, encoding="utf-8").read()
+    except OSError as e:
+        raise RuntimeError("读不到主配置 %s: %s" % (main, e))
+
+    kept, skip = [], False
+    for line in txt.splitlines():
+        if line and not line[0].isspace() and ":" in line:
+            skip = line.split(":", 1)[0].strip() in LAN_DROP
+        if not skip:
+            kept.append(line)
+
+    # 节点片段按文件名排序拼在后面; 规则仍以主配置为准 (Mihomo 先匹配先赢)
+    import glob
+    import re as _re
+    frag, names = "", 0
+    for pat in ("config.d/*.yaml", "providers/*.yaml"):
+        for f in sorted(glob.glob(os.path.join(confdir, pat))):
+            try:
+                body = open(f, encoding="utf-8").read()
+            except OSError:
+                continue
+            frag += body + "\n"
+            names += len(_re.findall(r"^\s*-\s*name:", body, _re.M))
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(kept).rstrip() + "\n")
+        f.write(frag)
+    return names
+
+
 SHARES = os.path.join(SHARE_DIR, "shares")
 LOCK = os.path.join(SHARE_DIR, ".share.lock")
 BUILD_SUB = os.environ.get("BUILD_SUB", "")   # build_sub.py 绝对路径
@@ -149,11 +206,41 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def _serve_lan_sub(self):
+        """实时合并 conf/ 下所有片段, 剥掉本机专属段后返回。
+
+        剥掉的段对别的机器全都对不上:
+          mixed-port / allow-lan / bind-address  端口与监听是它自己的事
+          external-controller / external-ui      本机绝对路径, 那边不存在
+          secret                                本机密钥, 传过去等于没设
+        """
+        out = os.path.join(LAN_TMP, "lan-sub.yaml")
+        try:
+            n = build_lan_config(out)
+        except Exception as e:
+            return self._send(500, ("build failed: %s\n" % e).encode())
+        if n == 0:
+            return self._send(503, b"no nodes\n")
+        with open(out, "rb") as f:
+            body = f.read()
+        self._send(200, body, "text/yaml; charset=utf-8")
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
 
         if path == "/status":
             return self._send(200, b"mihomo share server OK\n")
+
+        # ---- 局域网配置分发 (与 /share/ 完全独立) ----
+        # 每次请求实时生成, 不读快照: 否则会出现"节点早删了、快照还没刷新",
+        # 别的设备拿到一份已经废弃的配置。
+        if path.startswith("/sub/"):
+            token = path[len("/sub/"):]
+            if not token or not token.isalnum() or len(token) < 16:
+                return self._send(404, b"not found\n")
+            if LAN_TOKEN and token != LAN_TOKEN:
+                return self._send(403, b"forbidden\n")
+            return self._serve_lan_sub()
 
         if not path.startswith("/share/"):
             return self._send(404, b"not found\n")

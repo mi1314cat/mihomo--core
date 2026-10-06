@@ -57,11 +57,7 @@ port_suggest() {
 }
 
 # 端口是否已被占用 (TCP 或 UDP 都要看 —— QUIC 节点只占 UDP)
-port_in_use() {
-    local p="$1"
-    { ss -tulHn 2>/dev/null || true; } | awk '{print $5}' \
-        | grep -oE '[0-9]+$' | grep -qxF "$p"
-}
+port_in_use() { m_port_listening "$1"; }
 
 # 简短说明: 端口是不是本服务自己在用
 port_desc() {

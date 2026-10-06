@@ -55,7 +55,7 @@ clean_input() { echo "$1" | tr -d '\000-\037'; }
 port_in_use() {
     # TCP + UDP 都查（QUIC 冲突必须看 UDP）
     ss -ulHn 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | grep -qx "$1"
-    ss -tlHn 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | grep -qx "$1"
+    ss -tlHn 2>/dev/null | grep -oE '[0-9]+$' | grep -qx "$1"
 }
 
 random_port() { shuf -i 10000-60000 -n 1; }

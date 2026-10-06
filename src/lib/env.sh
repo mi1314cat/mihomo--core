@@ -208,9 +208,7 @@ m_port_allowed() {
 }
 
 # 端口是否已被占用 (TCP + UDP 都要查 —— QUIC 节点只看 TCP 会漏)
-m_port_in_use() {
-    ss -tulHn 2>/dev/null | awk '{print $5}' | grep -oE '[0-9]+$' | grep -qx "$1"
-}
+m_port_in_use() { m_port_listening "$1"; }
 
 # m_free_port [首选端口] [扫描范围]
 #

@@ -606,8 +606,7 @@ EOF
 
     # 最后确认: 端口是否真的全部释放
     local left
-    left=$(ss -tulHn 2>/dev/null | awk '{print $5}' | grep -oE '[0-9]+$' \
-           | sort -un | awk '$1>=20000 && $1<=20100' | tr '\n' ' ')
+    left=$(m_listening_ports | awk '$1>=20000 && $1<=20100' | tr '\n' ' ')
     [[ -n "$left" ]] && print_warn "这些端口仍在监听 (可能属于其它程序): $left"
     return 0
 }

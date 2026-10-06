@@ -62,7 +62,7 @@ _MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/ui.sh"
 [[ -f "$_MUI" ]] && source "$_MUI"
 
 # Web UI 管理与内核/版本管理。两者依赖上面的 ui.sh, 必须在它之后加载。
-for _mx in webui core_mgmt portcheck fw; do
+for _mx in webui core_mgmt portcheck fw rules_bind dl_route simple_proxy lan_dispatch; do
     _MEXTRA="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/$_mx.sh"
     [[ -f "$_MEXTRA" ]] && source "$_MEXTRA"
 done
@@ -639,18 +639,22 @@ client_menu() {
         echo >&2
         ui_menu 1  "初始化基础配置"
         ui_menu 2  "添加节点 (分享链接 / 订阅 / 本地文件)"
-        ui_menu 3  "查看节点"
-        ui_menu 4  "更新订阅节点"
-        ui_menu 5  "删除节点"
+        ui_menu 3  "添加简易 HTTP/SOCKS 节点 (接其它内核)"
+        ui_menu 4  "查看节点"
+        ui_menu 5  "更新订阅节点"
+        ui_menu 6  "删除节点"
+        ui_menu 7  "域名分流 (域名 -> 节点/组)"
         ui_rule
-        ui_menu 6  "启动 / 停止 / 重启服务"
-        ui_menu 7  "配置检查"
-        ui_menu 8  "节点测速"
-        ui_menu 9  "客户端设置 (端口 / 绑定 / Web UI / 面板密钥)"
-        ui_menu 10 "Web UI / 仪表盘"
-        ui_menu 11 "安装 / 内核管理 (版本/更新/脚本)"
-        ui_menu 12 "分享订阅 (把我的节点发给别人)"
-        ui_menu 13 "卸载客户端"
+        ui_menu 8  "启动 / 停止 / 重启服务"
+        ui_menu 9  "配置检查"
+        ui_menu 10 "节点测速"
+        ui_menu 11 "客户端设置 (端口 / 绑定 / Web UI / 面板密钥)"
+        ui_menu 12 "Web UI / 仪表盘"
+        ui_menu 13 "下载通道 (订阅/内核/UI 走不走代理)"
+        ui_menu 14 "局域网配置分发 (URL 拉取)"
+        ui_menu 15 "安装 / 内核管理 (版本/更新/脚本)"
+        ui_menu 16 "分享订阅 (把我的节点发给别人)"
+        ui_menu 17 "卸载客户端"
         ui_menu 0  "退出"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -659,17 +663,21 @@ client_menu() {
         case "$c" in
             1)  apply_change ;;
             2)  node_add ;;
-            3)  node_list ;;
-            4)  node_update ;;
-            5)  node_delete ;;
-            6)  svc_menu ;;
-            7)  check_menu ;;
-            8)  node_test ;;
-            9)  settings_menu ;;
-            10) webui_menu ;;
-            11) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
-            12) cli_share_menu ;;
-            13|d|D) cli_uninstall ;;
+            3)  simple_add_menu ;;
+            4)  node_list ;;
+            5)  node_update ;;
+            6)  node_delete ;;
+            7)  rules_menu ;;
+            8)  svc_menu ;;
+            9)  check_menu ;;
+            10) node_test ;;
+            11) settings_menu ;;
+            12) webui_menu ;;
+            13) dl_route_menu ;;
+            14) lan_dispatch_menu ;;
+            15) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
+            16) cli_share_menu ;;
+            17|d|D) cli_uninstall ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac
