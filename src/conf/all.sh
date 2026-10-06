@@ -781,8 +781,27 @@ EOF
 g_trojan_h2_reality() {
     local path; path=$(m_check_ws_path "$(m_gen_path trojan-h2)") || return 1
     NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
+    # 服务端**不写任何 h2 键**。
+    #
+    # 原先是 `h2-path: $path`, 但 mihomo 的 trojan 监听端白名单里根本没有这个键
+    # (只有 ws-path / grpc-service-name), 于是每次生成都报一条
+    #   [WARN] listeners[N](...): 未知键 `h2-path`（内核会静默忽略）
+    # —— 用户看到"内核会静默忽略"会以为自己配错了。
+    #
+    # 实测 (真实内核, 四种组合两两对照): trojan 监听端对传输**不敏感**,
+    #   服务端无 network + 客户端 h2      -> 204
+    #   服务端无 network + 客户端无 network -> 204
+    #   服务端 network:h2 + 客户端 h2      -> 204
+    #   服务端 network:h2 + 客户端无 network -> 204
+    # 而且把客户端路径改成 /wrong 照样连上 —— 说明**监听端不校验 path**。
+    # 所以服务端写不写都无所谓, 写了只会多一条误导性警告, 干脆不写。
+    #
+    # path 仍然保留在**客户端**: 它真正起作用的地方是 CDN / 反向代理按路径
+    # 回源, 而不是 mihomo 自己。
     cat > "$3" <<EOF
 # 由 all.sh 一键生成 · Trojan + HTTP/2 + REALITY (直连)
+# 注意: mihomo 的 trojan 监听端不区分传输, 也不校验 h2 路径,
+#       所以服务端没有任何 h2 字段 —— 这是刻意的, 不是漏写。
 listeners:
   - name: $NODE_TAG
     type: trojan
@@ -790,7 +809,6 @@ listeners:
     port: $2
     users:
       - password: $UUID
-    h2-path: $path
 $(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
 EOF
     NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
