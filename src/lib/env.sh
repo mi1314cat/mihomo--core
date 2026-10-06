@@ -674,6 +674,36 @@ m_reality_dest_known_bad() {
 # 返回值写入全局 DEST_SERVER
 m_pick_dest() {
     local cur="${1:-}"
+
+    # 已经配置过就直接沿用 —— 这正是 cur 参数**本来该有**的作用。
+    #
+    # 之前 cur 只被赋值、从未被读, 于是每次批量生成都重新问一遍 dest; 而调用点
+    # (src/conf/all.sh) 又把它的输出重定向到 /dev/null, 两者叠加的结果是:
+    #   脚本在「复用已有 Reality 密钥」之后**没有任何提示地卡住等输入**,
+    #   用户以为死机, 随手按一下回车 —— 那一按被当成"选第 1 个",
+    #   于是 install_info.env 里选好的 dest_server 被静默改掉。
+    # 实测复现: m_pick_dest "www.microsoft.com" 管道喂 "2"
+    #           → dest_server 从 www.microsoft.com 变成 REALITY_DESTS[1]。
+    #
+    # 名单内的值直接采用; 名单外但格式合法的自定义域名也直接采用
+    # (用户手填的 dest 同样不该被覆盖)。只有空值/非法值才回到交互问询。
+    if [[ -n "$cur" ]]; then
+        local _k
+        for _k in "${REALITY_DESTS[@]}"; do
+            if [[ "$_k" == "$cur" ]]; then
+                DEST_SERVER="$cur"
+                print_info "Reality dest: $DEST_SERVER (沿用 install_info.env, 无需选择)"
+                return 0
+            fi
+        done
+        if [[ "$cur" =~ ^[a-z0-9.-]+\.[a-z]{2,}$ ]]; then
+            DEST_SERVER="$cur"
+            print_info "Reality dest: $DEST_SERVER (沿用 install_info.env, 无需选择)"
+            return 0
+        fi
+        print_warn "install_info.env 里的 dest_server 不合法: 「$cur」, 重新选择"
+    fi
+
     printf "\n请选择 Reality 目标站点 (dest / server-names):\n" >&2
     printf "  %s\n" "  这些站点仅用于借用 TLS 证书, 你无需拥有它们。" >&2
     local i

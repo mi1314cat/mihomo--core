@@ -1515,7 +1515,10 @@ printf "  ${DIM}其余沿用各协议默认值; 端口冲突或生成失败会�
 check_only_tokens || exit 1
 ensure_env
 ensure_reality
-m_pick_dest "${dest_server:-}" >/dev/null 2>&1 || true
+# 不再把输出丢进 /dev/null: 那样一旦 m_pick_dest 真的问起来 (dest 空/非法时),
+# 提示被吞掉而 read 仍然阻塞 —— 脚本看着像卡死, 随手一按就改掉了 dest_server。
+# 已配置时 m_pick_dest 只打印一行"沿用 install_info.env", 不会吵。
+m_pick_dest "${dest_server:-}" || true
 # 兜底值取**实测可用**的域名。老代码这里写的是 www.bing.com, 而实测它在
 # REALITY 下必然 authentication failed (普通 TLS 却是通的) —— 也就是说,
 # 不手动选 dest 的用户 100% 拿到一个连不上、却显示成功的 REALITY 节点。
@@ -1576,6 +1579,47 @@ else
             printf "     ${DIM}本机共检测到 %d 张可用证书, 已自动选用其中优先级最高的${RESET}\n" "$ALL_CERT_N" >&2
         fi
         printf "     ${GREEN}[OK]${RESET} 证书: %s\n" "${SNI:-$CRT}" >&2
+
+        # ★ 有真证书时也把"自签"这条路摆出来 —— 对齐 SB 的
+        #   「1) 使用本机真实证书 (检测到 N 张) / 2) 自签证书」二选一。
+        #
+        #   为什么有真证书还要给自签选项: 真证书的域名是 CA 签给**那个域名**的,
+        #   节点 SNI 就被钉死在它上面; 想换一个更"像正常网站"的 SNI 做伪装,
+        #   只能自签。我们之前只有"没证书时才回退自签", 于是"有证书但想换 SNI"
+        #   的用户没有任何入口。
+        #
+        #   默认选 1 (真证书): 它过 CDN 有效、客户端不用 skip-cert-verify,
+        #   是更安全的一侧 —— 不能因为"多问一句"就把默认行为改坏。
+        __want_self=0
+        case "$CERT_MODE" in
+            self) __want_self=1 ;;
+            real) ;;                    # 明确要求只用真证书, 不问
+            auto)
+                if [[ -t 0 && "$QUICK" != "1" ]]; then
+                    printf "     ${CYAN}用哪张证书?${RESET}\n" >&2
+                    printf "       ${CYAN}1${RESET}) 本机真实证书 ${DIM}%s${RESET} ${GREEN}(推荐)${RESET}\n" "${SNI:-$CRT}" >&2
+                    printf "       ${CYAN}2${RESET}) 现生成自签 ${DIM}(可自定义域名; 客户端需 skip-cert-verify; 过 CDN 无效)${RESET}\n" >&2
+                    printf "     请选择 ${DIM}[默认 1]:${RESET} " >&2
+                    __ans=""; read -r __ans || true
+                    [[ "$__ans" == "2" ]] && __want_self=1
+                fi ;;
+        esac
+        if (( __want_self )); then
+            printf "     ${DIM}自签域名 (回车=随机伪装域名):${RESET} " >&2
+            __dom=""; read -r __dom || true
+            [[ -z "$__dom" ]] && __dom=$(random_domain)
+            if generate_cert "$__dom" >/dev/null 2>&1; then
+                CRT="$CERT_FILE"; KEY="$KEY_FILE"; SNI="$CERT_DOMAIN"
+                printf "     ${GREEN}✅${RESET} 已改用自签证书 ${DIM}(域名 %s)${RESET}\n" "$SNI" >&2
+                printf "     ${DIM}客户端已写 skip-cert-verify; CDN 档位仍会跳过 (CF 不认自签)${RESET}\n" >&2
+                printf "     ${GREEN}[OK]${RESET} 证书: %s ${DIM}(自签)${RESET}\n" "$SNI" >&2
+            else
+                # 自签失败**不能**把已经找到的真证书丢掉 —— 那等于把用户
+                # 从"能用"推回"跳过一半协议"。留着真证书继续。
+                printf "     ${RED}✗${RESET} 自签生成失败, 继续用本机真实证书 %s\n" "${SNI:-$CRT}" >&2
+                printf "     ${GREEN}[OK]${RESET} 证书: %s\n" "${SNI:-$CRT}" >&2
+            fi
+        fi
     else
         # 没找到可用证书。
         #
