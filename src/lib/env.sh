@@ -647,3 +647,22 @@ m_sync_reload() {
 # =============================================================
 # shellcheck source=/dev/null
 [[ -f "$(dirname "${BASH_SOURCE[0]}")/cert.sh" ]] && source "$(dirname "${BASH_SOURCE[0]}")/cert.sh"
+
+# =============================================================
+# 推荐配置预置 + CDN 回源编排
+#
+# 同样放在 env.sh 里带入, 原因与 cert.sh 一样: 所有协议脚本都 source
+# 本文件, 它们需要 preset_ask (选推荐配置) 和 cdn_bind_menu (挂 CDN)。
+# 只在 server.sh/client.sh 里 source 的话**协议脚本拿不到** ——
+# 曾这样接过一次, 实测 declare -F 显示 preset_count/cdn_* 未定义。
+#
+# 顺序有依赖:
+#   cert.sh   仅依赖 ui.sh
+#   preset.sh 仅依赖 ui.sh
+#   cdn.sh    依赖 cert.sh (用 CERT_DOMAIN) 和 ui.sh, 所以必须排最后
+# =============================================================
+_m_libdir="$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source=/dev/null
+[[ -f "$_m_libdir/preset.sh" ]] && source "$_m_libdir/preset.sh"
+# shellcheck source=/dev/null
+[[ -f "$_m_libdir/cdn.sh" ]]    && source "$_m_libdir/cdn.sh"
