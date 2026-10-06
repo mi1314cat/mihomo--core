@@ -62,11 +62,15 @@ _MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/ui.sh"
 [[ -f "$_MUI" ]] && source "$_MUI"
 
 # Web UI 管理与内核/版本管理。两者依赖上面的 ui.sh, 必须在它之后加载。
-for _mx in webui core_mgmt portcheck; do
+for _mx in webui core_mgmt portcheck fw; do
     _MEXTRA="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/$_mx.sh"
     [[ -f "$_MEXTRA" ]] && source "$_MEXTRA"
 done
 unset _MEXTRA
+
+# 客户端防火墙走自己的登记表 —— 客户端不监听对外端口, 它的登记项是
+# 拉订阅/开面板时顺手放行的端口, 与服务端分开, 卸载时只回收自己的。
+declare -F fw_close_port >/dev/null 2>&1 && FW_PORT_LIST="$CLI_ROOT/.fw-ports"
 
 ensure_dirs() { mkdir -p "$CLI_CONF" "$CLI_PROVIDERS" "$CLI_NODES" "$CLI_UI"; }
 
@@ -761,24 +765,21 @@ EOF
     [[ -n "$svc" ]]   && _cli_uninstall_unit "$svc"
     [[ -n "$shsvc" ]] && _cli_uninstall_unit "$shsvc"
 
-    # 端口回收: 只按自己的台账删, 不扫防火墙全表
-    local fw="$CLI_ROOT/.fw-ports" p
-    if [[ -f "$fw" ]]; then
-        while IFS= read -r p; do
-            [[ "$p" =~ ^[0-9]+$ ]] || continue
-            if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-                ufw delete allow "$p/tcp" >/dev/null 2>&1
-                ufw delete allow "$p/udp" >/dev/null 2>&1
-            elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-                firewall-cmd --zone=public --remove-port="$p/tcp" --permanent >/dev/null 2>&1
-                firewall-cmd --zone=public --remove-port="$p/udp" --permanent >/dev/null 2>&1
-            elif command -v iptables >/dev/null; then
-                iptables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null
-                iptables -D INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null
-            fi
-        done < "$fw"
-        print_ok "已回收登记的防火墙端口: $(wc -l < "$fw") 个"
-    fi
+    # 端口回收: 只按自己的登记表逐个走 fw_close_port。
+    #
+    # 原来这里是内联实现, 只认 ufw/firewalld/iptables 三家, 且**没有 SSH 保护** ——
+    # 登记表里万一混进了 sshd 端口, 这段会直接把 SSH 规则删掉, 然后人就再也连不上了。
+    # fw_close_port 三道闸门: 登记表 / sshd 实测监听 / 系统常用端口, 任何一道不过就不动防火墙。
+    declare -F fw_close_port >/dev/null 2>&1 && {
+        local _p _n=0 _fw="$CLI_ROOT/.fw-ports"
+        if [[ -f "$_fw" ]]; then
+            while IFS= read -r _p; do
+                [[ "$_p" =~ ^[0-9]+$ ]] || continue
+                fw_close_port "$_p" "卸载" && _n=$((_n + 1))
+            done < "$_fw"
+        fi
+        print_ok "已回收登记的防火墙端口: $_n 个"
+    }
 
     rm -rf "$CLI_ROOT"
     if [[ -e "$CLI_ROOT" ]]; then

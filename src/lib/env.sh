@@ -22,6 +22,11 @@ _MCM="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/core_mgmt.sh"
 # shellcheck source=/dev/null
 [[ -f "$_MCM" ]] && source "$_MCM"
 
+# 防火墙管理 (放行/关闭/孤儿清理)
+_MFW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fw.sh"
+# shellcheck source=/dev/null
+[[ -f "$_MFW" ]] && source "$_MFW"
+
 # ---------- 基础路径 ----------
 : "${SRV_ROOT:=/root/catmi/mihomo}"
 : "${SRV_CONF:=$SRV_ROOT/conf}"

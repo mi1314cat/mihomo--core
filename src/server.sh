@@ -105,6 +105,22 @@ for x in l:
 PROTO_SCRIPTS=(Reality.sh VLESS.sh Trojan.sh hysteria2.sh TUIC.sh AnyTLS.sh)
 PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" "Trojan" "Hysteria2" "TUIC v5" "AnyTLS")
 
+# 协议脚本跑完后的收口: 为本次新增的节点文件放行防火墙端口。
+#
+# 只碰**未登记**的端口 —— 已有的节点反复放行没意义, 而全目录无条件扫描会
+# 把别的协议的端口也过一遍, 出问题时分不清是哪一步动的。
+fw_after_node_change() {
+    declare -F fw_open_node_file >/dev/null 2>&1 || return 0
+    local nf first
+    for nf in "$SRV_CONFIGD"/*.yaml; do
+        [[ -f "$nf" ]] || continue
+        first=$(fw_ports_in_file "$nf" | head -1)
+        fw_is_registered "$first" && continue
+        fw_open_node_file "$nf"
+    done
+}
+
+
 add_node() {
     print_title "添加节点"
     local i
@@ -128,6 +144,7 @@ add_node() {
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
+    fw_after_node_change
 }
 
 # all.sh 的菜单外壳。
@@ -211,6 +228,7 @@ manage_node() {
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
+    fw_after_node_change
 }
 
 # 清空全部节点 (保留服务、证书、out/)
@@ -562,24 +580,21 @@ EOF
     [[ -n "$svc" ]]   && _uninstall_unit "$svc"
     [[ -n "$shsvc" ]] && _uninstall_unit "$shsvc"
 
-    # 端口回收: 只按自己的台账删
-    local fw="$SRV_ROOT/.fw-ports" p
-    if [[ -f "$fw" ]]; then
-        while IFS= read -r p; do
-            [[ "$p" =~ ^[0-9]+$ ]] || continue
-            if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-                ufw delete allow "$p/tcp" >/dev/null 2>&1
-                ufw delete allow "$p/udp" >/dev/null 2>&1
-            elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-                firewall-cmd --zone=public --remove-port="$p/tcp" --permanent >/dev/null 2>&1
-                firewall-cmd --zone=public --remove-port="$p/udp" --permanent >/dev/null 2>&1
-            elif command -v iptables >/dev/null; then
-                iptables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null
-                iptables -D INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null
-            fi
-        done < "$fw"
-        print_ok "已回收登记的防火墙端口: $(wc -l < "$fw") 个"
-    fi
+    # 端口回收: 只按自己的登记表逐个走 fw_close_port。
+    #
+    # 原来这里是内联实现, 只认 ufw/firewalld/iptables 三家, 且**没有 SSH 保护** ——
+    # 登记表里万一混进了 sshd 端口, 这段会直接把 SSH 规则删掉, 然后人就再也连不上了。
+    # fw_close_port 三道闸门: 登记表 / sshd 实测监听 / 系统常用端口, 任何一道不过就不动防火墙。
+    declare -F fw_close_port >/dev/null 2>&1 && {
+        local _p _n=0 _fw="$SRV_ROOT/.fw-ports"
+        if [[ -f "$_fw" ]]; then
+            while IFS= read -r _p; do
+                [[ "$_p" =~ ^[0-9]+$ ]] || continue
+                fw_close_port "$_p" "卸载" && _n=$((_n + 1))
+            done < "$_fw"
+        fi
+        print_ok "已回收登记的防火墙端口: $_n 个"
+    }
 
     rm -rf "$SRV_ROOT"
     if [[ -e "$SRV_ROOT" ]]; then
@@ -809,17 +824,18 @@ main_menu() {
         ui_menu 1  "添加节点"
         ui_menu 2  "管理节点"
         ui_menu 3  "安装 / 内核管理 (版本/更新/脚本)"
-        ui_menu 4  "生成分享链接"
-        ui_menu 5  "拉取节点"
-        ui_menu 6  "更新配置"
+        ui_menu 4  "防火墙 (放行/孤儿清理/SSH 保护)"
         ui_rule
-        ui_menu 7  "服务管理"
-        ui_menu 8  "查看当前节点"
-        ui_menu 9  "查看已拉取订阅"
-        ui_menu 10 "查看日志"
-        ui_menu 11 "查看节点分享内容"
-        ui_menu 12 "系统信息"
-        ui_menu 13 "卸载服务端"
+        ui_menu 5  "生成分享链接"
+        ui_menu 6  "拉取节点"
+        ui_menu 7  "更新配置"
+        ui_menu 8  "服务管理"
+        ui_menu 9  "查看当前节点"
+        ui_menu 10 "查看已拉取订阅"
+        ui_menu 11 "查看日志"
+        ui_menu 12 "查看节点分享内容"
+        ui_menu 13 "系统信息"
+        ui_menu 14 "卸载服务端"
         ui_menu 0  "退出"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -829,16 +845,17 @@ main_menu() {
             1)  add_node ;;
             2)  manage_node ;;
             3)  core_menu "$SRV_ROOT" "$SRV_SERVICE" ;;
-            4)  install_share ;;
-            5)  pull_node ;;
-            6)  update_config ;;
-            7)  svc_menu ;;
-            8)  list_nodes ;;
-            9)  list_imported ;;
-            10) log_menu ;;
-            11) show_client_files ;;
-            12) sys_info ;;
-            13) uninstall_service ;;
+            4)  fw_menu ;;
+            5)  install_share ;;
+            6)  pull_node ;;
+            7)  update_config ;;
+            8)  svc_menu ;;
+            9)  list_nodes ;;
+            10) list_imported ;;
+            11) log_menu ;;
+            12) show_client_files ;;
+            13) sys_info ;;
+            14) uninstall_service ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac
