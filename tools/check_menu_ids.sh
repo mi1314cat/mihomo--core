@@ -181,6 +181,98 @@ elif (( fail == 0 )); then
     ok "$checked 个菜单函数, 编号全部对得上"
 fi
 
+# =============================================================
+# 第二段: ui_menu 的参数个数
+#
+# ui_menu 的签名是 ui_menu <编号> <文本>, **只接受 2 个参数**。
+#
+# 上面第一段查不出来的一种坏法 (cdn_menu 实际就是这样, 2026-10-06 实机发现):
+#
+#     ui_menu "探测 Nginx 部署方式" "列出所有站点" "查看当前绑定" "重新应用全部绑定" "返回"
+#
+# 一次传了 5 个参数。ui_menu 只打印 $1 和 $2, 于是整张菜单渲染成一行:
+#
+#     探测 Nginx 部署方式. 列出所有站点
+#
+# 后面 4 项**静默消失** —— 用户看不到任何选项, 只能盲敲数字。
+# 而 case 分支还写着 1) 2) 3) 4) 5), 敲对了照样能用, 所以更难发现。
+#
+# 第一段为什么漏掉: 它按 ui_menu[[:space:]]+[0-9]+ 匹配, 这里 $1 是字符串
+# 不是数字, 根本没进扫描。
+# =============================================================
+printf "\n═══ ui_menu 参数个数 (签名只接受 2 个) ═══\n\n"
+
+ui_menu_args() {
+    python3 - <<'PY'
+import io, os, re, sys
+
+def split_args(s):
+    """把一段 shell 参数文本按顶层空白切分, 尊重引号。
+
+    遇到**未加引号的 shell 元字符** (; & | ) ) 就停 —— 否则
+        for idx in ...; do ui_menu "$i" "$idx"; i=$((i + 1)); done
+    会把 `; i=$((i + 1)); done` 也算成参数, 误报成 6 个。
+    """
+    out, cur, q, esc = [], '', None, False
+    for ch in s:
+        if esc:
+            cur += ch; esc = False; continue
+        if ch == '\\':
+            cur += ch; esc = True; continue
+        if q:
+            cur += ch
+            if ch == q: q = None
+            continue
+        if ch in '"\'':
+            q = ch; cur += ch; continue
+        if ch in ';&|)':
+            break
+        if ch.isspace():
+            if cur: out.append(cur); cur = ''
+            continue
+        cur += ch
+    if cur: out.append(cur)
+    return out
+
+bad = []
+files = []
+for root, _, fs in os.walk('src'):
+    files += [os.path.join(root, f) for f in fs if f.endswith('.sh')]
+files.append('install.sh')
+
+for p in files:
+    try:
+        text = io.open(p, encoding='utf-8').read()
+    except OSError:
+        continue
+    for i, line in enumerate(text.split('\n'), 1):
+        code = line.split('#')[0]
+        for m in re.finditer(r'\bui_menu(_k)?\s+(.*)$', code):
+            rest = m.group(2).rstrip()
+            rest = rest.rstrip(';').rstrip()
+            if not rest:
+                continue
+            args = split_args(rest)
+            if len(args) != 2:
+                bad.append((p, i, len(args), line.strip()))
+
+if bad:
+    for p, i, n, src in bad:
+        print(f'❌ {p}:{i}  ui_menu 收到 {n} 个参数 (应为 2)')
+        print(f'        {src[:110]}')
+        print(f'        → 第 3 个及之后的参数会被**静默丢弃**, 菜单项不显示')
+    sys.exit(1)
+print('ui_menu 调用参数个数全部正确')
+PY
+}
+ui_out=$(ui_menu_args 2>&1); ui_rc=$?
+if (( ui_rc == 0 )); then
+    ok "$ui_out"
+else
+    printf '%s\n' "$ui_out" | sed 's/^/  /'
+    fail=1
+fi
+
 printf "\n"
 if (( fail )); then
     printf "${RED}═══ 有编号错位, 请修 ═══${RESET}\n\n"

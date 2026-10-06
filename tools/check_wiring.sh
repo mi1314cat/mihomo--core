@@ -134,6 +134,103 @@ for fmt in 'gz' 'zip'; do
     fi
 done
 
+# =============================================================
+# 平行数组必须等长
+#
+# 这是「两处必须一致但无机制保证」的又一个实例, 后果很隐蔽:
+#
+#     PROTO_SCRIPTS=(Reality.sh VLESS.sh Trojan.sh hysteria2.sh TUIC.sh AnyTLS.sh)
+#     PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" ...)
+#     PROTO_HINTS=("TCP / gRPC / xHTTP + Reality" ...)      ← 少写一条?
+#
+# 渲染时是 ${PROTO_HINTS[$i]}, 而**索引越界在 bash 里不报错**, 只展开成空 ——
+# 那一项后面就没有说明, 界面看起来"本来就没写", 没人会去数数组长度。
+# 反过来多写一条则永远显示不出来。
+# =============================================================
+printf "\n── 平行数组等长 ──\n"
+
+parallel_arrays() {
+    python3 - <<'PY'
+import io, os, re, sys
+
+# 数组组: 同组内所有数组必须等长。新增一组时同步加进来。
+GROUPS = {
+    'src/server.sh': [
+        ('PROTO_SCRIPTS', 'PROTO_LABELS', 'PROTO_HINTS'),
+        ('BATCH_PROTO_LABELS', 'BATCH_PROTO_HINT', 'BATCH_PROTO_ONLY'),
+    ],
+}
+
+def grab(text, name):
+    """取 NAME=( ... ) 的内容。用括号配平而不是正则 —— 元素里可能含 )"""
+    m = re.search(r'^' + name + r'=\(', text, re.M)
+    if not m:
+        return None
+    i, depth, start, inq = m.end(), 1, m.end(), None
+    while i < len(text) and depth:
+        c = text[i]
+        if inq:
+            if c == '\\':
+                i += 2; continue
+            if c == inq:
+                inq = None
+        elif c in '"\'':
+            inq = c
+        elif c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+        i += 1
+    return text[start:i-1]
+
+def count_elems(body):
+    n, i = 0, 0
+    while i < len(body):
+        c = body[i]
+        if c.isspace() or c == '\\':
+            i += 1; continue
+        if c in '"\'':
+            q = c; i += 1
+            while i < len(body) and body[i] != q:
+                if body[i] == '\\': i += 1
+                i += 1
+            i += 1; n += 1; continue
+        while i < len(body) and not body[i].isspace():
+            i += 1
+        n += 1
+    return n
+
+bad = 0
+for path, groups in GROUPS.items():
+    if not os.path.exists(path):
+        print(f'❌ 文件不存在: {path}')
+        bad = 1
+        continue
+    text = io.open(path, encoding='utf-8').read()
+    for group in groups:
+        counts = {}
+        for name in group:
+            body = grab(text, name)
+            if body is None:
+                print(f'❌ {path}: 找不到数组 {name}')
+                bad = 1
+                continue
+            counts[name] = count_elems(body)
+        if len(set(counts.values())) > 1:
+            print(f'❌ {path}: 平行数组长度不一致')
+            for name, n in counts.items():
+                print(f'       {name:22s} {n} 项')
+            print('       → 索引越界不报错, 只展开成空 (界面静默缺内容)')
+            bad = 1
+        elif counts:
+            first = next(iter(counts))
+            print(f'  ✅ {path}: {" / ".join(group)} = {counts[first]} 项')
+sys.exit(bad)
+PY
+}
+printf '%s\n' "$(parallel_arrays 2>&1)" | sed 's/^/  /'
+parallel_arrays >/dev/null 2>&1 || fail=1
+
 printf "\n"
 if (( fail )); then
     printf "${RED}═══ 有断线, 请修 ═══${RESET}\n\n"

@@ -112,9 +112,44 @@ for p in files:
             if m.group(1) not in defined:
                 miss.setdefault(m.group(1), []).append(f'{os.path.basename(p)}:{i}')
 miss = {k: v for k, v in miss.items() if k != '_n'}
+
+# ---- 孤立菜单函数 ----
+#
+# 上面的扫描只看 `_[a-z]` 开头的函数, 所以 `cdn_menu` 这种**没下划线**的
+# 菜单函数漏网了。实测: cdn_menu 定义在 cdn.sh:639, 全仓库
+# **零调用点** —— 整个 CDN 回源管理菜单没有任何入口, 用户根本进不去。
+# 而它内部还藏着一个渲染 bug (ui_menu 传了 5 个参数), 一直没人发现。
+#
+# 教训: 一个够不到的菜单等于不存在, 而且它的问题永远不会暴露。
+# 所以单独查一遍所有 *_menu 函数的调用点。
+orphan_menu = []
+for p in files:
+    src = io.open(p, encoding='utf-8').read()
+    for i, l in enumerate(src.split('\n'), 1):
+        m = re.match(r'^([a-zA-Z_]\w*_menu)\(\)\s*\{', l)
+        if not m:
+            continue
+        name = m.group(1)
+        if name == 'ui_menu':          # 是渲染原语, 由 install.sh 定义
+            continue
+        calls = 0
+        for q in files:
+            for j, ll in enumerate(io.open(q, encoding='utf-8').read().split('\n'), 1):
+                code = ll.split('#')[0]
+                if re.match(r'^\s*' + re.escape(name) + r'\(\)', ll):
+                    continue           # 定义行本身
+                if re.search(r'(?<![\w-])' + re.escape(name) + r'(?=[\s;|&)]|$)', code):
+                    calls += 1
+        if calls == 0:
+            orphan_menu.append(f'{os.path.basename(p)}:{i} {name}')
+
 if miss:
     for k, v in sorted(miss.items()):
         print(f'❌ {k} 未定义, 被引用: {", ".join(v[:3])}')
+if orphan_menu:
+    for o in orphan_menu:
+        print(f'❌ 孤立菜单函数 (零调用点, 用户进不去): {o}')
+if miss or orphan_menu:
     sys.exit(1)
 PY
 }

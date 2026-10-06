@@ -483,19 +483,221 @@ cdn_bind_menu() { # <tag> <端口> <传输> <路径>
     fi
 }
 
+# =============================================================
+# 七、CDN 菜单
+#
+# ★ 原来的 cdn_menu 是坏的, 而且是**看不见的坏**:
+#
+#     ui_menu "探测 Nginx 部署方式" "列出所有站点" "查看当前绑定" "重新应用全部绑定" "返回"
+#
+#   ui_menu 只接受 2 个参数 ($1 编号 / $2 文本)。一次传 5 个, 于是整张
+#   菜单只渲染出一行:
+#
+#       探测 Nginx 部署方式. 列出所有站点
+#
+#   后面 4 项被静默丢弃 —— 用户看不到任何选项, 只能盲敲数字。
+#   而 case 分支还写着 1) 2) 3) 4) 5), 所以敲对了也能用, 更不容易发现。
+#
+#   这是「两处必须一致但无机制保证」的又一个实例: 菜单的**项**与 case 的
+#   **编号**必须一致, 而 ui_menu 的参数个数从来没人检查。
+#   已在 tools/check_menu_ids.sh 补上机械校验 (见该脚本"ui_menu 参数个数")。
+#
+# 菜单项对齐 SB 的 CDN 菜单 (9 项), 但保留我们比 SB 强的两点:
+#   * 自动写入 (SB 的 cdn.sh 明确"绝不碰你的 Nginx", 只打印片段)
+#   * 回删 (SB 没有按节点精确摘除的能力)
+# =============================================================
+
+# 列出节点, 并逐个标注能否走 CDN。
+# SB 有 `5) 列出节点 (哪些能走 CDN)` —— 用户配 CDN 前第一件想知道的事。
+cdn_list_nodes() {
+    local f base tr n_total=0 n_cdn=0
+    printf '  %-22s %-9s %s\n' "节点" "传输" "能否走 CDN" >&2
+    printf '  %s\n' "──────────────────────────────────────────────────────" >&2
+    local glob
+    for f in $(ls "$SRV_CONFIGD"/*.yaml 2>/dev/null | sort); do
+        [[ -f "$f" ]] || continue
+        base=$(basename "$f" .yaml)
+        tr=$(cdn_node_meta_from_fragment "$f" | cut -d'|' -f1)
+        n_total=$((n_total + 1))
+        if cdn_supported_transport "$tr"; then
+            printf '  %-22s %-9s %s\n' "$base" "$tr" "${GREEN}✅ 可以${RESET}" >&2
+            n_cdn=$((n_cdn + 1))
+        else
+            printf '  %-22s %-9s %s\n' "$base" "$tr" "— 原生 TCP/UDP, Cloudflare 代理不了" >&2
+        fi
+    done
+    printf '\n' >&2
+    if (( n_total == 0 )); then
+        print_info "还没有任何节点"
+    else
+        print_info "共 $n_total 个节点, 其中 $n_cdn 个能走 CDN"
+        print_info "可走 CDN 的传输: $CDN_TRANSPORTS"
+    fi
+}
+
+# 检查残留 —— 三处状态必须一致, 不一致就是残留:
+#   ① 绑定表有, 节点片段已删  → 悬空绑定 (删节点时没走 cdn_node_unregister)
+#   ② nginx 有插入标记, 绑定表没有 → 幽灵配置 (手工贴过 / 绑定表被清)
+#   ③ 绑定表有, nginx 没标记   → 未生效 (apply 失败过)
+#
+# SB 有 `8) 检查残留 (节点删了配置还在?)`。这类"删除不干净"的问题
+# 不主动查就永远发现不了, 所以值得单独一个菜单项。
+cdn_check_residue() {
+    cdn_bind_init
+    local bad=0
+    local t d s tr p pt
+
+    # ① 悬空绑定
+    printf '  %s\n' "① 绑定表 → 节点片段" >&2
+    local dangling=0
+    while IFS=$'\t' read -r t d s tr p pt; do
+        [[ -n "$t" ]] || continue
+        if [[ ! -f "$SRV_CONFIGD/$t.yaml" ]]; then
+            print_warn "  悬空: $t (绑定到 $d, 但节点片段 $t.yaml 已不存在)"
+            dangling=$((dangling + 1)); bad=$((bad + 1))
+        fi
+    done < "$CDN_BIND_FILE"
+    (( dangling == 0 )) && print_ok "  没有悬空绑定"
+
+    # ② 幽灵配置 (nginx 里有我们的标记, 但绑定表里没这个 tag)
+    printf '\n  %s\n' "② Nginx 插入标记 → 绑定表" >&2
+    local ghost=0 marker
+    marker="# 由 mihomo--core 面板自动插入"
+    while IFS= read -r site; do
+        [[ -f "$site" ]] || continue
+        while IFS= read -r tag_in_file; do
+            [[ -n "$tag_in_file" ]] || continue
+            if [[ -z "$(cdn_bind_get "$tag_in_file")" ]]; then
+                print_warn "  幽灵: $tag_in_file 的配置还在 $site, 但绑定表里没有"
+                ghost=$((ghost + 1)); bad=$((bad + 1))
+            fi
+        done < <(grep -oE "mihomo-cdn:[^ ]+" "$site" 2>/dev/null | sed 's/^mihomo-cdn://' | sort -u)
+    done < <(cdn_site_files_all)
+    (( ghost == 0 )) && print_ok "  没有幽灵配置"
+
+    # ③ 绑定表有, 但站点文件里找不到对应标记
+    printf '\n  %s\n' "③ 绑定表 → Nginx 插入标记" >&2
+    local notapplied=0
+    while IFS=$'\t' read -r t d s tr p pt; do
+        [[ -n "$t" ]] || continue
+        [[ -n "$s" && -f "$s" ]] || continue
+        if ! grep -q "mihomo-cdn:$t" "$s" 2>/dev/null; then
+            print_warn "  未生效: $t 已登记绑定, 但 $s 里没有它的插入标记"
+            notapplied=$((notapplied + 1)); bad=$((bad + 1))
+        fi
+    done < "$CDN_BIND_FILE"
+    (( notapplied == 0 )) && print_ok "  所有绑定都已写入 Nginx"
+
+    printf '\n' >&2
+    if (( bad == 0 )); then
+        print_ok "三处状态一致, 没有残留"
+    else
+        print_warn "共发现 $bad 处不一致。用 9) 移除配置 或 7) 重新应用全部绑定 处理。"
+    fi
+}
+
+# 所有候选站点文件 (去重)。cdn_list_sites 是给人看的表格, 这里要的是路径列表。
+cdn_site_files_all() {
+    cdn_available || return 0
+    python3 "$CDN_APPLY_PY" --list 2>/dev/null \
+        | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2); if ($2 != "") print $2}'
+}
+
+# CDN 接入说明。SB 有 `9) CDN 接入说明` —— 把"怎么接"写进面板,
+# 用户不用去翻文档。
+cdn_help() {
+    printf '%s\n' \
+"  ── CDN 回源是怎么工作的 ──" \
+"" \
+"     客户端 ──TLS──> Cloudflare 边缘 ──回源 443──> 你的 Nginx" \
+"                                                        │" \
+"                                              按 path 分流 │" \
+"                                                        ▼" \
+"                                              127.0.0.1:<节点端口>" \
+"" \
+"  要点:" \
+"    * 节点只监听 127.0.0.1, 端口不再对外暴露; 客户端连的是你的**域名**," \
+"      由 Cloudflare 隐藏源站 IP。" \
+"    * 只有跑在 HTTP 上的传输能被 Cloudflare 代理:" \
+"        $CDN_TRANSPORTS" \
+"      REALITY / AnyTLS / Hysteria2 / TUIC / SS / ShadowTLS 是原生 TCP/UDP" \
+"      或专用协议, 代理不了, 必须直连。" \
+"    * 域名必须已经在 Cloudflare 上, 且 **橙色云朵已开启** (走代理)。" \
+"      灰色云朵 = DNS only, 流量不过 Cloudflare, 这个配置没意义。" \
+"    * Cloudflare 免费版回源端口受限, 用 443 最稳。" \
+"" \
+"  ── 怎么接 ──" \
+"    1. 先在 Cloudflare 把这个域名解析到本机, 并打开代理 (橙色云朵)" \
+"    2. 用 1) 自动插入, 或 5) 生成片段手工粘贴" \
+"    3. 用 8) 检查残留 确认三处状态一致" \
+"    4. 删节点时走正常删除流程, 会自动同步清理 Nginx" \
+"" \
+"  ── 本机情况 ──" >&2
+    cdn_probe 2>&1 | sed 's/^/    /' >&2
+}
+
 cdn_menu() {
     while true; do
         ui_clear
         ui_title "CDN 回源管理"
-        echo "  登记中的绑定: $(cdn_bind_count)" >&2
-        echo "  可走 CDN 的传输: $CDN_TRANSPORTS" >&2
-        echo "" >&2
-        ui_menu "探测 Nginx 部署方式" "列出所有站点" "查看当前绑定" "重新应用全部绑定" "返回"
-        local c; c=$(safe_read "选择" "5")
+        printf "  登记中的绑定: %s\n" "$(cdn_bind_count)" >&2
+        printf "  可走 CDN 的传输: %s\n" "$CDN_TRANSPORTS" >&2
+        printf "\n" >&2
+        ui_menu  1 "自动插入 / 更新回源配置 (推荐)"
+        ui_menu  2 "检测证书 (看有哪些可用)"
+        ui_menu  3 "列出站点 (域名 → 配置文件)"
+        ui_menu  4 "列出节点 (哪些能走 CDN)"
+        ui_menu  5 "生成片段, 手工粘贴到 Nginx"
+        ui_menu  6 "查看当前绑定"
+        ui_menu  7 "重新应用全部绑定"
+        ui_menu  8 "检查残留 (节点删了配置还在?)"
+        ui_menu  9 "移除已插入的配置"
+        ui_menu 10 "探测 Nginx 部署方式"
+        ui_menu 11 "CDN 接入说明"
+        ui_menu  0 "返回"
+        local c; c=$(safe_read "选择" "0")
+        c=$(clean_input "${c:-}")
         case "$c" in
-            1) cdn_probe 2>&1 | sed 's/^/  /' >&2; pause ;;
-            2) cdn_list_sites 2>&1 | sed 's/^/  /' >&2; pause ;;
-            3)
+            1)
+                # 从节点列表里选一个挂上去
+                local tag
+                ui_clear; ui_title "挂到 CDN 的节点"
+                cdn_list_nodes
+                printf '\n' >&2
+                tag=$(safe_read "节点名 (如 vless-01, 留空取消)" "")
+                [[ -n "$tag" ]] || continue
+                if [[ ! -f "$SRV_CONFIGD/$tag.yaml" ]]; then
+                    print_error "找不到节点片段: $SRV_CONFIGD/$tag.yaml"; pause; continue
+                fi
+                local tr path port
+                tr=$(cdn_node_meta_from_fragment "$SRV_CONFIGD/$tag.yaml" | cut -d'|' -f1)
+                path=$(cdn_node_meta_from_fragment "$SRV_CONFIGD/$tag.yaml" | cut -d'|' -f2)
+                port=$(awk '/^[[:space:]]*port:/{print $2; exit}' "$SRV_CONFIGD/$tag.yaml")
+                cdn_bind_menu "$tag" "${port:-0}" "$tr" "$path"
+                pause ;;
+            2)
+                ui_clear; ui_title "本机可用证书"
+                if declare -F scan_certs >/dev/null 2>&1; then
+                    scan_certs 2>&1 | sed 's/^/  /' >&2
+                else
+                    print_warn "cert.sh 未加载, 无法扫描证书"
+                fi
+                pause ;;
+            3) cdn_list_sites 2>&1 | sed 's/^/  /' >&2; pause ;;
+            4) ui_clear; ui_title "节点与 CDN 适用性"; cdn_list_nodes; pause ;;
+            5)
+                local dom
+                dom=$(safe_read "回源域名" "${CERT_DOMAIN:-}")
+                if [[ -z "$dom" ]]; then print_warn "未填域名"; pause; continue; fi
+                mkdir -p "$CDN_FRAG_DIR"
+                if cdn_render_fragment "$dom" "$CDN_FRAG_DIR/${dom}.conf" >/dev/null; then
+                    print_ok "片段已生成: $CDN_FRAG_DIR/${dom}.conf"
+                    print_info "贴进 $dom 对应 server{} 内, 然后 nginx -t && nginx -s reload"
+                else
+                    print_error "生成失败 (该域名下没有可走 CDN 的节点?)"
+                fi
+                pause ;;
+            6)
                 ui_clear; ui_title "CDN 绑定"
                 if (( $(cdn_bind_count) == 0 )); then
                     print_info "暂无绑定"
@@ -505,14 +707,39 @@ cdn_menu() {
                     done < "$CDN_BIND_FILE"
                 fi
                 pause ;;
-            4)
-                local ok=0 bad=0
+            7)
+                local ok=0 bad=0 t d s tr p pt
                 while IFS=$'\t' read -r t d s tr p pt; do
                     [[ -n "$t" ]] || continue
                     if cdn_apply_domain "$d" "$s" >/dev/null 2>&1; then ok=$((ok+1)); else bad=$((bad+1)); fi
                 done < "$CDN_BIND_FILE"
                 print_ok "重新应用完成: 成功 $ok, 失败 $bad"; pause ;;
-            5|"") return 0 ;;
+            8) ui_clear; ui_title "CDN 残留检查"; cdn_check_residue; pause ;;
+            9)
+                local t d s tr p pt n=0
+                while IFS=$'\t' read -r t d s tr p pt; do
+                    [[ -n "$t" ]] || continue
+                    n=$((n + 1))
+                    printf '  %2d) %-22s %s\n' "$n" "$t" "$d" >&2
+                done < "$CDN_BIND_FILE"
+                if (( n == 0 )); then print_info "暂无绑定, 无需移除"; pause; continue; fi
+                local pick
+                pick=$(safe_read "要移除的编号 (留空取消)" "")
+                [[ -n "$pick" ]] || continue
+                local i=0
+                while IFS=$'\t' read -r t d s tr p pt; do
+                    [[ -n "$t" ]] || continue
+                    i=$((i + 1))
+                    if [[ "$i" == "$pick" ]]; then
+                        cdn_node_unregister "$t"
+                        print_ok "已移除 $t 的回源配置"
+                        break
+                    fi
+                done < "$CDN_BIND_FILE"
+                pause ;;
+            10) cdn_probe 2>&1 | sed 's/^/  /' >&2; pause ;;
+            11) ui_clear; ui_title "CDN 接入说明"; cdn_help; pause ;;
+            0|"") return 0 ;;
             *) ui_invalid "$c" ;;
         esac
     done

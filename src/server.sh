@@ -117,6 +117,28 @@ for x in l:
 # =============================================================
 PROTO_SCRIPTS=(Reality.sh VLESS.sh Trojan.sh hysteria2.sh TUIC.sh AnyTLS.sh)
 PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" "Trojan" "Hysteria2" "TUIC v5" "AnyTLS")
+# 每项的**变体与限制**, 内联在菜单里。
+#
+#     7. 添加 VMess 节点 (ws/grpc/h2/tcp + TLS/Reality)
+#     6. 添加 TUIC 节点 (v5 · 仅 TLS, 不支持 Reality)
+#     3. 添加 AnyTLS 节点 (可选 REALITY · 非 Reality 形态 mihomo 也能用)
+# 进菜单前就知道有哪些传输、有什么限制, 不用进去试错才知道。
+# 第 6 项那种"主动说明限制"尤其重要 —— 它省掉的是一次白跑。
+#
+# 内容来自各脚本的实际分支, 不是猜的:
+#   Reality.sh:  tcp/grpc/xhttp  + reality
+#   VLESS.sh:    ws/xhttp/grpc/h2/tcp + tls 或 reality; 另有 cdn/nginx 接入方式
+#   Trojan.sh:   tcp/ws/grpc + tls 或 reality
+#   hysteria2.sh / TUIC.sh: QUIC(UDP), 仅 tls
+#   AnyTLS.sh:   TCP, 仅 tls
+PROTO_HINTS=(
+    "TCP / gRPC / xHTTP + Reality"
+    "WS / xHTTP / gRPC / H2 / TCP · TLS 或 Reality"
+    "TCP / WS / gRPC · TLS 或 Reality"
+    "QUIC (UDP) · 仅 TLS"
+    "QUIC (UDP) · 仅 TLS, 不支持 Reality"
+    "TCP · 仅 TLS"
+)
 
 # 内核支持、all.sh 也早就能生成, 但**没有独立协议脚本**的协议。
 #
@@ -163,7 +185,8 @@ add_node() {
     # 分两段列 —— 单协议 / 批量。SB 的菜单也是这样分组的, 用户一眼能看出
     # "哪个是加一个节点, 哪个是一次生成一批"。
     for i in "${!PROTO_SCRIPTS[@]}"; do
-        printf "  ${CYAN}%2d${RESET}) %s\n" "$((i+1))" "${PROTO_LABELS[$i]}"
+        printf "  ${CYAN}%2d${RESET}) %-24s ${DIM}(%s)${RESET}\n" \
+            "$((i+1))" "${PROTO_LABELS[$i]}" "${PROTO_HINTS[$i]}"
     done
     for i in "${!BATCH_PROTO_LABELS[@]}"; do
         printf "  ${CYAN}%2d${RESET}) %s ${DIM}(%s)${RESET}\n" \
@@ -273,7 +296,8 @@ manage_node() {
     local i
     local n_single=${#PROTO_SCRIPTS[@]}
     for i in "${!PROTO_SCRIPTS[@]}"; do
-        printf "  ${CYAN}%2d${RESET}) %s\n" "$((i+1))" "${PROTO_LABELS[$i]}"
+        printf "  ${CYAN}%2d${RESET}) %-24s ${DIM}(%s)${RESET}\n" \
+            "$((i+1))" "${PROTO_LABELS[$i]}" "${PROTO_HINTS[$i]}"
     done
     # 红字标不可逆 —— 与 SB 的菜单约定一致 (batch.sh:117 破坏性操作必须
     # 手打 yes 才执行)。这里先标出来, 执行时还有第二道确认。
@@ -467,7 +491,13 @@ print(len(d.get('proxies') or []))" "$f" 2>/dev/null)
 # 更新配置 —— 三道关 + 回滚
 # =============================================================
 update_config() {
-    print_title "更新配置"
+    # 标题改成 SB 的叫法 (「校验配置 + 重载」)。
+    #
+    # 为什么: 用户想**确认配置没问题**时的第一反应是找"校验"。
+    # 原来这一项叫"更新配置", 听起来像"会改动东西", 于是想只看一眼的人
+    # 不敢点 —— 他会去"系统信息"里找, 而那里没有校验。
+    # SB 把它单列成主菜单第 6 项, 名字就是"校验配置 + 重载"。
+    print_title "校验配置 + 重载"
     ensure_dirs
     print_info "1/3 合并 conf/config.d → conf/config.yaml"
     python3 "$M_LIB/merge.py" --conf "$SRV_CONF" || {
@@ -482,6 +512,29 @@ update_config() {
         tail -8 /tmp/mihomo_t.log >&2
         print_error "内核校验失败, 配置未生效"; return 1; }
     print_ok "全部校验通过"
+
+    #     [OK] sing-box check 通过 (全部配置合并合法)
+    #     运行状态: active
+    #     内核版本: 1.14.2
+    #     占用端口: 53,80,443,<SSH_PORT>,...
+    # 用户刚做完"确认配置"这件事, 最想知道的就是"现在到底什么状态"。
+    printf '\n' >&2
+    local st ver ports
+    st=$(systemctl is-active "$SRV_SERVICE" 2>/dev/null || echo "unknown")
+    if [[ "$st" == "active" ]]; then
+        printf "  运行状态: ${GREEN}%s${RESET}\n" "$st" >&2
+    else
+        printf "  运行状态: ${RED}%s${RESET}\n" "$st" >&2
+    fi
+    ver=$("$SRV_BIN" -v 2>/dev/null | head -1)
+    printf "  内核版本: %s\n" "${ver:--}" >&2
+    # 只列协议端口区间 (20000-29999), 与 status_block 口径一致 ——
+    # 全量列会把 9090 / SSH / nginx 都倒出来, 反而看不出节点情况。
+    ports=$( { ss -tlnp 2>/dev/null; ss -ulnp 2>/dev/null; } \
+        | grep "(\"$(basename "$SRV_BIN")\"," 2>/dev/null \
+        | awk '{print $4}' | sed -n 's/.*:\([0-9]\{1,5\}\)$/\1/p' \
+        | awk '$1 >= 20000 && $1 <= 29999' | sort -un | tr '\n' ' ' )
+    printf "  占用端口: %s\n" "${ports:-（无）}" >&2
 
     m_sync_reload
 }
@@ -897,25 +950,40 @@ main_menu() {
     local c
     while true; do
         print_title "Mihomo 服务端面板"
-        status_block
         echo >&2
-        ui_menu 1  "添加节点"
-        ui_menu 2  "管理节点"
-        ui_menu 3  "安装 / 内核管理 (版本/更新/脚本)"
-        ui_menu 4  "防火墙 (放行/孤儿清理/SSH 保护)"
+        # ── 每项内联子项说明 ──
+        #
+        # 例 "1. 安装 / 内核 (初始化/安装/更新/版本/卸载/脚本更新)"。
+        # 进菜单前就知道里面有什么, 不用靠记忆或试错。
+        #
+        # 原来我们 15 项里只有 4 项有说明。
+        ui_menu  1 "添加节点 (单协议 · 或全协议一键生成)"
+        ui_menu  2 "管理节点 (查看/删除/改端口)"
+        ui_menu  3 "安装 / 内核管理 (版本/更新/脚本)"
+        ui_menu  4 "防火墙 (放行/孤儿清理/SSH 保护)"
+        ui_menu  5 "CDN 回源 (Nginx 自动插入/证书/残留检查)"
         ui_rule
-        ui_menu 5  "生成分享链接"
-        ui_menu 6  "拉取节点"
-        ui_menu 7  "更新配置"
-        ui_menu 8  "服务管理"
-        ui_menu 9  "查看当前节点"
-        ui_menu 10 "查看已拉取订阅"
-        ui_menu 11 "查看日志"
-        ui_menu 12 "查看节点分享内容"
-        ui_menu 13 "系统信息"
-        ui_menu 14 "卸载服务端"
-        ui_menu 15 "切换到客户端面板 (装/进另一端)"
-        ui_menu 0  "退出"
+        ui_menu  6 "生成分享链接 (单节点/全部)"
+        ui_menu  7 "拉取节点 (从订阅导入)"
+        ui_menu  8 "校验配置 + 重载 (合并/字段/内核三道关)"
+        ui_menu  9 "服务管理 (启动/停止/重启)"
+        ui_menu 10 "查看当前节点"
+        ui_menu 11 "查看已拉取订阅"
+        ui_menu 12 "查看日志"
+        ui_menu 13 "查看节点分享内容"
+        ui_menu 14 "系统信息 (端口/IP/资源)"
+        ui_menu 15 "卸载服务端"
+        ui_menu 16 "切换到客户端面板 (装/进另一端)"
+        ui_menu  0 "退出"
+        echo >&2
+        ui_rule
+        # ── 状态放菜单**下方**, 紧贴提示符 ──
+        #
+        # 原来 status_block 在菜单上方。SB 把它放在菜单之后、提示符之前,
+        # 于是视线顺序是「菜单 → 状态 → 提示符」, 敲数字前最后一眼看的是
+        # 状态 —— 服务在不在、几个节点, 每次进菜单都过一遍眼, 不用特意去
+        # 看"系统信息"。
+        status_block
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
         read -r c || { printf '\n' >&2; print_info "非交互环境 (stdin 已关闭), 已退出"; break; }
@@ -925,17 +993,18 @@ main_menu() {
             2)  manage_node ;;
             3)  core_menu "$SRV_ROOT" "$SRV_SERVICE" ;;
             4)  fw_menu ;;
-            5)  install_share ;;
-            6)  pull_node ;;
-            7)  update_config ;;
-            8)  svc_menu ;;
-            9)  list_nodes ;;
-            10) list_imported ;;
-            11) log_menu ;;
-            12) show_client_files ;;
-            13) sys_info ;;
-            14) uninstall_service ;;
-            15) switch_side "$SRV_ROOT" ;;
+            5)  cdn_menu ;;
+            6)  install_share ;;
+            7)  pull_node ;;
+            8)  update_config ;;
+            9)  svc_menu ;;
+            10) list_nodes ;;
+            11) list_imported ;;
+            12) log_menu ;;
+            13) show_client_files ;;
+            14) sys_info ;;
+            15) uninstall_service ;;
+            16) switch_side "$SRV_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac
