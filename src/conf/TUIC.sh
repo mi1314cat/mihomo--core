@@ -17,7 +17,18 @@ set -o pipefail
 # 基础路径
 # ================================
 PROTO="tuicv5"
-BASE_DIR="/root/catmi/mihomo"
+# 根目录解析。原来这里是裸的 BASE_DIR="/root/catmi/mihomo" (硬编码生产路径),
+# 后面又用 SRV_ROOT="$BASE_DIR" 盖回去 —— 面板装在别处时会读写错目录, 测试时
+# 只传 SRV_ROOT 也无效 (会被改回真实路径)。语义与 server.sh 对齐。
+if [[ -z "${BASE_DIR:-}" ]]; then
+    if [[ -n "${SRV_ROOT:-}" ]]; then
+        BASE_DIR="$SRV_ROOT"
+    else
+        _bd="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
+        if [[ -n "$_bd" && -d "$_bd/src/lib" ]]; then BASE_DIR="$_bd"; else BASE_DIR="/root/catmi/mihomo"; fi
+        unset _bd
+    fi
+fi
 
 CONF_ROOT="$BASE_DIR/conf"
 CONF_DIR="$CONF_ROOT/config.d"
@@ -414,9 +425,10 @@ delete_config() {
         # 没有 CDN 绑定的节点这里直接返回 0, 不会有副作用。
         cdn_node_unregister "$(basename "$IN_FILE" .yaml)" 2>/dev/null || true
 
-        rm -f "$CONF_DIR/${PROTO}-$num.yaml" \
-              "$OUT_DIR/${PROTO}_client-$num.yaml" \
-              "$OUT_DIR/${PROTO}_share-$num.txt"
+        rm -f "$CONF_DIR/${PROTO}-$num.yaml"
+        # 产物有两套命名 (单协议 / 批量 all.sh), 两套都要删, 否则批量生成的
+        # 节点会留下孤儿产物 —— 它照样被 build_sub.py 收进订阅。
+        m_out_rm_artifacts "$PROTO" "$num" >/dev/null
 
         # 记下"这次删掉的是哪个协议桶", 供菜单项在**重载成功之后**吊销分享链接。
         # 不能在这里直接吊销: 重载失败会回滚, 那时节点还在, 链接却已经废了

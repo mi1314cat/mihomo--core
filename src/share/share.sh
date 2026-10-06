@@ -327,13 +327,24 @@ share_pick() {
 # 记录还在, 需要时可以再启用。这与分享服务端的约定一致
 # (share_server.py: "200 订阅 / 404 不存在 / 410 失效 / 503 暂不可用")。
 #
-# ★ 粒度提醒: 分享 tag 是**协议桶** (out/<proto>_client-NN.yaml → tag=<proto>),
-#   不是单节点。所以删一个 trojan 节点会把所有 tag=trojan 的链接一起吊销 ——
-#   这是当前数据模型的必然结果, 必须显式告知用户, 不能让他以为只吊销了一个。
+# ★ 匹配规则 (mode):
+#     prefix (默认) —— tag 相同, **或以 "<tag>_" 开头**
+#     exact        —— tag 完全相同
+#
+#   默认必须是 prefix, 因为产物命名有**两套**:
+#     单协议菜单  → out/<proto>_client-NN.yaml
+#     批量 all.sh → out/<mproto>_<proto>_client-NN.yaml
+#                   (前缀是为避免同协议多变体互相覆盖, all.sh 里有注释说明)
+#   而 build_sub.py 的 CLIENT_RE 取的是 "_client-" 之前的**全部**内容:
+#     CLIENT_RE = r"^(?P<proto>.+?)_client-(?P<num>\d+)\.yaml$"
+#   于是同一个 trojan 节点, 走单协议得到 tag=`trojan`,
+#   走批量得到 tag=`trojan_trojan` / `trojan_trojan-grpc` / `trojan_trojan-tls`。
+#   只按 exact 匹配的话, 批量生成的节点吊销会**静默失效** —— 面板报成功,
+#   链接照旧能拉。实测过: 传 `trojan` 时 tag=`trojan_trojan` 的那条纹丝不动。
 #
 # 结果写进全局 _SHARE_REVOKED_N, 供调用方决定要不要提示。
 share_revoke_by_tag() {
-    local tag="${1:-}"
+    local tag="${1:-}" mode="${2:-prefix}"
     _SHARE_REVOKED_N=0
     [[ -n "$tag" ]] || return 0
     [[ -d "${SHARES:-}" ]] || return 0
@@ -341,14 +352,18 @@ share_revoke_by_tag() {
     for f in "$SHARES"/*.json; do
         [[ -f "$f" ]] || continue
         # python 的输出要自己收, 不能裸跑 (裸跑时 stdout 混进面板流)
-        out=$(python3 - "$f" "$tag" <<'PY' 2>/dev/null
+        out=$(python3 - "$f" "$tag" "$mode" <<'PY' 2>/dev/null
 import json, sys, time
-p, tag = sys.argv[1], sys.argv[2]
+p, tag, mode = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     m = json.load(open(p, encoding="utf-8"))
 except Exception:
     raise SystemExit(0)
-if m.get("tag") != tag:
+have = m.get("tag")
+if not isinstance(have, str):
+    raise SystemExit(0)
+ok = (have == tag) if mode == "exact" else (have == tag or have.startswith(tag + "_"))
+if not ok:
     raise SystemExit(0)
 if not m.get("enabled", True):
     raise SystemExit(0)

@@ -1735,7 +1735,9 @@ printf '\n'
 #                        proto           标签                 reality tls  管理协议  生成器
 # vmess / ss / snell 仍没有对应的单协议面板, 只能在这里生成、也删不掉 ——
 # 想删请用「面板 5) 更新配置」或直接删 conf/config.d 下的文件。
-# REALITY 组: 一律 tcp/grpc/h2, **绝不排 ws** (实测 REALITY+ws 全 0/5, 见 K-1)
+# REALITY 组: 一律 tcp/grpc/xhttp, **绝不排 ws** (实测 REALITY+ws 全 0/5, 见 K-1)
+# (这条注释原来写的是 "tcp/grpc/h2" —— trojan-h2 生成器删除时漏改, 已订正。
+#  本组现在只有 tcp / grpc / xhttp 三种传输, 没有任何 h2。)
 gen reality        "VLESS+Reality"         1 0 reality   g_reality
 gen reality-grpc   "VLESS+gRPC+Reality"    1 0 reality   g_vless_grpc_reality
 gen reality-xhttp  "VLESS+xHTTP+Reality"   1 0 reality   g_vless_xhttp_reality

@@ -997,6 +997,37 @@ _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=/dev/null
 [[ -f "$_m_libdir/dns.sh" ]]    && source "$_m_libdir/dns.sh"
 
+# 删除某个节点的客户端产物 —— 删节点路径共用。
+#
+# ★ 产物命名有**两套**, 删除必须都覆盖:
+#     单协议菜单  → out/<proto>_client-NN.yaml
+#     批量 all.sh → out/<mproto>_<proto>_client-NN.yaml
+#   (前缀不是冗余: all.sh 的 vless 有 vless / vless-ws / xhttp 多个变体,
+#    都叫 vless_client-01.yaml 时后者会覆盖前者, 分享订阅就少一个节点 ——
+#    all.sh 里留了这条注释。)
+#   删除路径原来只删第一套, 于是**批量生成的节点被删掉后, out/ 里留下一份
+#   孤儿产物**, 而它照样被 build_sub.py 收集进订阅 —— 分享出去的链接里
+#   继续有这个"已经删掉的"节点。实测: 删 config.d/trojan-01.yaml 时,
+#   out/trojan_trojan_client-01.yaml 纹丝不动。
+#
+# 返回实际删掉的文件数 (供调用方提示)。
+m_out_rm_artifacts() { # <proto> <两位编号>
+    local proto="${1:-}" idx="${2:-}" f n=0
+    [[ -n "$proto" && -n "$idx" ]] || { printf '0'; return 0; }
+    for f in "$SRV_OUT/${proto}_client-${idx}.yaml" \
+             "$SRV_OUT/${proto}_share-${idx}.txt" \
+             "$SRV_OUT/${proto}_"*"_client-${idx}.yaml" \
+             "$SRV_OUT/${proto}_"*"_share-${idx}.txt"; do
+        [[ -f "$f" ]] || continue
+        rm -f "$f" 2>/dev/null
+        # 回读确认: 没删掉就不计数 (也顺便让重叠的 glob 不会重复计数)
+        [[ -f "$f" ]] && continue
+        n=$((n + 1))
+    done
+    printf '%s' "$n"
+    return 0
+}
+
 # =============================================================
 # 分享 (share.sh)
 #

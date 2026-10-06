@@ -351,6 +351,11 @@ fw_menu() {
         ui_menu 1 "清理孤儿规则 (本面板留下但已无用的)"
         ui_menu 2 "手动关闭一个端口"
         ui_menu 3 "查看 SSH 端口 (关端口前务必确认)"
+        # 补放行所有节点端口。fw_sync_all_nodes 早就写好了, 但**一直没有菜单入口**
+        # —— 只能从代码里调, 等于不存在。它的实际用途: 手工清过 iptables / 换过
+        # 防火墙后端 / 从别处恢复了 conf/config.d 之后, 把当前所有节点端口一次性
+        # 登记回来, 不用逐个节点重跑。
+        ui_menu 4 "补放行全部节点端口 (规则丢失后重建)"
         ui_menu 0 "返回"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -377,6 +382,12 @@ fw_menu() {
                 for p in $sp; do
                     fw_port_is_ssh "$p" && ui_kv_ascii "$p" "sshd"
                 done
+                ;;
+            4)
+                print_info "将扫描 conf/config.d/ 下所有节点, 把还没登记的端口补放行"
+                printf "  ${CYAN}继续? (y/N)${RESET}: " >&2
+                local b; read -r b
+                [[ "$b" =~ ^[yY]$ ]] && fw_sync_all_nodes || print_info "已取消"
                 ;;
             0|q|Q) return 0 ;;
             *) ui_invalid "$c" ;;
