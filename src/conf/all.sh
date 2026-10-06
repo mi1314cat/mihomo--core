@@ -54,9 +54,9 @@ valid_fp() {
     return 1
 }
 if ! valid_fp "$CLIENT_FP"; then
-    err "不支持的 client-fingerprint: $CLIENT_FP"
-    err "可用: $M_FP_VALUES"
-    err "(内核对未知值只会静默降级为原生 TLS, 所以在这里直接拒绝)"
+    print_error "不支持的 client-fingerprint: $CLIENT_FP"
+    print_error "可用: $M_FP_VALUES"
+    print_error "(内核对未知值只会静默降级为原生 TLS, 所以在这里直接拒绝)"
     exit 1
 fi
 
@@ -78,7 +78,7 @@ XHTTP_PAD="${XHTTP_PAD:-std}"
 XHTTP_PAD_HEADER="X-Pad"; XHTTP_PAD_METHOD="tokenish"
 case "$XHTTP_MODE" in
     auto|stream-one|stream-up|packet-up) ;;
-    *) err "XHTTP_MODE 非法: $XHTTP_MODE (auto / stream-one / stream-up / packet-up)"; exit 1 ;;
+    *) print_error "XHTTP_MODE 非法: $XHTTP_MODE (auto / stream-one / stream-up / packet-up)"; exit 1 ;;
 esac
 XHTTP_PAD_BYTES="100-1000"; XHTTP_PAD_OBFS=0
 XHTTP_PAD_PLACEMENT="query"
@@ -86,17 +86,17 @@ case "$XHTTP_PAD" in
     std) ;;
     strong) XHTTP_PAD_OBFS=1; XHTTP_PAD_BYTES="256-4096" ;;
     max)    XHTTP_PAD_OBFS=1; XHTTP_PAD_BYTES="512-8192"; XHTTP_PAD_PLACEMENT="header" ;;
-    *) err "XHTTP_PAD 非法: $XHTTP_PAD (std / strong / max)"; exit 1 ;;
+    *) print_error "XHTTP_PAD 非法: $XHTTP_PAD (std / strong / max)"; exit 1 ;;
 esac
 # strong/max 档的 x-padding-key 是每个节点现场随机生成的 (见 render_xhttp_pad),
 # 所以这里只提前确认 openssl 在, 免得跑到一半才发现没工具
 if [[ "$XHTTP_PAD_OBFS" == "1" ]] && ! command -v openssl >/dev/null 2>&1; then
-    err "XHTTP_PAD=$XHTTP_PAD 需要 openssl 生成 x-padding-key, 当前环境找不到"; exit 1
+    print_error "XHTTP_PAD=$XHTTP_PAD 需要 openssl 生成 x-padding-key, 当前环境找不到"; exit 1
 fi
 
 # VMess 客户端 padding 开关 (proxy-only, 见 g_vmess_ws 注释)
 VMESS_PAD="${VMESS_PAD:-1}"
-case "$VMESS_PAD" in 0|1) ;; *) err "VMESS_PAD 只能是 0 或 1"; exit 1 ;; esac
+case "$VMESS_PAD" in 0|1) ;; *) print_error "VMESS_PAD 只能是 0 或 1"; exit 1 ;; esac
 
 # =============================================================
 # 端口分配: 从 20000 起找一个没被占用的
@@ -262,33 +262,33 @@ count_indexed() {
 # 前置: 环境变量 / Reality 密钥 / 证书
 # =============================================================
 ensure_env() {
-    [[ -x "$MIHOMO_BIN" ]] || { err "未找到 mihomo 内核: $MIHOMO_BIN"; exit 1; }
+    [[ -x "$MIHOMO_BIN" ]] || { print_error "未找到 mihomo 内核: $MIHOMO_BIN"; exit 1; }
     if [[ ! -f "$SRV_ENV" ]] || ! m_load_env "$SRV_ENV"; then
-        info "首次运行, 生成环境变量..."
+        print_info "首次运行, 生成环境变量..."
         bash "$SELF_DIR/XRevise.sh" >/dev/null 2>&1 || {
-            err "环境变量生成失败"; exit 1; }
+            print_error "环境变量生成失败"; exit 1; }
     fi
     m_load_env "$SRV_ENV"
-    [[ -n "${UUID:-}" ]] || { err "缺少 UUID"; exit 1; }
+    [[ -n "${UUID:-}" ]] || { print_error "缺少 UUID"; exit 1; }
 }
 
 ensure_reality() {
     if [[ -n "${PRIVATE_KEY:-}" && -n "${PUBLIC_KEY:-}" ]]; then
-        info "复用已有 Reality 密钥"; return 0
+        print_info "复用已有 Reality 密钥"; return 0
     fi
-    info "生成 Reality 密钥对..."
+    print_info "生成 Reality 密钥对..."
     local out priv pub sid
-    out=$("$MIHOMO_BIN" generate reality-keypair 2>/dev/null) || { err "密钥生成失败"; return 1; }
+    out=$("$MIHOMO_BIN" generate reality-keypair 2>/dev/null) || { print_error "密钥生成失败"; return 1; }
     priv=$(grep -i "private" <<<"$out" | head -1 | tr -d ' \r' | cut -d: -f2)
     pub=$(grep -i "public"  <<<"$out" | head -1 | tr -d ' \r' | cut -d: -f2)
     sid=$(grep -i "short"   <<<"$out" | head -1 | tr -d ' \r' | cut -d: -f2)
-    [[ -n "$priv" && -n "$pub" ]] || { err "无法解析密钥"; return 1; }
+    [[ -n "$priv" && -n "$pub" ]] || { print_error "无法解析密钥"; return 1; }
     [[ -n "$sid" ]] || sid=$(openssl rand -hex 4)
     m_set_env "$SRV_ENV" PRIVATE_KEY "$priv"
     m_set_env "$SRV_ENV" PUBLIC_KEY  "$pub"
     m_set_env "$SRV_ENV" SHORT_ID    "$sid"
     PRIVATE_KEY="$priv"; PUBLIC_KEY="$pub"; SHORT_ID="$sid"
-    ok "Reality 密钥已生成并保存"
+    print_ok "Reality 密钥已生成并保存"
 }
 
 # 证书目录里的命名相当杂:
@@ -354,7 +354,7 @@ record() {  # record <协议> <端口> <状态> <说明>
     RESULTS+=("$1|$2|$3|$4")
 }
 
-ALL_GEN_IDS="reality trojan trojan-tls vless vless-ws xhttp xhttp-tls vmess hysteria2 tuicv5 anytls ss snell"
+ALL_GEN_IDS="reality reality-grpc reality-xhttp trojan trojan-grpc trojan-h2 vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
 
 # --only 的 token 必须能对上真实标识符。原来的 want() 对不匹配的 token 静默
 # 返回 false, 于是 `--only tuic` (真名 tuicv5) 会安静地什么都不生成,
@@ -368,8 +368,8 @@ check_only_tokens() {
     done
     unset IFS
     if (( ${#miss[@]} )); then
-        err "无法识别的协议标识: ${miss[*]}"
-        err "可用: $ALL_GEN_IDS"
+        print_error "无法识别的协议标识: ${miss[*]}"
+        print_error "可用: $ALL_GEN_IDS"
         return 1
     fi
 }
@@ -399,11 +399,23 @@ gen() {
     local body="$*"          # 实际生成 listener 的函数名 + 参数
 
     if ! want "$proto"; then return; fi
-    if [[ "$need_tls" == "1" && "$USE_TLS" == "0" ]]; then
+    # need_tls 语义: 0=不需要证书, 1=有证书即可, 2=必须是**真证书**
+    # 档位 2 是给 CDN 用的: 自签证书在直连场景客户端 skip-cert-verify 就行,
+    # 但过 CDN 时是 Cloudflare 去回源校验, 它不认自签 CA, 回源必然失败。
+    # 症状是"CDN 侧全绿、客户端就是连不上", 极难排查 —— 所以在这里就拦住。
+    # 注意: 判定必须放在外壳的**前置检查**里。gen 只有 成功(0)/失败(非0) 两种
+    # 返回码, 没有"跳过"通道; 在生成器内部 return 0 会被记成成功, 留下一条
+    # 内容缺失却显示通过的记录 (这个坑实际踩到过)。
+    if [[ "$need_tls" != "0" && "$USE_TLS" == "0" ]]; then
         record "$label" "-" "跳过" "需要证书 (--no-tls)"; return
     fi
-    if [[ "$need_tls" == "1" && -z "$CRT" ]]; then
+    if [[ "$need_tls" != "0" && -z "$CRT" ]]; then
         record "$label" "-" "跳过" "无可用证书"; return
+    fi
+    if [[ "$need_tls" == "2" ]] && ! cert_is_trusted "$CRT"; then
+        record "$label" "-" "跳过" \
+            "需要真证书: $(basename "$CRT") 是自签/自签发, Cloudflare 回源不认"
+        return
     fi
     if [[ "$need_reality" == "1" && -z "${PUBLIC_KEY:-}" ]]; then
         record "$label" "-" "跳过" "无 Reality 密钥"; return
@@ -418,7 +430,7 @@ gen() {
     # 互不冲突, 且都能被 VLESS.sh 列出和删除。
     local n_exist; n_exist=$(count_indexed "$mproto")
     if [[ "$n_exist" != "0" ]]; then
-        info "$label: 已有 $n_exist 个 $mproto 节点, 本次**追加**新序号 (不覆盖已有配置)"
+        print_info "$label: 已有 $n_exist 个 $mproto 节点, 本次**追加**新序号 (不覆盖已有配置)"
     fi
 
     local idx port
@@ -481,7 +493,7 @@ render_xhttp_pad() {
         if [[ -z "$k" ]]; then
             # 拿不到 key 就退回 std 档 —— 半份配置带空 key 比不带更糟。
             # 两侧共用同一份渲染结果, 所以退回后依然是一致的。
-            warn "生成 x-padding-key 失败, 本节点退回 std 档 (无 obfs padding)"
+            print_warn "生成 x-padding-key 失败, 本节点退回 std 档 (无 obfs padding)"
             return 0
         fi
         XHTTP_PAD_FIELDS="${XHTTP_PAD_FIELDS}
@@ -500,6 +512,332 @@ render_xhttp_pad() {
       seq-key: $qk"
         fi
     fi
+}
+
+# 供生成器里的 heredoc 调用: 展开 REALITY 服务端块 (带正确的 6 空格缩进)
+_m_reality_block() { # <dest> <私钥> <short-id>
+    printf '    reality-config:\n      dest: %s:443\n      private-key: %s\n      short-id:\n        - %s\n      server-names:\n        - %s' \
+        "$1" "$2" "$3" "$1"
+}
+
+# =============================================================
+# 补齐的生成器 —— 把「已验证可用」的组合补进一键全协议
+#
+# 每个组合都经过真实内核实测 (见 docs/private/M-KERNEL-ISSUES.md 的矩阵),
+# 并标出它为什么这么写。三条来自实测的硬约束:
+#
+#   ① REALITY 预置绝不排 ws —— vless/vmess/trojan 的 REALITY+ws 实测全 0/5,
+#      而 tcp/grpc/h2 都通过, 且对照组通过 (不是环境问题)。见 K-1。
+#   ② 客户端 REALITY 的 SNI 字段名按协议不同:
+#        vless / vmess -> servername
+#        trojan        -> sni         ← 写错会静默退回普通 TLS 校验,
+#                                       报出 x509 证书错误 (K-8)
+#   ③ flow 只能写在 users[] 条目下, 不能写 listener 顶层 (K-9)。
+# =============================================================
+
+# gRPC 服务名: 两侧必须逐字符一致, 所以一个节点只生成一次。
+# 加随机后缀是为了避免所有节点共用同一个服务名 —— 那是个可关联特征。
+# 随机路径: 长度够 + 不可猜。短路径/固定路径正是被扫的特征。
+m_gen_path() { # <前缀>
+    local pre="${1:-p}" rnd
+    rnd=$(openssl rand -hex 4 2>/dev/null) || rnd="00000000"
+    printf '/%s-%s' "$pre" "$rnd"
+}
+
+m_gen_grpc_name() { # <前缀> <序号>
+    local pre="${1:-gs}" idx="${2:-1}" rnd
+    rnd=$(openssl rand -hex 3 2>/dev/null) || rnd="000000"
+    printf '%s%s%s' "$pre" "$idx" "$rnd"
+}
+
+# ---------- VLESS + gRPC + REALITY (直连) ----------
+# 实测 5/5。gRPC 跑在 HTTP/2 上, 形状像正常应用调用。
+g_vless_grpc_reality() {
+    local svc; svc=$(m_gen_grpc_name gs "$1")
+    NODE_TAG="$(m_node_tag VLESS "$1" reality gRPC)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VLESS + gRPC + REALITY (直连)
+# 实测可用。listener 侧只有 grpc-service-name, 没有 network 字段。
+listeners:
+  - name: $NODE_TAG
+    type: vless
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+    grpc-service-name: $svc
+$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
+EOF
+    NODE_TAG="$(m_node_tag VLESS "$1" reality gRPC)"
+    cat > "$4" <<EOF
+proxies:
+  - name: $NODE_TAG
+    type: vless
+    server: $PUBLIC_IP
+    port: $2
+    uuid: $UUID
+    network: grpc
+    tls: true
+    udp: true
+    servername: $dest_server
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+    client-fingerprint: $CLIENT_FP
+    grpc-opts:
+      grpc-service-name: $svc
+EOF
+}
+
+# ---------- VLESS + xHTTP + REALITY (直连, M 内核独有) ----------
+# 实测 5/5。xHTTP 伪装成普通 HTTP 接口调用。
+g_vless_xhttp_reality() {
+    local path; path=$(m_check_ws_path "$(m_gen_path xhr)") || return 1
+    render_xhttp_pad
+    NODE_TAG="$(m_node_tag VLESS "$1" reality XHTTP)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VLESS + xHTTP + REALITY (直连)
+# 实测可用。listener 侧靠 xhttp-config 非空判定传输, 无 network 字段。
+listeners:
+  - name: $NODE_TAG
+    type: vless
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+    xhttp-config:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
+EOF
+    NODE_TAG="$(m_node_tag VLESS "$1" reality XHTTP)"
+    cat > "$4" <<EOF
+proxies:
+  - name: $NODE_TAG
+    type: vless
+    server: $PUBLIC_IP
+    port: $2
+    uuid: $UUID
+    network: xhttp
+    tls: true
+    udp: true
+    servername: $dest_server
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+    client-fingerprint: $CLIENT_FP
+    xhttp-opts:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+EOF
+}
+
+# ---------- VLESS + xHTTP + TLS 过 CDN ----------
+# 与上面「直连」版的区别: 客户端连的是 **Cloudflare 后面的域名**而不是源站 IP。
+# 直连版靠 REALITY 免证书; 本版必须用**真证书** ——
+# 自签证书会被 Cloudflare 回源校验拒绝 (CF 不认你的自签 CA)。
+g_vless_xhttp_cdn() {
+    [[ -n "$CRT" && -n "$KEY" && -n "$SNI" ]] || {
+        record "VLESS+xHTTP+CDN" "-" "跳过" "需要证书 (--no-tls 或证书缺失)"
+        return 0
+    }
+    local path; path=$(m_check_ws_path "$(m_gen_path xhc)") || return 1
+    render_xhttp_pad
+    NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP CDN)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VLESS + xHTTP + TLS (过 Cloudflare CDN)
+# 这是**源站**: 由 Cloudflare 回源到它, 所以监听 0.0.0.0 且用真证书。
+# 建议在 Cloudflare 侧设置 Origin Rule 回源到本端口。
+listeners:
+  - name: $NODE_TAG
+    type: vless
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+    xhttp-config:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+    certificate: $CRT
+    private-key: $KEY
+EOF
+    NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP CDN)"
+    cat > "$4" <<EOF
+# ★ 这是**客户端**产物, 它连的是 CDN 边缘 (443), 不是你的源站。
+#   你的源站监听在端口 $2 —— 必须去 CDN 后台把回源指向 本机IP:$2,
+#   并把该域名的 DNS 记录改成走 CDN (橙云)。这一步做漏了, 节点必然连不上,
+#   而客户端这边看不出任何异常。源站端口写在这里就是为了让它有据可查。
+proxies:
+  - name: $NODE_TAG
+    type: vless
+    server: $SNI
+    port: 443
+    uuid: $UUID
+    network: xhttp
+    tls: true
+    udp: true
+    servername: $SNI
+    client-fingerprint: $CLIENT_FP
+    xhttp-opts:
+      mode: $XHTTP_MODE
+      path: $path
+${XHTTP_PAD_FIELDS}
+EOF
+}
+
+# ---------- Trojan + gRPC + REALITY (直连) ----------
+g_trojan_grpc_reality() {
+    local svc; svc=$(m_gen_grpc_name tg "$1")
+    NODE_TAG="$(m_node_tag Trojan "$1" reality gRPC)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · Trojan + gRPC + REALITY (直连)
+listeners:
+  - name: $NODE_TAG
+    type: trojan
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - password: $UUID
+    grpc-service-name: $svc
+$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
+EOF
+    NODE_TAG="$(m_node_tag Trojan "$1" reality gRPC)"
+    cat > "$4" <<EOF
+proxies:
+  - name: $NODE_TAG
+    type: trojan
+    server: $PUBLIC_IP
+    port: $2
+    password: $UUID
+    udp: true
+    # ★ trojan 用 sni, 不是 servername —— 写成 servername 会**静默退回普通
+    #   TLS 校验**, 然后报一个和 REALITY 毫无关系的 x509 证书错误 (K-8)。
+    sni: $dest_server
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+    client-fingerprint: $CLIENT_FP
+    network: grpc
+    grpc-opts:
+      grpc-service-name: $svc
+EOF
+}
+
+# ---------- Trojan + HTTP/2 + REALITY (直连) ----------
+# 注: trojan 的 listener **支持** h2 (与 vless 不同 —— vless 结构性没有 h2)。
+# 实测 trojan+h2+TLS 5/5。
+g_trojan_h2_reality() {
+    local path; path=$(m_check_ws_path "$(m_gen_path trojan-h2)") || return 1
+    NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · Trojan + HTTP/2 + REALITY (直连)
+listeners:
+  - name: $NODE_TAG
+    type: trojan
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - password: $UUID
+    h2-path: $path
+$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
+EOF
+    NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
+    cat > "$4" <<EOF
+proxies:
+  - name: $NODE_TAG
+    type: trojan
+    server: $PUBLIC_IP
+    port: $2
+    password: $UUID
+    udp: true
+    sni: $dest_server
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+    client-fingerprint: $CLIENT_FP
+    network: h2
+    h2-opts:
+      path: $path
+EOF
+}
+
+# ---------- VMess + 裸 TCP + REALITY (直连) ----------
+g_vmess_reality() {
+    NODE_TAG="$(m_node_tag VMess "$1" reality)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VMess + TCP + REALITY (直连)
+listeners:
+  - name: $NODE_TAG
+    type: vmess
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+        alterId: 0
+$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
+EOF
+    NODE_TAG="$(m_node_tag VMess "$1" reality)"
+    cat > "$4" <<EOF
+proxies:
+  - name: $NODE_TAG
+    type: vmess
+    server: $PUBLIC_IP
+    port: $2
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: tcp
+    tls: true
+    udp: true
+    servername: $dest_server
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+    client-fingerprint: $CLIENT_FP
+EOF
+}
+
+# ---------- VMess + gRPC + REALITY (直连) ----------
+g_vmess_grpc_reality() {
+    local svc; svc=$(m_gen_grpc_name vg "$1")
+    NODE_TAG="$(m_node_tag VMess "$1" reality gRPC)"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VMess + gRPC + REALITY (直连)
+listeners:
+  - name: $NODE_TAG
+    type: vmess
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+        alterId: 0
+    grpc-service-name: $svc
+$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
+EOF
+    NODE_TAG="$(m_node_tag VMess "$1" reality gRPC)"
+    cat > "$4" <<EOF
+proxies:
+  - name: $NODE_TAG
+    type: vmess
+    server: $PUBLIC_IP
+    port: $2
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: grpc
+    tls: true
+    udp: true
+    servername: $dest_server
+    reality-opts:
+      public-key: $PUBLIC_KEY
+      short-id: $SHORT_ID
+    client-fingerprint: $CLIENT_FP
+    grpc-opts:
+      grpc-service-name: $svc
+EOF
 }
 
 g_reality() {
@@ -699,7 +1037,7 @@ EOF
 # =============================================================
 g_vless_xhttp() {
     # 路径过短容易被扫到, 借 env.sh 的共享校验过一道 (>=8 字符, 见 M_MIN_WS_PATH_LEN)
-    local path; path=$(m_check_ws_path "/xhttp$1") || return 1
+    local path; path=$(m_check_ws_path "$(m_gen_path xhttp)") || return 1
     render_xhttp_pad
 NODE_TAG="$(m_node_tag VLESS "$1" plain XHTTP)"
     cat > "$3" <<EOF
@@ -727,7 +1065,7 @@ NODE_TAG="$(m_node_tag VLESS "$1" plain XHTTP)"
 proxies:
   - name: $NODE_TAG
     type: vless
-    server: $XHTTP_CLIENT_HOST
+    server: $XHTTP_DIRECT_HOST
     port: $2
     uuid: $UUID
     network: xhttp
@@ -742,7 +1080,7 @@ EOF
 }
 
 g_vless_xhttp_tls() {
-    local path; path=$(m_check_ws_path "/xhttps$1") || return 1
+    local path; path=$(m_check_ws_path "$(m_gen_path xhttps)") || return 1
     render_xhttp_pad
 NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP)"
     cat > "$3" <<EOF
@@ -767,7 +1105,7 @@ NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP)"
 proxies:
   - name: $NODE_TAG
     type: vless
-    server: $XHTTP_CLIENT_HOST
+    server: $XHTTP_DIRECT_HOST
     port: $2
     uuid: $UUID
     network: xhttp
@@ -1017,7 +1355,15 @@ check_only_tokens || exit 1
 ensure_env
 ensure_reality
 m_pick_dest "${dest_server:-}" >/dev/null 2>&1 || true
-[[ -n "${dest_server:-}" ]] || dest_server="www.bing.com"
+# 兜底值取**实测可用**的域名。老代码这里写的是 www.bing.com, 而实测它在
+# REALITY 下必然 authentication failed (普通 TLS 却是通的) —— 也就是说,
+# 不手动选 dest 的用户 100% 拿到一个连不上、却显示成功的 REALITY 节点。
+[[ -n "${dest_server:-}" ]] || dest_server="www.microsoft.com"
+
+# 批量生成前对 dest 做一次防呆。批量的特点是"一次生成一堆", 一旦 dest 是坏的,
+# 同批所有 REALITY 变体 (本脚本有 8 个) 会**整批**失败, 而且失败得很安静。
+# M_REALITY_SKIP_PROBE=1 可跳过 (给确定 dest 可用的自动化场景省 5 秒)。
+m_reality_dest_check "${dest_server:-}" 2>/dev/null || true
 
 CRT=""; KEY=""; SNI=""
 if [[ "$USE_TLS" == "1" ]]; then
@@ -1027,13 +1373,13 @@ if [[ "$USE_TLS" == "1" ]]; then
         IFS=$'\t' read -r CRT KEY SNI <<<"$pair"
     fi
     [[ -n "$CRT" && -f "$CRT" && -n "$KEY" && -f "$KEY" ]] || { CRT=""; KEY=""; SNI=""; }
-    if [[ -n "$CRT" ]]; then ok "使用证书: $(basename "$CRT")  (sni=$SNI)"
-    else warn "未找到证书, 将跳过需要 TLS 的协议"; fi
+    if [[ -n "$CRT" ]]; then print_ok "使用证书: $(basename "$CRT")  (sni=$SNI)"
+    else print_warn "未找到证书, 将跳过需要 TLS 的协议"; fi
 fi
 
 PUBLIC_IP=$(m_server_ip)
-[[ -z "$PUBLIC_IP" ]] && { err "拿不到对外地址, 请先在 install_info.env 里设置 PUBLIC_IP"; exit 1; }
-info "对外地址: $PUBLIC_IP"
+[[ -z "$PUBLIC_IP" ]] && { print_error "拿不到对外地址, 请先在 install_info.env 里设置 PUBLIC_IP"; exit 1; }
+print_info "对外地址: $PUBLIC_IP"
 
 # m_client_host() 在证书域名不可用时回落 **$SERVER_IP** (src/lib/env.sh:126-133),
 # 而本脚本统一用的是 PUBLIC_IP —— 不先把 SERVER_IP 补上, 走到那个回落分支时
@@ -1042,9 +1388,13 @@ SERVER_IP="$PUBLIC_IP"
 # M_NO_DOMAIN / "cloudflare.com" 这类哨兵域名在这里会被 m_client_host 换成 IP;
 # 另外再兜一层"看起来不像域名"的判断, 防止证书文件名推出来的伪域名
 # (env.sh:113-123 记录过: 客户端连的是别人的站点、面板却全绿的假节点)。
+# 直连地址: 一律用本机 IP。不过 CDN 就别填域名 —— 域名是 CDN 场景才需要的,
+# 混用会让用户分不清产物到底走不走 CDN。
+XHTTP_DIRECT_HOST="${PUBLIC_IP:-127.0.0.1}"
+# CDN 场景的地址 (证书域名); 仅 xhttp-cdn 使用
 XHTTP_CLIENT_HOST=$(m_client_host "$SNI")
 [[ "$XHTTP_CLIENT_HOST" =~ ^[A-Za-z0-9._-]+\.[A-Za-z]{2,}$ ]] || XHTTP_CLIENT_HOST="$PUBLIC_IP"
-info "XHTTP 客户端地址: $XHTTP_CLIENT_HOST (xhttp 的 Host 头直接取自这里)"
+print_info "XHTTP 客户端地址: $XHTTP_CLIENT_HOST (xhttp 的 Host 头直接取自这里)"
 
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERTS_DIR"
 collect_used_ports
@@ -1079,14 +1429,24 @@ printf '\n'
 #                        proto           标签                 reality tls  管理协议  生成器
 # vmess / ss / snell 仍没有对应的单协议面板, 只能在这里生成、也删不掉 ——
 # 想删请用「面板 5) 更新配置」或直接删 conf/config.d 下的文件。
-gen reality        "VLESS+Reality"  1 0 reality   g_reality
-gen trojan         "Trojan+Reality" 1 0 trojan    g_trojan_reality
-gen trojan-tls     "Trojan+TLS"     0 1 trojan    g_trojan_tls
-gen vless          "VLESS+WS"       0 0 vless     g_vless_ws
-gen vless-ws       "VLESS+WS+TLS"   0 1 vless     g_vless_ws_tls
-gen xhttp          "VLESS+XHTTP"      0 0 vless  g_vless_xhttp
-gen xhttp-tls      "VLESS+XHTTP+TLS"  0 1 vless  g_vless_xhttp_tls
-gen vmess          "VMess+WS"       0 0 vmess     g_vmess_ws
+# REALITY 组: 一律 tcp/grpc/h2, **绝不排 ws** (实测 REALITY+ws 全 0/5, 见 K-1)
+gen reality        "VLESS+Reality"         1 0 reality   g_reality
+gen reality-grpc   "VLESS+gRPC+Reality"    1 0 reality   g_vless_grpc_reality
+gen reality-xhttp  "VLESS+xHTTP+Reality"   1 0 reality   g_vless_xhttp_reality
+gen trojan         "Trojan+Reality"        1 0 trojan    g_trojan_reality
+gen trojan-grpc    "Trojan+gRPC+Reality"   1 0 trojan    g_trojan_grpc_reality
+gen trojan-h2      "Trojan+H2+Reality"     1 0 trojan    g_trojan_h2_reality
+gen vmess-reality  "VMess+TCP+Reality"     1 0 vmess     g_vmess_reality
+gen vmess-grpc     "VMess+gRPC+Reality"    1 0 vmess     g_vmess_grpc_reality
+# 证书组
+gen trojan-tls     "Trojan+TLS"            0 1 trojan    g_trojan_tls
+gen vless-ws       "VLESS+WS+TLS"          0 1 vless     g_vless_ws_tls
+gen xhttp-tls      "VLESS+XHTTP+TLS"       0 1 vless     g_vless_xhttp_tls
+gen xhttp-cdn      "VLESS+XHTTP+CDN"       0 2 vless     g_vless_xhttp_cdn
+# 明文档 (无 TLS)
+gen vless          "VLESS+WS"              0 0 vless     g_vless_ws
+gen xhttp          "VLESS+XHTTP"           0 0 vless     g_vless_xhttp
+gen vmess          "VMess+WS"              0 0 vmess     g_vmess_ws
 gen hysteria2      "Hysteria2"      0 1 hysteria2 g_hysteria2
 gen tuicv5         "TUIC v5"        0 1 tuicv5    g_tuicv5
 gen anytls         "AnyTLS"         0 1 anytls    g_anytls

@@ -587,8 +587,11 @@ add_config() {
             if auto_domain=$(auto_website); then
                 REALITY_DEST="$auto_domain"
             else
-                print_error "域名优选失败, 使用默认 www.bing.com"
-                REALITY_DEST="www.bing.com"
+                print_error "域名优选失败, 使用默认 www.microsoft.com"
+                # 兜底值必须取**实测可用**的域名: 老代码兜底用 www.bing.com,
+                # 而实测它在 REALITY 下必然 authentication failed (普通 TLS 却是通的),
+                # 于是"优选失败"这个降级路径反而给用户一个连不上的节点。
+                REALITY_DEST="www.microsoft.com"
             fi
         fi
     else

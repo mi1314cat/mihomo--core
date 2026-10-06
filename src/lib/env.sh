@@ -458,12 +458,207 @@ m_safe_read_port() {
 # Reality 的 dest 只是"借一个 443 上跑 TLS1.3 的站点", 不需要你拥有它。
 # 本地内置一份常用清单, 并允许自定义 —— 不再强依赖外部 domains.sh。
 # =============================================================
+# ⚠️ 这份清单是**实测**出来的, 不是抄的。REALITY 借宿的站点必须与 REALITY
+#    的握手流程兼容 —— 光"能 TLS 握手 / 能 HTTP 200"完全不够, 很多站点普通
+#    TLS 全通但 REALITY 认证必失败 (客户端报 REALITY authentication failed,
+#    服务端一条日志都没有, 面板也是绿的)。
+#
+#    实测方法: 真实内核起 vless+reality listener, 用同一对密钥做客户端,
+#    经 mixed-port 打 generate_204。每项跑两次排除偶发。
+#    实测环境: 2026-10-06 <CLIENT_ALIAS> 节点。
+#
+#    实测**不可用**的三个 (全部两次都失败, 且普通 TLS 握手正常):
+#        www.bing.com        REALITY authentication failed   ← 曾是默认兜底值!
+#        oracle.com          REALITY authentication failed
+#        one.one.one.one     REALITY authentication failed
+#    教训: 兜底值绝不能拍脑袋写。老代码兜底用的正是 bing, 于是"不手动选
+#    dest"的用户 100% 拿到一个连不上、却显示成功的 REALITY 节点。
 REALITY_DESTS=(
-    "www.microsoft.com"  "www.bing.com"      "oracle.com"
-    "www.apple.com"      "www.cloudflare.com" "swdist.apple.com"
-    "www.lovelive-anime.jp" "dl.google.com"  "www.nvidia.com"
-    "one.one.one.one"    "www.tesla.com"
+    "www.microsoft.com"  "www.apple.com"      "www.cloudflare.com"
+    "swdist.apple.com"   "www.lovelive-anime.jp" "dl.google.com"
+    "www.nvidia.com"     "www.tesla.com"
 )
+
+# 实测坏名单: 仅用于提示, 不放进候选池。保留是为了在用户手动输入这些域名时
+# 能给出针对性警告 —— 直接说"这个域名实测不可用", 比让用户自己排查强得多。
+REALITY_DESTS_BAD=(
+    "www.bing.com"       "oracle.com"         "one.one.one.one"
+)
+
+# =============================================================
+# REALITY dest 实测探针 (防呆的核心)
+#
+# 为什么需要"实测"而不是查名单:
+#   名单会过期。站点换 CDN、上 HRR、改 ALPN 都会让原本可用的 dest 失效,
+#   而**失败方式极其隐蔽** —— 客户端报 REALITY authentication failed,
+#   服务端一条日志都没有, 面板全绿, 只有用户连不上。
+#   光探测"能不能 TLS 握手 / 能不能 HTTP 200"也没用: 实测 www.bing.com
+#   两项都正常, REALITY 却必失败。
+#
+# 做法: 用真实内核起一对临时的 vless+reality 服务端/客户端握手一次,
+#       经 mixed-port 打 generate_204。这是唯一能反映真实行为的方法。
+#
+# 开销: 每项约 4-5 秒。结果写入缓存, 同一域名只测一次。
+# =============================================================
+M_DEST_CACHE="${M_DEST_CACHE:-$SRV_ROOT/reality_dest_cache.tsv}"
+
+# 预置缓存: REALITY_DESTS 里这 8 个是 2026-10-06 实测可用的, 直接写进缓存。
+# 好处: 从名单里选 dest 是**秒过**的, 只有"手动输入新域名"才真跑一次探针。
+# 名单仍可能过期, 所以可用 M_REALITY_PROBE_FORCE=1 强制重测。
+m_reality_dest_cache_seed() {
+    [[ -f "$M_DEST_CACHE" ]] && return 0
+    mkdir -p "$(dirname "$M_DEST_CACHE")" 2>/dev/null || return 0
+    { local d
+      for d in "${REALITY_DESTS[@]}"; do printf '%s\tok\n' "$d"; done
+      for d in "${REALITY_DESTS_BAD[@]}"; do printf '%s\tbad\n' "$d"; done
+    } > "$M_DEST_CACHE" 2>/dev/null || true
+}
+
+# 读缓存: 命中回显 ok/bad, 未命中回显空
+m_reality_dest_cached() { # <域名>
+    local d="${1:-}"
+    m_reality_dest_cache_seed
+    [[ -f "$M_DEST_CACHE" ]] || return 0
+    awk -F'\t' -v k="$d" '$1==k{print $2; exit}' "$M_DEST_CACHE" 2>/dev/null
+}
+
+# 写缓存 (同域名只留一条)
+m_reality_dest_cache_put() { # <域名> <ok|bad>
+    local d="${1:-}" v="${2:-}" tmp
+    [[ -n "$d" && -n "$v" ]] || return 0
+    mkdir -p "$(dirname "$M_DEST_CACHE")" 2>/dev/null || true
+    tmp="${M_DEST_CACHE}.tmp.$$"
+    { [[ -f "$M_DEST_CACHE" ]] && awk -F'\t' -v k="$d" '$1!=k' "$M_DEST_CACHE"
+      printf '%s\t%s\n' "$d" "$v"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$M_DEST_CACHE" 2>/dev/null || rm -f "$tmp"
+}
+
+# 实测一个 dest 是否与 REALITY 兼容。
+#   返回 0 = 可用, 1 = 不可用
+#   M_REALITY_PROBE_FORCE=1 时忽略缓存
+m_reality_dest_probe() { # <域名> [<保留端口-可选>]
+    local d="${1:-}" base_port="${2:-}"
+    [[ -n "$d" ]] || return 1
+    [[ -x "${MIHOMO_BIN:-}" ]] || return 1
+
+    if [[ "${M_REALITY_PROBE_FORCE:-0}" != "1" ]]; then
+        local c; c=$(m_reality_dest_cached "$d")
+        [[ "$c" == "ok" ]] && return 0
+        [[ "$c" == "bad" ]] && return 1
+    fi
+
+    local tmp; tmp=$(mktemp -d 2>/dev/null) || return 1
+    local rk priv pub sid sp cp
+    rk=$("$MIHOMO_BIN" generate reality-keypair 2>/dev/null)
+    priv=$(printf '%s\n' "$rk" | awk '/PrivateKey/{print $2}')
+    pub=$(printf '%s\n'  "$rk" | awk '/PublicKey/{print $2}')
+    [[ -n "$priv" && -n "$pub" ]] || { rm -rf "$tmp"; return 1; }
+    sid="0123456789abcdef"
+    # 端口: 调用方给了就用, 否则在 40000-44999 里随机试
+    if [[ -n "$base_port" ]]; then sp="$base_port"; else sp=$(( (RANDOM % 5000) + 40000 )); fi
+    cp=$((sp + 1))
+
+    cat > "$tmp/s.yaml" <<EOF
+listeners:
+  - name: probe
+    type: vless
+    port: $sp
+    listen: 127.0.0.1
+    users:
+      - uuid: 11111111-2222-3333-4444-555555555555
+        flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    reality-config:
+      dest: $d:443
+      private-key: $priv
+      server-names:
+        - $d
+      short-id:
+        - $sid
+rules:
+  - MATCH,DIRECT
+EOF
+    cat > "$tmp/c.yaml" <<EOF
+mixed-port: $cp
+log-level: silent
+proxies:
+  - name: probe
+    type: vless
+    server: 127.0.0.1
+    port: $sp
+    uuid: 11111111-2222-3333-4444-555555555555
+    network: tcp
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    tls: true
+    servername: $d
+    reality-opts:
+      public-key: $pub
+      short-id: $sid
+rules:
+  - MATCH,probe
+EOF
+
+    "$MIHOMO_BIN" -d "$tmp" -f "$tmp/s.yaml" > "$tmp/s.log" 2>&1 &
+    local spid=$!
+    sleep 1.2
+    "$MIHOMO_BIN" -d "$tmp" -f "$tmp/c.yaml" > "$tmp/c.log" 2>&1 &
+    local cpid=$!
+    sleep 1.5
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 7 \
+        -x "http://127.0.0.1:$cp" https://www.gstatic.com/generate_204 2>/dev/null)
+    kill "$spid" "$cpid" 2>/dev/null
+    wait "$spid" "$cpid" 2>/dev/null
+    rm -rf "$tmp"
+
+    if [[ "$code" == "204" ]]; then
+        m_reality_dest_cache_put "$d" ok
+        return 0
+    fi
+    m_reality_dest_cache_put "$d" bad
+    return 1
+}
+
+# 供菜单调用: 提示 + 实测 + 结论。永远 return 0 (不阻断流程)
+m_reality_dest_check() { # <域名>
+    local d="${1:-}"
+    [[ -n "$d" ]] || return 0
+    if m_reality_dest_known_bad "$d"; then
+        print_warn "「$d」在实测坏名单里 REALITY 会握手失败 (普通 TLS 却是通的)"
+        print_warn "  建议换一个; 若坚持使用请自行验证连通性"
+        return 0
+    fi
+    if [[ "${M_REALITY_SKIP_PROBE:-0}" == "1" ]]; then return 0; fi
+    local c; c=$(m_reality_dest_cached "$d")
+    if [[ "$c" == "ok" ]]; then
+        print_info "「$d」此前实测可用 (缓存)"
+        return 0
+    fi
+    if [[ "$c" == "bad" ]]; then
+        print_warn "「$d」此前实测**不可用** (缓存); REALITY 大概率连不上"
+        return 0
+    fi
+    print_info "正在实测「$d」与 REALITY 的兼容性 (约 5 秒)..."
+    if m_reality_dest_probe "$d"; then
+        print_ok "「$d」实测可用"
+    else
+        print_warn "「$d」实测**不可用** —— REALITY 节点会连不上, 建议换一个"
+    fi
+    return 0
+}
+
+# 判断某个 dest 是否落在实测坏名单里 (含子域匹配: images-na.ssl-images-amazon.com
+# 这类 CDN 子域与其根域行为一致的场景)。命中返回 0。
+m_reality_dest_known_bad() {
+    local d="${1:-}" b
+    [[ -n "$d" ]] || return 1
+    d="${d,,}"
+    for b in "${REALITY_DESTS_BAD[@]}"; do
+        [[ "$d" == "${b,,}" ]] && return 0
+    done
+    return 1
+}
 
 # m_pick_dest [当前值]
 # 返回值写入全局 DEST_SERVER
@@ -488,6 +683,11 @@ m_pick_dest() {
         [[ "$d" =~ ^[a-z0-9.-]+\.[a-z]{2,}$ ]] || { print_error "域名不合法"; return 1; }
         DEST_SERVER="$d"
     fi
+    # 防呆: 选定后立刻实测一次。名单里的是缓存命中(秒过), 手动输入的才真跑。
+    # 这一步挡掉的正是"面板全绿、节点连不上"那类最难查的问题 ——
+    # REALITY 认证失败在**服务端没有任何日志**, 客户端也只报一句
+    # REALITY authentication failed, 不去实测根本发现不了。
+    m_reality_dest_check "$DEST_SERVER"
     m_set_env "$SRV_ENV" dest_server "$DEST_SERVER"
     return 0
 }
