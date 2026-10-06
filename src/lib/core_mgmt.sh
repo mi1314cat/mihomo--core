@@ -37,7 +37,7 @@ core_latest_tag() {
 #
 # 三级兜底的顺序是按实测可靠度排的:
 #   1. GitHub API     最直接, 但 /releases 列表端点限流比 /latest 严得多,
-#                     <SERVER_ALIAS> 这类数据中心 IP 上实测直接 403
+#                     服务端 这类数据中心 IP 上实测直接 403
 #   2. gh-proxy       转发 GitHub, 实测可用
 #   3. git ls-remote  不走 API, 只读 git 协议, 实测最稳 (core_install.sh 同款)
 #

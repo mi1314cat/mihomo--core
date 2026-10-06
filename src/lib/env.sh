@@ -465,7 +465,7 @@ m_safe_read_port() {
 #
 #    实测方法: 真实内核起 vless+reality listener, 用同一对密钥做客户端,
 #    经 mixed-port 打 generate_204。每项跑两次排除偶发。
-#    实测环境: 2026-10-06 <CLIENT_ALIAS> 节点。
+#    实测环境:  节点。
 #
 #    实测**不可用**的三个 (全部两次都失败, 且普通 TLS 握手正常):
 #        www.bing.com        REALITY authentication failed   ← 曾是默认兜底值!

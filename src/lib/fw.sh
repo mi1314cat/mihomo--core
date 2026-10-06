@@ -14,7 +14,7 @@
 #    说明本面板从没为它开过规则, 就不该由本面板去关。
 #
 # 2. 规则一律带标记
-#    没有标记的规则和用户自己加的规则**完全无法区分**。<SERVER_ALIAS> 上实测有 382 条
+#    没有标记的规则和用户自己加的规则**完全无法区分**。服务端 上实测有 382 条
 #    带 --comment SB-Panel 的规则, 证明这台的 -m comment 可用。
 #
 # 3. SSH 端口永不自动关
@@ -38,7 +38,7 @@ FW_NEVER_TOUCH="22 2222 8022 80 443 8443 3306 5432 6379 27017"
 
 # 依次判定 nft / ufw / firewalld / iptables。
 # 注意 nft 判据是 "inet filter 表存在", 不是 "装了 nft 命令": 装了 nft
-# 但实际用 iptables 管防火墙的机器很常见 (<SERVER_ALIAS> 就是), 判错了会往错的地方写规则。
+# 但实际用 iptables 管防火墙的机器很常见 (服务端 就是), 判错了会往错的地方写规则。
 fw_detect_backend() {
     if command -v nft >/dev/null 2>&1 \
        && nft list table inet filter >/dev/null 2>&1; then echo nft; return 0; fi

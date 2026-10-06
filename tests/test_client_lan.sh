@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 客户端真机验收 (<CLIENT_ALIAS> / arm64): 导入 <SERVER_ALIAS> 拉来的订阅 → 校验 → 真实出网
+# 客户端真机验收 (客户端 / arm64): 导入 服务端 拉来的订阅 → 校验 → 真实出网
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="${SRC:-$HERE/../src}"
@@ -24,7 +24,7 @@ sed '/^\[\[ "\${BASH_SOURCE\[0\]}" == "\${0}" \]\] && client_menu$/d' "$SRC/clie
 export CLI_LIB="$SRC/lib"
 source /tmp/client_lib.sh
 
-hdr "1. 导入 <SERVER_ALIAS> 分享来的订阅"
+hdr "1. 导入服务端分享来的订阅"
 if [[ ! -f /tmp/sub_from_rn.yaml ]]; then
     bad "缺少 /tmp/sub_from_rn.yaml (先从服务端拉取)"
 else
@@ -50,7 +50,7 @@ fi
 hdr "3. 内核校验"
 "$CLI_BIN" -t -d "$CLI_CONF" 2>&1 | tail -1 | sed 's/^/    /'
 
-hdr "4. 真实启动并出网 (经 <SERVER_ALIAS> 上的节点)"
+hdr "4. 真实启动并出网 (经服务端上的节点)"
 systemctl stop mihomo-client 2>/dev/null
 "$CLI_BIN" -d "$CLI_CONF" >/tmp/cc_run.log 2>&1 &
 CPID=$!

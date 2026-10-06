@@ -70,7 +70,7 @@ clean_input() {
 
 # ================================
 # 定位/安装 Cloudflare API 管理器 cf-manager.sh
-# 优先级: <SERVER_ALIAS> 本地路径 -> PATH -> 询问从 GitHub 安装 (cfapi/)
+# 优先级: 服务端 本地路径 -> PATH -> 询问从 GitHub 安装 (cfapi/)
 # 输出: 全局 CFMGR 变量 + stdout 打印路径 (无则空, 返回失败)
 # 短链: -A <域名> <IP> [--proxy on|off|auto]  DNS ensure (幂等)
 #       -E <域名>  ECH enable (幂等)   -S <域名>  ssl status   -P <域名> <端口>  origin port
@@ -837,7 +837,7 @@ EOF
 # 把片段插进本机已有的 Nginx 站点。
 #
 # 之前这里只生成文件、打印一句"粘到 conf.d 的 server{} 里", 把最难的一步
-# 留给了用户。实际做的时候: 得先判断 nginx 是宿主还是容器 (<SERVER_ALIAS> 上就是容器,
+# 留给了用户。实际做的时候: 得先判断 nginx 是宿主还是容器 (服务端 上就是容器,
 # 宿主 /etc/nginx/sites-enabled 里的站点文件根本不是生效配置)、要找到域名
 # 对应���那个 server 块、要插在对的层级、插完还得 nginx -t 确认。
 # 这些每一步都可能出错, 而且出错方式和内核崩溃长得一样难查。
@@ -869,7 +869,7 @@ nginx_insert_menu() {
 
     # 校验命令: 容器化要用 docker exec。
     # 否则 nginx -t 验的是宿主那份 —— 宿主那份可能根本没挂进容器,
-    # 验过了也不代表真正生效的配置没问题 (实测 2026-10-06 <SERVER_ALIAS> 就是这个坑)。
+    # 验过了也不代表真正生效的配置没问题 (实测 就是这个坑)。
     local chk="none"
     if command -v docker >/dev/null 2>&1; then
         local cname
