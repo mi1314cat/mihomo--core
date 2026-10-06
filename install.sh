@@ -66,11 +66,20 @@ _pick_source() {
     [[ -n "$_SRC" ]] && return 0
     local base probe="$1"
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
-        if curl -fsSL --max-time 12 "$base/$probe" -o /dev/null 2>/dev/null; then
-            _SRC="$base"
-            [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已选用镜像: $(echo "$base" | cut -d/ -f3)"
-            return 0
-        fi
+        # 探测给 25 秒而不是 12 秒, 且每个源试两次。
+        #
+        # 实测: github.com 在那台机器上是连接超时而非拒绝,
+        # 12 秒的探测窗口会把本来能用的镜像也判成"不通", 结果整条链全废、
+        # 安装直接卡死。而 cdn.jsdelivr.net / ghproxy.net 实际都能通,
+        # 只是首包慢 —— 给够时间 + 重试一次就下来了。
+        local i
+        for i in 1 2; do
+            if curl -fsSL --max-time 25 "$base/$probe" -o /dev/null 2>/dev/null; then
+                _SRC="$base"
+                [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已选用镜像: $(echo "$base" | cut -d/ -f3)"
+                return 0
+            fi
+        done
     done
     return 1
 }
@@ -80,15 +89,16 @@ fetch() {  # fetch <远端相对路径> <本地路径>
     mkdir -p "$(dirname "$dst")"
     rm -f "$dst"
     _pick_source "README.md" || { err "所有下载源都不可用 (github.com 及各镜像)"; return 1; }
+    # 下载超时 90 秒: 内核解压脚本之类的文件在慢网线上确实要这个量级
     for base in "$_SRC"; do
-        if curl -fsSL --max-time 45 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+        if curl -fsSL --max-time 90 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
             return 0
         fi
     done
     # 选中的源中途挂了, 换一个再来
     _SRC=""
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
-        if curl -fsSL --max-time 45 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+        if curl -fsSL --max-time 90 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
             _SRC="$base"
             [[ "$base" == "$REPO_RAW" ]] || say "切换到镜像: $(echo "$base" | cut -d/ -f3)"
             return 0
