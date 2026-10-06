@@ -428,8 +428,8 @@ log_menu() {
     print_title "日志"
     ui_menu 1 "实时查看运行日志 (tail -f)"
     ui_menu 2 "查看错误日志"
-    ui_menu 3 "清空日志文件"
-    ui_menu 4 "查看内核最近 100 行"
+    ui_menu 4 "清空日志文件"
+    ui_menu 5 "查看内核最近 100 行"
     echo >&2
     printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
     c=$(clean_input "$c")
@@ -606,10 +606,10 @@ svc_menu() {
     print_title "服务管理"
     ui_menu 1 "启动"
     ui_menu 2 "停止"
-    ui_menu 3 "重启"
-    ui_menu 4 "状态"
-    ui_menu 5 "开机自启"
-    ui_menu 6 "手动上传内核 (下载不通时用)"
+    ui_menu 4 "重启"
+    ui_menu 5 "状态"
+    ui_menu 6 "开机自启"
+    ui_menu 7 "手动上传内核 (下载不通时用)"
     printf "请选择: "; local c; read -r c
     case "$c" in
         1) systemctl start "$SRV_SERVICE" && print_ok "已启动" ;;
@@ -808,35 +808,37 @@ main_menu() {
         echo >&2
         ui_menu 1  "添加节点"
         ui_menu 2  "管理节点"
-        ui_menu 3  "生成分享链接"
-        ui_menu 4  "拉取节点"
-        ui_menu 5  "更新配置"
+        ui_menu 3  "安装 / 内核管理 (版本/更新/脚本)"
+        ui_menu 4  "生成分享链接"
+        ui_menu 5  "拉取节点"
+        ui_menu 6  "更新配置"
         ui_rule
-        ui_menu 6  "服务管理"
-        ui_menu 7  "查看当前节点"
-        ui_menu 8  "查看已拉取订阅"
-        ui_menu 9  "查看日志"
-        ui_menu 10 "查看节点分享内容"
-        ui_menu 11 "系统信息"
-        ui_menu 12 "卸载服务端"
+        ui_menu 7  "服务管理"
+        ui_menu 8  "查看当前节点"
+        ui_menu 9  "查看已拉取订阅"
+        ui_menu 10 "查看日志"
+        ui_menu 11 "查看节点分享内容"
+        ui_menu 12 "系统信息"
+        ui_menu 13 "卸载服务端"
         ui_menu 0  "退出"
         echo >&2
-        printf "  ${CYAN}请选择${RESET}: "
-        read -r c || { printf '\n'; print_info "非交互环境 (stdin 已关闭), 已退出"; break; }
+        printf "  ${CYAN}请选择${RESET}: " >&2
+        read -r c || { printf '\n' >&2; print_info "非交互环境 (stdin 已关闭), 已退出"; break; }
         c=$(clean_input "$c")
         case "$c" in
             1)  add_node ;;
             2)  manage_node ;;
-            3)  install_share ;;
-            4)  pull_node ;;
-            5)  update_config ;;
-            6)  svc_menu ;;
-            7)  list_nodes ;;
-            8)  list_imported ;;
-            9)  log_menu ;;
-            10) show_client_files ;;
-            11) sys_info ;;
-            12) uninstall_service ;;
+            3)  core_menu "$SRV_ROOT" "$SRV_SERVICE" ;;
+            4)  install_share ;;
+            5)  pull_node ;;
+            6)  update_config ;;
+            7)  svc_menu ;;
+            8)  list_nodes ;;
+            9)  list_imported ;;
+            10) log_menu ;;
+            11) show_client_files ;;
+            12) sys_info ;;
+            13) uninstall_service ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

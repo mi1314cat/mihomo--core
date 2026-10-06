@@ -61,6 +61,13 @@ _MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/ui.sh"
 # shellcheck source=/dev/null
 [[ -f "$_MUI" ]] && source "$_MUI"
 
+# Web UI 管理与内核/版本管理。两者依赖上面的 ui.sh, 必须在它之后加载。
+for _mx in webui core_mgmt portcheck; do
+    _MEXTRA="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/$_mx.sh"
+    [[ -f "$_MEXTRA" ]] && source "$_MEXTRA"
+done
+unset _MEXTRA
+
 ensure_dirs() { mkdir -p "$CLI_CONF" "$CLI_PROVIDERS" "$CLI_NODES" "$CLI_UI"; }
 
 # =============================================================
@@ -635,9 +642,11 @@ client_menu() {
         ui_menu 6  "启动 / 停止 / 重启服务"
         ui_menu 7  "配置检查"
         ui_menu 8  "节点测速"
-        ui_menu 9  "客户端设置 (端口 / 绑定 / 面板密钥)"
-        ui_menu 10 "分享订阅 (把我的节点发给别人)"
-        ui_menu 11 "卸载客户端"
+        ui_menu 9  "客户端设置 (端口 / 绑定 / Web UI / 面板密钥)"
+        ui_menu 10 "Web UI / 仪表盘"
+        ui_menu 11 "安装 / 内核管理 (版本/更新/脚本)"
+        ui_menu 12 "分享订阅 (把我的节点发给别人)"
+        ui_menu 13 "卸载客户端"
         ui_menu 0  "退出"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -653,8 +662,10 @@ client_menu() {
             7)  check_menu ;;
             8)  node_test ;;
             9)  settings_menu ;;
-            10) cli_share_menu ;;
-            11|d|D) cli_uninstall ;;
+            10) webui_menu ;;
+            11) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
+            12) cli_share_menu ;;
+            13|d|D) cli_uninstall ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac
@@ -1099,6 +1110,7 @@ settings_menu() {
     ui_menu 4 "显示面板密钥"
     ui_menu 5 "重新生成面板密钥"
     ui_menu 6 "geo 自动更新       当前: ${GEO_AUTO_UPDATE:-0}"
+    ui_menu 7 "端口占用检测"
     echo >&2
     printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
     c=$(clean_input "$c")
@@ -1112,6 +1124,7 @@ settings_menu() {
            print_ok "已重新生成"; apply_change ;;
         6) printf "开启 geo 自动更新? (1=开, 0=关): "; read -r GEO_AUTO_UPDATE
            save_settings; apply_change ;;
+        7) port_check_show "$(basename "$CLI_ROOT/mihomo")" ;;
     esac
 }
 

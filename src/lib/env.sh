@@ -17,6 +17,11 @@ _MUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ui.sh"
 # shellcheck source=/dev/null
 [[ -f "$_MUI" ]] && source "$_MUI"
 
+# 内核/版本管理。依赖上面的 ui.sh (print_* / ui_*), 必须在它之后加载
+_MCM="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/core_mgmt.sh"
+# shellcheck source=/dev/null
+[[ -f "$_MCM" ]] && source "$_MCM"
+
 # ---------- 基础路径 ----------
 : "${SRV_ROOT:=/root/catmi/mihomo}"
 : "${SRV_CONF:=$SRV_ROOT/conf}"

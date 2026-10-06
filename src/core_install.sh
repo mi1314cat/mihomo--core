@@ -115,6 +115,15 @@ say "架构: $ARCH${SUFFIX}"
 resolve_tag() {
     local t="" u raw=""
     local -a cargs=()
+
+      # 面板的「版本管理 → 安装指定版本」走这里: 指定了 tag 就不再查最新,
+      # 省掉一次 API 往返, 也避免用户选的版本被自动更新顶掉。
+      # 注意输出**不带 v 前缀** —— 下面拼的是 .../releases/download/${LATEST_TAG},
+      # GitHub 两种都收, 但保持与 resolve_tag 原有行为一致更不容易出错。
+      if [[ -n "${MIHOMO_FORCE_TAG:-}" ]]; then
+          printf '%s' "${MIHOMO_FORCE_TAG#v}"
+          return
+      fi
     [[ -n "${PX:-}" ]] && cargs=(--proxy "$PX")
 
     t=$(curl -fsSL --max-time 20 "${cargs[@]}" "$GITHUB_API" 2>/dev/null | grep -m1 tag_name | cut -d '"' -f4) || true
@@ -258,7 +267,10 @@ _kernel_from_dir() {
 #
 # 判据用 _mihomo_probe (真跑一次取版本) 而不是只看 -x: 架构不对的文件同样
 # 有执行权限, 那种情况必须继续往下走去装对的, 不能在这里糊弄过去。
-if [[ -z "${MIHOMO_LOCAL_BIN:-}" && -x "$INSTALL_DIR/mihomo" ]] \
+# MIHOMO_SKIP_IF_PRESENT=0 表示"无条件重装"(面板的"重装内核"菜单项用的)。
+# 默认 1 = 见到可用内核就跳过 (对齐 SB 的 `if [[ ! -x core ]]`)。
+if [[ "${MIHOMO_SKIP_IF_PRESENT:-1}" != "0" \
+   && -z "${MIHOMO_LOCAL_BIN:-}" && -x "$INSTALL_DIR/mihomo" ]] \
    && _mihomo_probe "$INSTALL_DIR/mihomo"; then
     say "检测到本机已有可用内核, 跳过内核安装"
     say "  版本: $("$INSTALL_DIR/mihomo" -v 2>/dev/null | head -1)"

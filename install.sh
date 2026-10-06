@@ -120,11 +120,12 @@ fetch() {  # fetch <远端相对路径> <本地路径>
 fetch_repo() {  # 把面板需要的文件拉到本地
     local base="$1"
     local files=(
-        "src/lib/env.sh" "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
+        "src/lib/env.sh" "src/lib/ui.sh" "src/lib/core_mgmt.sh" "src/lib/webui.sh" "src/lib/portcheck.sh" "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
         "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
         "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
         "src/conf/all.sh" "src/conf/XRevise.sh"
         "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
+        "src/conf/nginx_apply.py"
         "src/core_install.sh"
     )
     local f
