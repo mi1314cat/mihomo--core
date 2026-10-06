@@ -531,10 +531,11 @@ render_xhttp_pad() {
 }
 
 g_reality() {
+NODE_TAG="$(m_node_tag VLESS "$1" reality)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: reality-$1
+  - name: $NODE_TAG
     type: vless
     listen: "0.0.0.0"
     port: $2
@@ -550,9 +551,10 @@ listeners:
       server-names:
         - $dest_server
 EOF
+NODE_TAG="$(m_node_tag VLESS "$1" reality)"
     cat > "$4" <<EOF
 proxies:
-  - name: Reality-$1
+  - name: $NODE_TAG
     type: vless
     server: $PUBLIC_IP
     port: $2
@@ -570,10 +572,11 @@ EOF
 }
 
 g_trojan_reality() {
+NODE_TAG="$(m_node_tag Trojan "$1" reality)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: trojan-$1
+  - name: $NODE_TAG
     type: trojan
     listen: "0.0.0.0"
     port: $2
@@ -588,9 +591,10 @@ listeners:
       server-names:
         - $dest_server
 EOF
+NODE_TAG="$(m_node_tag Trojan "$1" reality)"
     cat > "$4" <<EOF
 proxies:
-  - name: Trojan-Reality-$1
+  - name: $NODE_TAG
     type: trojan
     server: $PUBLIC_IP
     port: $2
@@ -605,10 +609,11 @@ EOF
 }
 
 g_trojan_tls() {
+NODE_TAG="$(m_node_tag Trojan "$1" tls)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: trojan-tls-$1
+  - name: $NODE_TAG
     type: trojan
     listen: "0.0.0.0"
     port: $2
@@ -618,9 +623,10 @@ listeners:
     certificate: $CRT
     private-key: $KEY
 EOF
+NODE_TAG="$(m_node_tag Trojan "$1" tls)"
     cat > "$4" <<EOF
 proxies:
-  - name: Trojan-TLS-$1
+  - name: $NODE_TAG
     type: trojan
     server: $PUBLIC_IP
     port: $2
@@ -633,10 +639,11 @@ EOF
 
 g_vless_ws() {
     local path="/ws$1"
+NODE_TAG="$(m_node_tag VLESS "$1" plain WS)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: vless-ws-$1
+  - name: $NODE_TAG
     type: vless
     listen: "0.0.0.0"
     port: $2
@@ -647,9 +654,10 @@ listeners:
     # 否则内核直接拒绝: "disallow using Vless without any certificates/..."
     allow-insecure: true
 EOF
+NODE_TAG="$(m_node_tag VLESS "$1" plain WS)"
     cat > "$4" <<EOF
 proxies:
-  - name: VLESS-WS-$1
+  - name: $NODE_TAG
     type: vless
     server: $PUBLIC_IP
     port: $2
@@ -664,10 +672,11 @@ EOF
 
 g_vless_ws_tls() {
     local path="/wss$1"
+NODE_TAG="$(m_node_tag VLESS "$1" tls WS)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: vless-wss-$1
+  - name: $NODE_TAG
     type: vless
     listen: "0.0.0.0"
     port: $2
@@ -677,9 +686,10 @@ listeners:
     certificate: $CRT
     private-key: $KEY
 EOF
+NODE_TAG="$(m_node_tag VLESS "$1" tls WS)"
     cat > "$4" <<EOF
 proxies:
-  - name: VLESS-WSS-$1
+  - name: $NODE_TAG
     type: vless
     server: $PUBLIC_IP
     port: $2
@@ -719,10 +729,11 @@ g_vless_xhttp() {
     # 路径过短容易被扫到, 借 env.sh 的共享校验过一道 (>=8 字符, 见 M_MIN_WS_PATH_LEN)
     local path; path=$(m_check_ws_path "/xhttp$1") || return 1
     render_xhttp_pad
+NODE_TAG="$(m_node_tag VLESS "$1" plain XHTTP)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成 · VLESS + XHTTP (明文)
 listeners:
-  - name: vless-xhttp-$1
+  - name: $NODE_TAG
     type: vless
     listen: "0.0.0.0"
     port: $2
@@ -738,10 +749,11 @@ ${XHTTP_PAD_FIELDS}
     # "disallow using Vless without any certificates/..." (server.go:275-277)
     allow-insecure: true
 EOF
+NODE_TAG="$(m_node_tag VLESS "$1" plain XHTTP)"
     cat > "$4" <<EOF
 # 由 all.sh 一键生成 · VLESS + XHTTP (明文) 客户端
 proxies:
-  - name: VLESS-XHTTP-$1
+  - name: $NODE_TAG
     type: vless
     server: $XHTTP_CLIENT_HOST
     port: $2
@@ -760,10 +772,11 @@ EOF
 g_vless_xhttp_tls() {
     local path; path=$(m_check_ws_path "/xhttps$1") || return 1
     render_xhttp_pad
+NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成 · VLESS + XHTTP + TLS
 listeners:
-  - name: vless-xhttps-$1
+  - name: $NODE_TAG
     type: vless
     listen: "0.0.0.0"
     port: $2
@@ -776,10 +789,11 @@ ${XHTTP_PAD_FIELDS}
     certificate: $CRT
     private-key: $KEY
 EOF
+NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP)"
     cat > "$4" <<EOF
 # 由 all.sh 一键生成 · VLESS + XHTTP + TLS 客户端
 proxies:
-  - name: VLESS-XHTTPS-$1
+  - name: $NODE_TAG
     type: vless
     server: $XHTTP_CLIENT_HOST
     port: $2
@@ -835,10 +849,11 @@ vmess_pad_client_block() {
 g_vmess_ws() {
     local path="/vm$1"
     vmess_pad_client_block
+NODE_TAG="$(m_node_tag VMess "$1" plain)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: vmess-$1
+  - name: $NODE_TAG
     type: vmess
     listen: "0.0.0.0"
     port: $2
@@ -850,10 +865,11 @@ listeners:
     # 注意: global-padding / authenticated-length 在 listener 上**不存在**
     # (listener/inbound/vmess.go:12-30), 它们只属于客户端, 理由见本函数上方注释。
 EOF
+NODE_TAG="$(m_node_tag VMess "$1" plain)"
     cat > "$4" <<EOF
 # 由 all.sh 一键生成
 proxies:
-  - name: VMess-WS-$1
+  - name: $NODE_TAG
     type: vmess
     server: $PUBLIC_IP
     port: $2
@@ -872,10 +888,11 @@ EOF
 }
 
 g_hysteria2() {
+NODE_TAG="$(m_node_tag Hysteria2 "$1" tls)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: hysteria2-$1
+  - name: $NODE_TAG
     type: hysteria2
     listen: "0.0.0.0"
     port: $2
@@ -885,9 +902,10 @@ listeners:
     private-key: $KEY
     masquerade: https://www.bing.com
 EOF
+NODE_TAG="$(m_node_tag Hysteria2 "$1" tls)"
     cat > "$4" <<EOF
 proxies:
-  - name: Hysteria2-$1
+  - name: $NODE_TAG
     type: hysteria2
     server: $PUBLIC_IP
     port: $2
@@ -900,10 +918,11 @@ EOF
 }
 
 g_tuicv5() {
+NODE_TAG="$(m_node_tag TUIC "$1" tls)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: tuicv5-$1
+  - name: $NODE_TAG
     type: tuic
     listen: "0.0.0.0"
     port: $2
@@ -916,9 +935,10 @@ listeners:
     alpn:
       - h3
 EOF
+NODE_TAG="$(m_node_tag TUIC "$1" tls)"
     cat > "$4" <<EOF
 proxies:
-  - name: TUICv5-$1
+  - name: $NODE_TAG
     type: tuic
     server: $PUBLIC_IP
     port: $2
@@ -933,10 +953,11 @@ EOF
 }
 
 g_anytls() {
+NODE_TAG="$(m_node_tag AnyTLS "$1" tls)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: anytls-$1
+  - name: $NODE_TAG
     type: anytls
     listen: "0.0.0.0"
     port: $2
@@ -945,9 +966,10 @@ listeners:
     certificate: $CRT
     private-key: $KEY
 EOF
+NODE_TAG="$(m_node_tag AnyTLS "$1" tls)"
     cat > "$4" <<EOF
 proxies:
-  - name: AnyTLS-$1
+  - name: $NODE_TAG
     type: anytls
     server: $PUBLIC_IP
     port: $2
@@ -960,10 +982,11 @@ EOF
 }
 
 g_shadowsocks() {
+NODE_TAG="$(m_node_tag Shadowsocks "$1" plain)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: ss-$1
+  - name: $NODE_TAG
     type: shadowsocks
     listen: "0.0.0.0"
     port: $2
@@ -971,9 +994,10 @@ listeners:
     password: $UUID
     udp: true
 EOF
+NODE_TAG="$(m_node_tag Shadowsocks "$1" plain)"
     cat > "$4" <<EOF
 proxies:
-  - name: Shadowsocks-$1
+  - name: $NODE_TAG
     type: ss
     server: $PUBLIC_IP
     port: $2
@@ -984,19 +1008,21 @@ EOF
 }
 
 g_snell() {
+NODE_TAG="$(m_node_tag Snell "$1" plain)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成
 listeners:
-  - name: snell-$1
+  - name: $NODE_TAG
     type: snell
     listen: "0.0.0.0"
     port: $2
     psk: $UUID
     version: "3"
 EOF
+NODE_TAG="$(m_node_tag Snell "$1" plain)"
     cat > "$4" <<EOF
 proxies:
-  - name: Snell-$1
+  - name: $NODE_TAG
     type: snell
     server: $PUBLIC_IP
     port: $2
