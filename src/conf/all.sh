@@ -203,9 +203,14 @@ PORT_RANGE_END=24999
 PORT_CURSOR=20000
 
 ask_port_range() {
-    printf '\n  端口区间 (留空 = 自动选一个):\n' >&2
-    printf "    起止: 20000-25000    只给起点: 30000 (到 39999)\n" >&2
-    printf "请输入 [默认自动]: " >&2
+    # ③ 步骤风格, 与 ①② 一致。把"为什么要问"写出来:
+    # 用户挑区间是为了避开自己在用的段位; 留空则由脚本随机挑一段。
+    printf '\n' >&2
+    printf "  ${BOLD}③ 端口区间${RESET} ${DIM}—— 每个节点一个端口, 自动顺延不冲突${RESET}\n" >&2
+    printf "     ${DIM}起止: 20000-25000    只给起点: 30000 (到 39999)${RESET}\n" >&2
+    printf "     ${DIM}留空 = 随机挑一段 5000 宽的区间 (推荐, 多机多批不易撞车)${RESET}\n" >&2
+    printf "     ${DIM}区间用完不会失败, 会自动回落到随机空闲端口${RESET}\n" >&2
+    printf "     ${CYAN}请输入${RESET} [回车=随机]: " >&2
     local v
     read -r v || v=""
     v=$(printf '%s' "$v" | tr -d '[:space:]')
@@ -1416,6 +1421,11 @@ PORT_BASE="${ALL_PORT_BASE:-20000}"
 printf "${MAGENTA}${BOLD}╔══════════════════════════════════════════════╗\n"
 printf "║  一键生成全协议节点                              ║\n"
 printf "╚══════════════════════════════════════════════╝${RESET}\n"
+# 先把"将要问什么"讲清楚 —— 对齐 SB batch.sh 的做法:
+#     echo -e "${CYAN}交互项: 对外地址 → 证书方案 → 端口范围 → CDN → 服务器标识.${RESET}"
+# 用户最怕的是"不知道还要问几项、不知道什么时候结束"。先给全貌, 再逐项问。
+printf "  ${CYAN}将要问的: 证书 → 对外地址 → 端口区间${RESET}\n" >&2
+printf "  ${DIM}其余沿用各协议默认值; 端口冲突或生成失败会自动清理, 收尾统一校验 + 热重载${RESET}\n" >&2
 
 # 所有函数已定义后再校验 --only, 否则 bash 会在定义前调用
 check_only_tokens || exit 1
@@ -1432,21 +1442,39 @@ m_pick_dest "${dest_server:-}" >/dev/null 2>&1 || true
 # M_REALITY_SKIP_PROBE=1 可跳过 (给确定 dest 可用的自动化场景省 5 秒)。
 m_reality_dest_check "${dest_server:-}" 2>/dev/null || true
 
+# ---------- ① 证书 ----------
+#
+# 呈现对齐 SB: 用 ①②③ 标步骤, 每步**说清这一问是干什么的**, 并直接给出结论
+# (✅ 用什么 / — 没有), 而不是把"没有证书"打成 [Warn] 让人以为出错了。
+# "没有证书"是**正常状态**, 它的后果是"跳过一部分协议", 不是失败。
+printf '\n' >&2
+printf "  ${BOLD}① 证书${RESET} ${DIM}—— 需要 TLS 的协议用它${RESET}\n" >&2
+
 CRT=""; KEY=""; SNI=""
-if [[ "$USE_TLS" == "1" ]]; then
+if [[ "$USE_TLS" == "0" ]]; then
+    printf "     ${DIM}--no-tls: 只生成不需要证书的协议${RESET}\n" >&2
+else
     # 这里已经在函数外, 写 local 会报 "can only be used in a function"
     pair=$(find_cert)
     if [[ -n "$pair" ]]; then
         IFS=$'\t' read -r CRT KEY SNI <<<"$pair"
     fi
     [[ -n "$CRT" && -f "$CRT" && -n "$KEY" && -f "$KEY" ]] || { CRT=""; KEY=""; SNI=""; }
-    if [[ -n "$CRT" ]]; then print_ok "使用证书: $(basename "$CRT")  (sni=$SNI)"
-    else print_warn "未找到证书, 将跳过需要 TLS 的协议"; fi
+    if [[ -n "$CRT" ]]; then
+        printf "     ${GREEN}✅${RESET} %s ${DIM}(域名 %s)${RESET}\n" "$(basename "$CRT")" "$SNI" >&2
+    else
+        printf "     ${YELLOW}—${RESET} 本机没有可用证书\n" >&2
+        printf "     ${DIM}需要证书的协议 (Hysteria2 / TUIC / AnyTLS / Trojan+TLS / VLESS+WS+TLS 等)${RESET}\n" >&2
+        printf "     ${DIM}会被跳过, 其余照常生成 —— 这不是错误${RESET}\n" >&2
+    fi
 fi
 
+# ---------- ② 对外地址 ----------
+printf '\n' >&2
+printf "  ${BOLD}② 对外地址${RESET} ${DIM}—— 客户端配置里写的就是这个${RESET}\n" >&2
 PUBLIC_IP=$(m_server_ip)
 [[ -z "$PUBLIC_IP" ]] && { print_error "拿不到对外地址, 请先在 install_info.env 里设置 PUBLIC_IP"; exit 1; }
-print_info "对外地址: $PUBLIC_IP"
+printf "     ${GREEN}✅${RESET} %s\n" "$PUBLIC_IP" >&2
 
 # m_client_host() 在证书域名不可用时回落 **$SERVER_IP** (src/lib/env.sh:126-133),
 # 而本脚本统一用的是 PUBLIC_IP —— 不先把 SERVER_IP 补上, 走到那个回落分支时
@@ -1461,7 +1489,7 @@ XHTTP_DIRECT_HOST="${PUBLIC_IP:-127.0.0.1}"
 # CDN 场景的地址 (证书域名); 仅 xhttp-cdn 使用
 XHTTP_CLIENT_HOST=$(m_client_host "$SNI")
 [[ "$XHTTP_CLIENT_HOST" =~ ^[A-Za-z0-9._-]+\.[A-Za-z]{2,}$ ]] || XHTTP_CLIENT_HOST="$PUBLIC_IP"
-print_info "XHTTP 客户端地址: $XHTTP_CLIENT_HOST (xhttp 的 Host 头直接取自这里)"
+printf "     ${DIM}XHTTP 的 Host 头也用它: %s${RESET}\n" "$XHTTP_CLIENT_HOST" >&2
 
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERTS_DIR"
 collect_used_ports

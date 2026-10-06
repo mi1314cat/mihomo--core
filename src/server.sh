@@ -118,6 +118,26 @@ for x in l:
 PROTO_SCRIPTS=(Reality.sh VLESS.sh Trojan.sh hysteria2.sh TUIC.sh AnyTLS.sh)
 PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" "Trojan" "Hysteria2" "TUIC v5" "AnyTLS")
 
+# 内核支持、all.sh 也早就能生成, 但**没有独立协议脚本**的协议。
+#
+# 核实:
+#   * all.sh 的 ALL_GEN_IDS 有 21 种组合, 其中包含 vmess / ss / snell;
+#   * 但 add_node 的菜单只挂了 6 个脚本, 这三种**没有任何入口** ——
+#     能批量生成, 却不能单独添加一个。
+#   * 实测 mihomo 入站支持: vmess ✅ ss ✅ snell ✅
+#                        shadowtls ❌ naive ❌ (内核只能做出站, 做不了服务端)
+#     —— 后两个是**内核限制**, 不是漏搬, 所以不在这里列。
+#
+# 做法: 直接复用 `all.sh --only <ids>`, **不新写协议脚本**。
+# 与 SB 的 batch.sh 一致 —— 编排层不重实现协议。
+BATCH_PROTO_LABELS=("VMess" "Shadowsocks" "Snell")
+BATCH_PROTO_HINT=(
+    "TCP+Reality / gRPC+Reality / WS 三种一起生成"
+    "无需证书, 兼容性最好"
+    "无需证书, 轻量"
+)
+BATCH_PROTO_ONLY=("vmess-reality,vmess-grpc,vmess" "ss" "snell")
+
 # 协议脚本跑完后的收口: 为本次新增的节点文件放行防火墙端口。
 #
 # 只碰**未登记**的端口 —— 已有的节点反复放行没意义, 而全目录无条件扫描会
@@ -137,23 +157,48 @@ fw_after_node_change() {
 add_node() {
     print_title "添加节点"
     local i
+    local n_single=${#PROTO_SCRIPTS[@]}
+    local n_batch=${#BATCH_PROTO_LABELS[@]}
+
+    # 分两段列 —— 单协议 / 批量。SB 的菜单也是这样分组的, 用户一眼能看出
+    # "哪个是加一个节点, 哪个是一次生成一批"。
     for i in "${!PROTO_SCRIPTS[@]}"; do
-        printf "  %d) %s\n" "$((i+1))" "${PROTO_LABELS[$i]}"
+        printf "  ${CYAN}%2d${RESET}) %s\n" "$((i+1))" "${PROTO_LABELS[$i]}"
     done
+    for i in "${!BATCH_PROTO_LABELS[@]}"; do
+        printf "  ${CYAN}%2d${RESET}) %s ${DIM}(%s)${RESET}\n" \
+            "$((n_single+i+1))" "${BATCH_PROTO_LABELS[$i]}" "${BATCH_PROTO_HINT[$i]}"
+    done
+
     # 批量入口。
     #
     # all.sh 早就存在 (1050 行 / 13 类节点 / --dry-run --no-tls --only --fp),
     # 但一直没有菜单入口 —— 只能手动敲命令。对照 SB: 它的
     # 「节点管理 → 11) 全协议一键生成」是常驻菜单项, 而 all.sh 的批量档位
     # 设计 (--dry-run / --only) 本来就是照着这个思路做的, 却没有出口。
-    printf "  %d) \033[1m全协议一键生成\033[0m (推荐先试这个)\n" "$(( ${#PROTO_SCRIPTS[@]} + 1 ))"
-    printf "\n请选择 [1-%d]: " "$(( ${#PROTO_SCRIPTS[@]} + 1 ))"
+    local batch_idx=$(( n_single + n_batch + 1 ))
+    printf "  ${DIM}────────────────────────────────${RESET}\n"
+    printf "  ${CYAN}%2d${RESET}) ${BOLD}全协议一键生成${RESET} ${DIM}(推荐先试这个)${RESET}\n" "$batch_idx"
+    printf "  ${CYAN}%2d${RESET}) 返回\n" "0"
+    printf "\n请选择 [1-%d, 0=返回]: " "$batch_idx"
     local c; read -r c
-    local batch_idx=$(( ${#PROTO_SCRIPTS[@]} + 1 ))
+    c=$(clean_input "${c:-}")
+
+    [[ "$c" == "0" ]] && return 0
     if [[ "$c" == "$batch_idx" ]]; then
         all_menu; return
     fi
-    [[ "$c" =~ ^[1-6]$ ]] || { ui_invalid "$c"; return 1; }
+
+    # 没有独立脚本的协议 -> 走 all.sh --only
+    if [[ "$c" =~ ^[0-9]+$ ]] && (( c > n_single && c <= n_single + n_batch )); then
+        local bi=$(( c - n_single - 1 ))
+        print_info "生成 ${BATCH_PROTO_LABELS[$bi]} (走 all.sh --only ${BATCH_PROTO_ONLY[$bi]})"
+        _all_run --only "${BATCH_PROTO_ONLY[$bi]}"
+        fw_after_node_change
+        return
+    fi
+
+    [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= n_single )) || { ui_invalid "$c"; return 1; }
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
@@ -226,18 +271,23 @@ _all_pick() {
 manage_node() {
     print_title "管理节点"
     local i
+    local n_single=${#PROTO_SCRIPTS[@]}
     for i in "${!PROTO_SCRIPTS[@]}"; do
-        printf "  %d) %s\n" "$((i+1))" "${PROTO_LABELS[$i]}"
+        printf "  ${CYAN}%2d${RESET}) %s\n" "$((i+1))" "${PROTO_LABELS[$i]}"
     done
     # 红字标不可逆 —— 与 SB 的菜单约定一致 (batch.sh:117 破坏性操作必须
     # 手打 yes 才执行)。这里先标出来, 执行时还有第二道确认。
-    printf "  \033[31m%d) 清空全部节点\033[0m  (不可逆, 会备份后删除所有节点)\n" "$(( ${#PROTO_SCRIPTS[@]} + 1 ))"
-    printf "\n请选择 [1-%d]: " "$(( ${#PROTO_SCRIPTS[@]} + 1 ))"
+    printf "  ${RED}%2d${RESET}) 清空全部节点  ${DIM}(不可逆, 会备份后删除所有节点)${RESET}\n" "$((n_single+1))"
+    printf "  ${CYAN}%2d${RESET}) 返回\n" "0"
+    printf "\n请选择 [1-%d, 0=返回]: " "$((n_single+1))"
     local c; read -r c
-    if [[ "$c" == "$(( ${#PROTO_SCRIPTS[@]} + 1 ))" ]]; then
+    c=$(clean_input "${c:-}")
+    [[ "$c" == "0" ]] && return 0
+    if [[ "$c" == "$((n_single+1))" ]]; then
         wipe_all_nodes; return
     fi
-    [[ "$c" =~ ^[1-6]$ ]] || { ui_invalid "$c"; return 1; }
+    # 上界跟着数组长度走, 不再写死 —— 写死的那版在加协议时会被静默漏掉。
+    [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= n_single )) || { ui_invalid "$c"; return 1; }
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"

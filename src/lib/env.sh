@@ -739,7 +739,95 @@ m_addr_is_local() {
     ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$a"
 }
 
-# 本机第一个全局单播地址 (优先 IPv4, 兼容性最好)
+# =============================================================
+# 对外地址探测
+# =============================================================
+#
+# 背景: 这台机器可能同时有 真实网卡 / WARP / HE-IPv6 隧道 / docker / wireguard,
+# 而**只有真实网卡上的那个地址**是客户端能直连的。
+#
+# 实测: 接口有
+#     eth0    <SERVER_IP>      <- 正解
+#     he-ipv6 <SERVER_IPV6>::*     <- 隧道
+#     warp    172.16.0.2 / 2606:4700:...  <- WARP 出口
+#     docker0 / br-* / awg0        <- 私网
+# 而当时 install_info.env 里存的是 <SERVER_IP> —— **WARP 出口地址**,
+# 写进客户端配置就是 13/13 全连不上。
+#
+# ---------------------------------------------------------------
+# 曾经的实现 (以及它的问题):
+#
+#   先问 api.ipify.org, 再拿回来做"在不在本机接口上"的自检。
+#
+#   问题是**套了 WARP 时那条查询本身就走隧道**, 拿回来的必然是 WARP 地址,
+#   然后自检把它丢掉 —— 每次都要白跑一趟网络, 而且刷一堆警告。
+#
+#   实测那一次输出了 **10 行 [Warn]**, 而结论其实完全正确
+#   (正确退回了 <SERVER_IP>)。**逻辑对、呈现糟**。
+#
+# ---------------------------------------------------------------
+# 现在的顺序 (合并 SB 的做法与我们的自检):
+#
+#   1. 传参
+#   2. install_info.env 里管理员设的 PUBLIC_IP (过自检 / 或标记 VERIFIED)
+#   3. **本机接口地址, 排除隧道网卡与私网**   <- SB 的做法
+#   4. 外部探测 + 自检                        <- 给 NAT 后的机器兜底
+#   5. 本机接口地址 (含私网)
+#
+#   第 3 步是关键: 绝大多数 VPS 上它直接就给出正解, **一次网络请求都不需要**,
+#   也就不会出现上面那种"问了一圈、全丢掉、再退回本机"的噪音。
+#   SB 的 default_server_ip_real() 正是这个思路, 注释里写得很清楚:
+#   "宁可返回空, 也不要给用户一个连不通的地址"。
+#
+# 降噪原则: 正常路径**完全静默**; 只有"最终答案是私网地址(NAT)"这种
+# 用户真的需要动手的情况, 才打警告并给修复命令。
+# =============================================================
+
+# 隧道/虚拟接口名 —— 这些接口上的地址是代理出口或隧道地址, 不能给客户端连。
+# 与 SB 的 SB_TUNNEL_IFACE_RE 同源, 按本机实测补了 awg / he-ipv6 / docker / br-*。
+M_TUNNEL_IFACE_RE='^(warp|wg[0-9]*|awg[0-9]*|tun[0-9]*|tap[0-9]*|utun[0-9]*|tailscale|ts[0-9]*|ppp[0-9]*|zt[0-9]*|meta|he-ipv6.*|sit[0-9]*|docker[0-9]*|br-[0-9a-f]+|veth.*|virbr[0-9]*)$'
+
+# 不可路由 / 保留 / 会被内核自己占用的地址
+#
+# 除了常规私网, 这里额外排除几段**实战踩得到的**:
+#   198.18.0.0/15  RFC 2544 基准测试段。**mihomo/Clash 默认拿 198.18.0.1/16
+#                  做 fake-ip** —— 机器上跑着 TUN 时接口扫描会挑中它,
+#                  那是个假地址, 客户端拿去连必然失败。(实测本机就有 eth5 198.18.0.1)
+#   100.64.0.0/10  CGNAT, Tailscale 也用这段
+#   192.0.2.0/24 / 198.51.100.0/24 / 203.0.113.0/24   TEST-NET, 文档示例地址
+#   240.0.0.0/4    保留段
+m_is_private_addr() {
+    local a="$1"
+    case "$a" in
+        10.*|127.*|192.168.*|169.254.*|0.*) return 0 ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+        100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
+        198.1[89].*|198.51.100.*|192.0.2.*|203.0.113.*) return 0 ;;
+        2[4-5][0-9].*) return 0 ;;
+        fc*:*|fd*:*|fe80:*|::1|2001:db8:*) return 0 ;;
+    esac
+    return 1
+}
+
+# 本机真实对外地址 —— 读接口, 排除隧道/虚拟网卡与私网。
+# 输出第一个可用的地址 (优先 IPv4), 没有则返回 1。
+m_iface_public_addr() {
+    local dev cidr first6=""
+    while read -r dev cidr; do
+        [[ -n "$dev" && -n "$cidr" ]] || continue
+        [[ "$dev" =~ $M_TUNNEL_IFACE_RE ]] && continue
+        m_is_private_addr "$cidr" && continue
+        case "$cidr" in
+            *:*) [[ -z "$first6" ]] && first6="$cidr"; continue ;;   # 记住, 但 v4 优先
+            *)   printf '%s' "$cidr"; return 0 ;;
+        esac
+    done < <(ip -o addr show scope global 2>/dev/null \
+             | awk '{print $2, $4}' | sed 's|/[0-9]*$||')
+    [[ -n "$first6" ]] && { printf '%s' "$first6"; return 0; }
+    return 1
+}
+
+# 本机第一个全局单播地址 (含私网; 最后的兜底用)
 m_local_addr() {
     local v4 v6
     v4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
@@ -751,16 +839,6 @@ m_local_addr() {
 
 # m_server_ip —— 生成分享链接 / 客户端配置时对外写的那个地址
 #
-# 顺序刻意这样排:
-#   1. 传参进来的
-#   2. install_info.env 里管理员确认过的 PUBLIC_IP
-#   3. 外部探测, 但**必须先自检**: 不在本机接口上的地址直接丢弃
-#   4. 兜底用本机接口地址
-#
-# 为什么不能把探测放前面: 开了透明代理 (tproxy/redirect) 的机器上,
-# --noproxy 对 curl 无效, api.ipify 拿回来的是**代理出口 IP**。
-# 把它写进客户端配置, 节点就成了"连自己都连不上"的死节点。
-#
 # 踩过的坑: all.sh 用未校验的 m_server_ip, 13 个节点的 server
 # 全被写成 WARP 出口 <WARP_EXIT_IP>, 真实 IP 是 <REAL_SERVER_IP>。
 # 那个地址端口全不通, 客户端 13/13 全部连不上。
@@ -768,53 +846,61 @@ m_local_addr() {
 # 同一个项目两套 IP 探测逻辑, 这次把它们统一。
 m_server_ip() {
     [[ -n "${1:-}" ]] && { printf '%s' "$1"; return 0; }
-    # 内存里已加载的值
-    if [[ -n "${PUBLIC_IP:-}" ]]; then
-        if m_addr_is_local "$PUBLIC_IP" || [[ "${PUBLIC_IP_VERIFIED:-}" == "1" ]]; then
-            printf '%s' "$PUBLIC_IP"; return 0
-        fi
-        print_warn "已记录的 PUBLIC_IP=$PUBLIC_IP 不在本机接口上, 忽略"
-        unset PUBLIC_IP
+
+    # ---- 1. 内存里已加载的 ----
+    if [[ -n "${PUBLIC_IP:-}" ]] && \
+       { m_addr_is_local "$PUBLIC_IP" || [[ "${PUBLIC_IP_VERIFIED:-}" == "1" ]]; }; then
+        printf '%s' "$PUBLIC_IP"; return 0
     fi
-    # 从 install_info.env 读。存的旧值同样要过自检 —— 修复前的版本在这里
-    # 直接返回, 于是 install_info.env 里那个 WARP 出口地址 (<WARP_EXIT_IP>)
-    # 会被一直沿用, 自检形同虚设 (实测 2026-10-06, 修复后仍返回旧值)。
+
+    # ---- 2. install_info.env 里管理员设的 ----
+    # 存的旧值同样要过自检 —— 修复前的版本在这里直接返回, 于是 WARP 出口
+    # 地址会被一直沿用, 自检形同虚设。
+    local stale=""
     if [[ -f "${SRV_ENV:-}" ]]; then
         m_load_env "$SRV_ENV" 2>/dev/null || true
         if [[ -n "${PUBLIC_IP:-}" ]]; then
             if m_addr_is_local "$PUBLIC_IP" || [[ "${PUBLIC_IP_VERIFIED:-}" == "1" ]]; then
                 printf '%s' "$PUBLIC_IP"; return 0
             fi
-            print_warn "install_info.env 里的 PUBLIC_IP=$PUBLIC_IP 不在本机接口上, 已忽略"
-            print_warn "  (多半是 WARP/透明代理的出口地址, 客户端连不上)"
-            print_warn "  确认要改成正确值请执行:"
-            print_warn "    python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
+            stale="$PUBLIC_IP"
             unset PUBLIC_IP
         fi
     fi
 
+    # ---- 3. 本机接口 (排除隧道/私网) —— 正解通常在这里, 且不联网 ----
+    local iface
+    if iface=$(m_iface_public_addr); then
+        if [[ -n "$stale" ]]; then
+            print_info "install_info.env 里的 PUBLIC_IP=$stale 不在本机接口上 (多半是 WARP 出口), 已改用 $iface"
+        fi
+        printf '%s' "$iface"; return 0
+    fi
+
+    # ---- 4. 外部探测 + 自检 (给 NAT 后的机器) ----
     local cand
     for cand in \
         "$(curl -s4 --max-time 8 https://api.ipify.org 2>/dev/null)" \
         "$(curl -s6 --max-time 8 https://api64.ipify.org 2>/dev/null)"; do
         [[ -n "$cand" ]] || continue
-        # 关键: 挂在本机接口上才认。多网卡/多 IP 的机器外部探测常给出
-        # 另一个地址, 这时宁可退回本机地址也不要写一个连不上的。
-        if m_addr_is_local "$cand"; then
-            printf '%s' "$cand"
-            return 0
+        # 挂在本机接口上才认。多网卡/多 IP 的机器外部探测常给出另一个地址,
+        # 这时宁可退回本机地址也不要写一个连不上的。
+        if m_addr_is_local "$cand" && ! m_is_private_addr "$cand"; then
+            [[ -n "$stale" ]] && \
+                print_info "install_info.env 里的 PUBLIC_IP=$stale 不在本机接口上, 已改用 $cand"
+            printf '%s' "$cand"; return 0
         fi
-        print_warn "探测到地址 $cand 不在本机接口上 (多半是 WARP/透明代理的出口), 已丢弃"
+        # 被丢弃的候选**不逐条报警** —— 套 WARP 时这是完全正常的情况,
     done
 
-    # 兜底: 本机接口地址。NAT 后仍需管理员确认, 但至少是个真实可达的地址,
-    # 比写一个代理出口地址强。
+    # ---- 5. 兜底: 本机接口地址 (可能是私网) ----
+    # 这一种用户**真的需要动手**(NAT 后客户端连不上), 才值得给完整提示。
     if cand=$(m_local_addr); then
-        print_warn "外部探测未通过自检, 改用本机接口地址: $cand"
-        print_warn "若本机在 NAT 后面, 请确认客户端能直连, 或手动设置:"
+        print_warn "无法确定公网地址, 暂用本机接口地址: $cand"
+        [[ -n "$stale" ]] && print_info "  (install_info.env 里的 $stale 不在本机接口上, 已忽略)"
+        print_warn "若本机在 NAT 后面, 客户端会连不上 —— 确认后手动设置:"
         print_warn "  python3 src/lib/envtool.py set install_info.env PUBLIC_IP <真实IP>"
-        printf '%s' "$cand"
-        return 0
+        printf '%s' "$cand"; return 0
     fi
 
     print_error "无法确定对外地址, 且本机没有全局单播地址"
