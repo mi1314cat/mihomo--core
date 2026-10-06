@@ -28,6 +28,11 @@ BASE_DIR="$SRV_ROOT"
 # shellcheck source=/dev/null
 source "$M_LIB/env.sh"
 
+# 证书体系 (扫描/识别/生成/钉扎/回收) —— 唯一真源, 协议脚本不再各写一份。
+# 必须在 env.sh 之后 (依赖 ui.sh 的 print_*/safe_read)。
+# shellcheck source=/dev/null
+source "$M_LIB/cert.sh"
+
 # UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh, 由上面的 env.sh 带入。
 
 # 本地覆盖 pause(): ui.sh 那版遇到 EOF 直接 exit, 这里要 return 1 把控制权交回
