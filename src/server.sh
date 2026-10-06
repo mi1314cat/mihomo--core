@@ -37,6 +37,10 @@ source "$M_LIB/cert.sh"
 # shellcheck source=/dev/null
 source "$M_LIB/cdn.sh"
 
+# 推荐配置预置 (每协议多套方案; all.sh 批量时按预置生成)
+# shellcheck source=/dev/null
+source "$M_LIB/preset.sh"
+
 # UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh, 由上面的 env.sh 带入。
 
 # 本地覆盖 pause(): ui.sh 那版遇到 EOF 直接 exit, 这里要 return 1 把控制权交回
