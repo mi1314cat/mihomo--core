@@ -130,13 +130,13 @@ PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" "Trojan" "Hysteria2" "TUIC v5" "
 #
 # 内容来自各脚本的实际分支, 不是猜的:
 #   Reality.sh:  tcp/grpc/xhttp  + reality
-#   VLESS.sh:    ws/xhttp/grpc/h2/tcp + tls 或 reality; 另有 cdn/nginx 接入方式
+#   VLESS.sh:    ws/xhttp/grpc/h2/tcp + 仅 tls (无 reality 分支); 另有 cdn/nginx 接入方式
 #   Trojan.sh:   tcp/ws/grpc + tls 或 reality
 #   hysteria2.sh / TUIC.sh: QUIC(UDP), 仅 tls
 #   AnyTLS.sh:   TCP, 仅 tls
 PROTO_HINTS=(
     "TCP / gRPC / xHTTP + Reality"
-    "WS / xHTTP / gRPC / H2 / TCP · TLS 或 Reality"
+    "WS / xHTTP / gRPC / H2 / TCP · 仅 TLS"
     "TCP / WS / gRPC · TLS 或 Reality"
     "QUIC (UDP) · 仅 TLS"
     "QUIC (UDP) · 仅 TLS, 不支持 Reality"

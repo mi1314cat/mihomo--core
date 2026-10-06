@@ -902,8 +902,12 @@ EOF
 }
 
 # ---------- Trojan + HTTP/2 + REALITY (直连) ----------
-# 注: trojan 的 listener **支持** h2 (与 vless 不同 —— vless 结构性没有 h2)。
-# 实测 trojan+h2+TLS 5/5。
+# 注: 这条名字里的 H2 **不是真的 HTTP/2**。
+#   mihomo 的 trojan **出站** switch 只认 ws / grpc / default, 没有 `case "h2"`
+#   (adapter/outbound/trojan.go:79), 所以客户端写的 `network: h2` 落到 default
+#   —— 实际走的是裸 TCP。服务端 trojan listener 又对传输完全不敏感 (只认
+#   ws-path / grpc-service-name, 且不校验路径), 于是两边都不做 h2, 反而连得上。
+#   实测 5/5 是真的, 但连上的是 TCP 而非 H2: **名字与事实不符**, 留此备查。
 g_trojan_h2_reality() {
     local path; path=$(m_check_ws_path "$(m_gen_path trojan-h2)") || return 1
     NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
