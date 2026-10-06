@@ -297,7 +297,8 @@ gen_config() {
         kind="file"; url=""
         rec=$(subs_get "$name")
         if [[ -n "$rec" ]]; then
-            if printf '%s' "$rec" | grep -q 'http-auto'; then kind="http-auto"; fi
+            # rec 已在变量里, 直接模式匹配 —— 不为了一个子串匹配去开管道。
+            if [[ "$rec" == *http-auto* ]]; then kind="http-auto"; fi
             url=$(printf '%s' "$rec" | python3 -c '
 import json,sys
 try: print(json.load(sys.stdin).get("url",""))
@@ -1005,7 +1006,9 @@ EOF
     print_ok "已彻底删除: $CLI_ROOT"
 
     # 确认代理口确实释放
-    if ss -lntH 2>/dev/null | grep -qE ":${PORT_MIXED}[[:space:]]"; then
+    # 先整体捕获再匹配 —— 管道式会因 grep -q 提前退出让 ss 收到 SIGPIPE (141),
+    # 在 `set -euo pipefail` 下把"命中"误判为"失败", 于是这句警告永远不显示。
+    if grep -qE ":${PORT_MIXED}[[:space:]]" <<<"$(ss -lntH 2>/dev/null || true)"; then
         print_warn "端口 $PORT_MIXED 仍在监听 —— 本机可能还有别的 mihomo 实例在使用它"
     fi
     return 0
@@ -1298,7 +1301,9 @@ ask_port() {
         return 1
     fi
     # 已被占用要拦, 否则内核起不来, 而面板还会显示旧端口
-    if ss -lntH 2>/dev/null | awk '{print $4}' | grep -qE ":${__in}$"; then
+    # 先整体捕获再匹配 —— 管道式会因 grep -q 提前退出触发 SIGPIPE (141), 在
+    # `set -euo pipefail` 下把"已占用"误判成"未占用", 于是放行了一个起不来的端口。
+    if grep -qE ":${__in}$" <<<"$(ss -lntH 2>/dev/null | awk '{print $4}' || true)"; then
         print_error "端口 $__in 已被占用, 换一个"
         return 1
     fi
