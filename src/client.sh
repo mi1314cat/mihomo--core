@@ -76,8 +76,39 @@ unset M_NO_SRV_DIRS
 # env.sh 里没有, 但 save_settings / gen_config 要读。
 : "${PORT_MIXED:=7890}"
 : "${PORT_CTRL:=9090}"
-: "${BIND_ADDR:=127.0.0.1}"
+# 监听地址默认 **0.0.0.0 (局域网可达)**, 不是 127.0.0.1。
+#
+# 而且默认是我局网的 IP。"
+#
+# SB 的默认值本来就是局域网 (install.sh: BIND_LAN="${BIND_LAN:-0.0.0.0}",
+# CLASH_LISTEN="${CLASH_LISTEN:-0.0.0.0}") —— 所以这不是"Mihomo 内核不同所以必须
+# 不同", 而是**我还没把 SB 里已经验证过的产品默认值迁移过来**。
+#
+# 存 0.0.0.0 而不是具体那个 LAN IP, 是刻意的: DHCP 换地址后具体 IP 会绑不上,
+# 内核直接起不来; 0.0.0.0 不受影响。**显示时**再解析成真实 LAN IP (见 host_addr)。
+: "${BIND_ADDR:=0.0.0.0}"
 : "${HEALTH_URL:=http://www.gstatic.com/generate_204}"
+
+# ---------- 监听地址 / 显示地址 ----------
+#
+# 这是两个不同的概念, 混在一起就会出错:
+#   * 监听地址 (BIND_ADDR) —— 写进配置, 决定内核 bind 在哪。可以是 0.0.0.0。
+#   * 显示地址             —— 给用户看/复制进浏览器的。**0.0.0.0 不是可访问地址**,
+#                            拿它当 URL 只会得到一个连不上的链接。
+#
+# SB 的做法 (client.sh: lan_ip / host_addr) 就是这个, 直接照搬。
+lan_ip() {
+    ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
+}
+
+# 把监听地址解析成"真的能连上"的地址
+host_addr() {
+    case "${1:-}" in
+        ""|0.0.0.0|"::"|"[::]"|"*") lan_ip ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 
 # UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh。
 # 客户端不经过 env.sh 的老路已经改掉, 这里保留兜底: env.sh 缺失时面板
@@ -305,7 +336,13 @@ else:
     for n in names:
         groups.append({"name": n, "type": "select", "use": [n]})
 
-lan = bind != "127.0.0.1"
+# 回环判定要认全: 127.0.0.1 / ::1 / localhost 都是"只有本机"
+lan = bind not in ("127.0.0.1", "::1", "localhost")
+
+
+def hp(host, port):
+    """拼 host:port。IPv6 字面量必须加方括号, 否则 ':::9090' 无法解析。"""
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 # geodata 必须按实际拥有的文件来定:
 #   * geodata-mode: true  → 需要 GeoIP.dat / GeoSite.dat
@@ -367,14 +404,19 @@ else:
 cfg = {
     "mixed-port": int(p_mixed),
     "allow-lan": lan,
-    "bind-address": "*" if lan else bind,
+    # 通配才写 "*"; **具体 IP 必须原样写下去**。
+    #
+    # 原来是 `"*" if lan else bind` —— 而 lan 只判了"不等于 127.0.0.1", 于是
+    # 用户填 192.168.1.5 会被悄悄扩成 "*", 变成监听所有网卡。用户以为收窄了,
+    # 实际放宽了 —— 安全语义反了, 而且界面上完全看不出来。
+    "bind-address": "*" if bind in ("0.0.0.0", "::", "*") else bind,
     "mode": "rule",
     "log-level": "info",
     "ipv6": True,
     "unified-delay": True,
     "tcp-concurrent": True,
     "find-process-mode": "strict",
-    "external-controller": f"{bind}:{p_ctrl}",
+    "external-controller": hp(bind, p_ctrl),
     "secret": secret,
     "external-ui": "ui",
     "profile": {"store-selected": True, "store-fake-ip": True},
@@ -386,7 +428,7 @@ cfg = {
         # DNS 口却听 0.0.0.0:1053 —— 与上面 allow-lan=false 自相矛盾。
         # 后果是本机成了一个开放解析器: 局域网任何人都能拿它查询,
         # 而这些查询**不经过代理**, 等于白送一份 DNS 反射面。
-        "listen": f"{bind}:1053",
+        "listen": hp(bind, 1053),
         # 关掉 AAAA 记录。
         #
         # 实测问题: 开着 ipv6 时内核会返回真实 IPv6 地址,
@@ -629,23 +671,84 @@ status_block() {
     # 输出走 stderr: UI 混进 stdout 会污染 $(...), 且与 print_title(stderr)
     # 混排时缓冲不同步会出现"状态先于标题"。
     printf "  服务: %-14s 节点: %-4s 内核: %s\n" "$svc" "$n" "$ver" >&2
-    # 端口要显示**内核实际在用的**, 不能只显示 settings.env 里的值。
-    # 实测: 全新安装写的是 mixed-port: 0, 面板却显示 7890 ——
-    # 而 7890 恰好是本机另一个 mihomo 的端口, 等于显示"别人的端口"。
-    # 该端口在本进程名下真有 socket 才算一致, 否则去内核实际监听里找。
-    local eff_mixed="$PORT_MIXED" nm real
-    nm=$(basename "$CLI_BIN")
-    if ! ss -lntpH 2>/dev/null | grep -E ":${PORT_MIXED}[[:space:]]" | grep -q "(\"$nm\","; then
-        real=$(ss -lntpH 2>/dev/null | grep "(\"$nm\"," \
-               | awk '{print $4}' | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)
-        [[ -n "$real" ]] && eff_mixed="$real"
+    # ---------- 显示实际生效的端口与地址 ----------
+    #
+    # 原来这里是 `ss -lntpH | grep 我们的进程 | ... | head -1` —— 抓的是**我们
+    # 进程监听列表里的第一个端口**。而 ss 的输出顺序里控制端口排在前面, 于是
+    # 控制端口 (9090) 被当成了 HTTP/SOCKS 端口显示, 用户看到:
+    #
+    #     HTTP/SOCKS: 127.0.0.1:9090   控制面板: http://127.0.0.1:9090/ui/
+    #
+    # 连接端口是一样的?"
+    #
+    # 根因是**用"进程监听了哪些端口"去反推"配置想让它听哪个"** —— 这个反推
+    # 本身就不成立 (一个进程会听很多端口: 代理、控制 API、DNS)。
+    #
+    # SB 的做法更直接 (client.sh: load_effective): **配置文件才是唯一事实来源**,
+    # 直接读配置里的值。照搬。
+    local eff_mixed eff_bind eff_ctrl
+    eff_mixed=$(eff_cfg mixed-port)
+    eff_bind=$(eff_cfg bind-address)
+    eff_ctrl=$(eff_cfg external-controller)
+
+    # 配置还没生成 / 字段缺失 -> 退回面板设置值, 但**不假装它是生效值**
+    local from_conf=1
+    [[ "$eff_mixed" =~ ^[0-9]+$ ]] || { eff_mixed="$PORT_MIXED"; from_conf=0; }
+    [[ -n "$eff_bind" ]] || eff_bind="$BIND_ADDR"
+
+    # 控制面板地址以配置为准 (可能是 "0.0.0.0:9090" 这种 host:port 形式)
+    local ctrl_host="${eff_ctrl%:*}" ctrl_port="${eff_ctrl##*:}"
+    [[ -n "$ctrl_host" ]] || ctrl_host="$eff_bind"
+    [[ "$ctrl_port" =~ ^[0-9]+$ ]] || ctrl_port="$PORT_CTRL"
+
+    # 0.0.0.0 不是能连上的地址, 显示前解析成真实 LAN IP
+    local show_bind; show_bind=$(host_addr "$eff_bind")
+
+    if [[ "$eff_mixed" == "0" ]]; then
+        # mixed-port: 0 = 内核**不监听**代理端口。这是全新安装、还没生成过配置的
+        # 正常状态, 不是错误 —— 但必须说清楚, 否则用户会以为"代理开着"。
+        printf "  HTTP/SOCKS: %s\n" \
+            "未启用 (内核没监听代理端口, 先「1) 初始化基础配置」)" >&2
+    else
+        printf "  HTTP/SOCKS: %s:%s   控制面板: http://%s:%s/ui/\n" \
+            "$show_bind" "$eff_mixed" "$(host_addr "$ctrl_host")" "$ctrl_port" >&2
     fi
-    printf "  HTTP/SOCKS: %s:%s   控制面板: http://%s:%s/ui/\n" \
-        "$BIND_ADDR" "$eff_mixed" "$BIND_ADDR" "$PORT_CTRL"
-    if [[ "$eff_mixed" != "$PORT_MIXED" ]]; then
-        print_info "面板设置端口 $PORT_MIXED, 但内核实际在用 $eff_mixed"
-        print_info "改端口后需「6) 服务管理 → 3) 重启」才会生效"
+
+    # 只在真的"设了一个端口但配置里是另一个"时才提"改了没重启"。
+    #
+    # mixed-port: 0 是个特例 —— 它**不是"另一个端口"**, 而是"内核根本不监听代理
+    # 端口"。这时说"面板设置 7890 但配置里写的是 0"会让人以为端口冲突了, 而正确
+    # 的下一步是去生成配置。所以单独处理。
+    if (( from_conf )) && [[ "$eff_mixed" == "0" ]]; then
+        :   # 上面那行"未启用"已经说清楚了, 不再重复
+    elif (( from_conf )) && [[ "$eff_mixed" != "$PORT_MIXED" ]]; then
+        print_info "面板设置端口 $PORT_MIXED, 但配置里写的是 $eff_mixed"
+        print_info "改端口后需「8) 启动/停止/重启服务 → 重启」才会生效"
+    elif (( ! from_conf )); then
+        print_info "还没生成配置文件, 端口按面板设置显示 (先「1) 初始化基础配置」)"
     fi
+}
+
+# 读**实际生成的配置**里的一个顶层字段。config.yaml 是唯一事实来源。
+# 读不到 (文件不存在 / 字段缺失 / 解析失败) 返回空, 由调用方决定怎么退。
+eff_cfg() {
+    [[ -s "$CLI_CONF/config.yaml" ]] || return 0
+    python3 - "$CLI_CONF/config.yaml" "$1" <<'PYEFF' 2>/dev/null
+import sys
+try:
+    import yaml
+    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+except Exception:
+    sys.exit(0)
+v = d.get(sys.argv[2])
+if v is None:
+    sys.exit(0)
+# bool 要还原成小写, 否则 Python 会打成 True/False
+if isinstance(v, bool):
+    print("true" if v else "false")
+else:
+    print(v)
+PYEFF
 }
 
 api() { curl -s -m 8 -H "Authorization: Bearer $(cat "$CLI_ROOT/.secret" 2>/dev/null)" "http://$BIND_ADDR:$PORT_CTRL$1"; }
@@ -1187,7 +1290,7 @@ settings_menu() {
     print_title "客户端设置"
     ui_menu 1 "HTTP/SOCKS 端口    当前: $PORT_MIXED"
     ui_menu 2 "控制面板端口       当前: $PORT_CTRL"
-    ui_menu 3 "监听地址           当前: $BIND_ADDR  (127.0.0.1=仅本机, 0.0.0.0=局域网)"
+    ui_menu 3 "监听地址           当前: $BIND_ADDR  →  $(_show_bind_hint)"
     ui_menu 4 "显示面板密钥"
     ui_menu 5 "重新生成面板密钥"
     ui_menu 6 "geo 自动更新       当前: ${GEO_AUTO_UPDATE:-0}"
@@ -1198,8 +1301,7 @@ settings_menu() {
     case "$c" in
         1) ask_port PORT_MIXED "HTTP/SOCKS" && { save_settings; apply_change; } ;;
         2) ask_port PORT_CTRL "控制面板" && { save_settings; apply_change; } ;;
-        3) printf "新地址 (127.0.0.1 / 0.0.0.0): "; read -r BIND_ADDR
-           [[ -n "$BIND_ADDR" ]] && { save_settings; apply_change; } ;;
+        3) set_bind ;;
         4) cat "$CLI_ROOT/.secret" ;;
         5) gen_secret > "$CLI_ROOT/.secret"; chmod 600 "$CLI_ROOT/.secret"
            print_ok "已重新生成"; apply_change ;;
@@ -1207,6 +1309,70 @@ settings_menu() {
            save_settings; apply_change ;;
         7) port_check_show "$(basename "$CLI_ROOT/mihomo")" ;;
     esac
+}
+
+# 菜单上那行"当前: X → Y"的提示
+_show_bind_hint() {
+    local h; h=$(host_addr "$BIND_ADDR")
+    if [[ "$BIND_ADDR" == "$h" ]]; then
+        printf '仅 %s' "$h"
+    else
+        printf '局域网可达, 用 %s 连' "$h"
+    fi
+}
+
+# 改监听地址。
+#
+# 对齐 SB 的 set_bind: 讲清两个选项的差别、改完**必须重启**(监听地址是启动期
+# 参数, 已在运行时 systemctl start 是空操作), 校验失败要回滚。
+set_bind() {
+    print_title "监听地址"
+    printf "  当前: %s  →  %s\n\n" "$BIND_ADDR" "$(_show_bind_hint)" >&2
+    printf "  ${YELLOW}0.0.0.0${RESET}    = 局域网其他设备也能用 (默认)\n" >&2
+    printf "  ${YELLOW}127.0.0.1${RESET}  = 只有本机能用 (更安全)\n" >&2
+    printf "  也可以直接填本机某个 IP, 例如 192.168.1.10 —— 那样只在该网卡上监听\n\n" >&2
+    printf "  ${DIM}控制面板在非回环地址上监听时, 密钥是必需的 (已自动生成)${RESET}\n" >&2
+    printf "  新地址 [回车取消]: " >&2
+    local nb; read -r nb || return 0
+    nb=$(clean_input "$nb")
+    [[ -z "$nb" ]] && { print_warn "已取消"; return 0; }
+
+    # 只接受: 0.0.0.0 / :: / 127.0.0.1 / ::1 / localhost / 一个合法 IPv4
+    case "$nb" in
+        0.0.0.0|"::"|127.0.0.1|"::1"|localhost) ;;
+        *)
+            if [[ "$nb" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+                local o
+                for o in "${BASH_REMATCH[@]:1}"; do
+                    (( o <= 255 )) || { print_error "不是合法 IPv4: $nb"; return 1; }
+                done
+            else
+                print_error "认不出来: $nb (可填 0.0.0.0 / 127.0.0.1 / 本机某个 IPv4)"
+                return 1
+            fi
+            # 填了具体 IP 就提醒一句: 换网/DHCP 变了这个地址会绑不上, 内核起不来
+            if [[ "$nb" != "$(lan_ip)" ]]; then
+                print_warn "注意: 填具体 IP 后, 本机地址一旦变化内核会绑不上而启动失败"
+                print_warn "要跟随地址变化, 用 0.0.0.0 更稳"
+            fi
+            ;;
+    esac
+
+    local old="$BIND_ADDR"
+    BIND_ADDR="$nb"
+    if ! { save_settings && apply_change; }; then
+        BIND_ADDR="$old"; save_settings >/dev/null 2>&1 || true
+        print_error "配置检查失败, 已回滚为 $old"
+        return 1
+    fi
+    print_ok "监听地址已改为 $nb"
+    # 监听地址属于启动期参数: 已在运行时 start 是空操作, 必须重启才会重新 bind
+    if svc_active; then
+        systemctl restart "$CLI_SERVICE" && print_ok "服务已重启, 新监听地址已生效" \
+            || print_warn "重启失败, 请手动「8) 启动/停止/重启服务」"
+    else
+        print_warn "服务未运行, 启动后生效"
+    fi
 }
 
 # =============================================================
