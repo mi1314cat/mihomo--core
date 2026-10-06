@@ -31,6 +31,55 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$SELF_DIR/../lib/env.sh" 2>/dev/null || {
     echo "找不到 src/lib/env.sh, 请从仓库内运行" >&2; exit 1; }
 
+# =============================================================
+# 参数解析 —— 此前**这段根本不存在**
+#
+# 文件头一直写着 --dry-run / --no-tls / --only / --fp, server.sh 的
+# _all_run 也确实把它们原样传了进来, 但 all.sh 里没有一行读 $@, 而
+# CLIENT_FP / DRY_RUN / USE_TLS / ONLY 也没有任何默认值。在 set -u 下,
+# 任何用户点「全协议一键生成」都会立刻死在:
+#
+#     all.sh: line 58: CLIENT_FP: unbound variable
+#
+# 于是这个功能对所有人都是**一次都跑不起来**的。
+#
+# 更危险的是「先预览」那一档: --dry-run 传进来无人接收, DRY_RUN 又是空的,
+# 结果"预览"会**真的写文件并重载服务** —— 用户以为只是看一眼。
+#
+# 排查时先确认过这不是新引入的回归: 基线提交同样是 0 个参数分支、
+# 0 个默认值, 所以它从一开始就没工作过。
+#
+# 默认值一律写成 ${VAR:-默认}: 既能被环境变量覆盖, 单独跑也不会炸。
+# =============================================================
+CLIENT_FP="${CLIENT_FP:-chrome}"
+DRY_RUN="${DRY_RUN:-0}"
+USE_TLS="${USE_TLS:-1}"
+ONLY="${ONLY:-}"
+
+while (( $# )); do
+    case "$1" in
+        --dry-run) DRY_RUN=1 ;;
+        --no-tls)  USE_TLS=0 ;;
+        --fp)      CLIENT_FP="${2:-}"; shift ;;
+        --fp=*)    CLIENT_FP="${1#*=}" ;;
+        --only)    ONLY="${2:-}"; shift ;;
+        --only=*)  ONLY="${1#*=}" ;;
+        -h|--help)
+            sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^#\s\?//'
+            exit 0 ;;
+        *)
+            print_error "未知参数: $1"
+            print_error "可用: --dry-run | --no-tls | --only <ids> | --fp <name>"
+            exit 2 ;;
+    esac
+    shift
+done
+
+# --only 允许 "a,b" / "a b" / "a, b" 混写, 统一成逗号分隔
+if [[ -n "$ONLY" ]]; then
+    ONLY="$(printf '%s' "$ONLY" | tr '[:space:]' ',' | tr -s ',' | sed 's/^,//; s/,$//')"
+fi
+
 CONF_DIR="${CONF_DIR:-$SRV_ROOT/conf/config.d}"
 OUT_DIR="${OUT_DIR:-$SRV_ROOT/out}"
 CERTS_DIR="${CERTS_DIR:-$SRV_ROOT/conf/certs}"
