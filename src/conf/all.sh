@@ -16,6 +16,7 @@
 #   bash all.sh --quick            # 不提问, 端口区间自动分配
 #   bash all.sh --force            # 重建: 先清掉同协议旧节点再重新生成
 #   bash all.sh --no-tls           # 跳过所有需要证书的协议
+#   bash all.sh --self-sign        # 没有真证书时生成自签, 让 TLS 协议也全量产出
 #   bash all.sh --only reality,trojan,hysteria2
 #   bash all.sh --fp firefox       # 换 client-fingerprint (默认 chrome)
 #   bash all.sh --dry-run          # 只看会生成什么, 不落盘
@@ -23,6 +24,8 @@
 # 环境变量 (批量一律走显式环境变量, 绝不读应答串 —— 交互提问 + 应答串重放
 # 必然整体错位):
 #   CLIENT_FP=chrome|firefox|safari|edge|ios|android|random   (等价于 --fp)
+#   ALL_CERT_MODE=real|self|none   证书方案: real 只用真证书, self 允许自签
+#                                  (等价于 --self-sign), none 等同 --no-tls
 #   XHTTP_MODE=auto|stream-one|stream-up|packet-up             (默认 auto)
 #   XHTTP_PAD=std|strong|max                                   (默认 std)
 #   VMESS_PAD=0|1              VMess 客户端 global-padding 等 (默认 1)
@@ -60,11 +63,16 @@ USE_TLS="${USE_TLS:-1}"
 ONLY="${ONLY:-}"
 QUICK="${QUICK:-0}"
 FORCE="${FORCE:-0}"
+# 证书方案。auto = 有真证书就用、没有就跳过 (旧行为);
+# self = 没有真证书就生成自签证书, 让需要 TLS 的协议也全量产出。
+# 非交互场景用 ALL_CERT_MODE=real|self|none 指定, 与其它公共参数一致。
+CERT_MODE="${CERT_MODE:-${ALL_CERT_MODE:-auto}}"
 
 while (( $# )); do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --no-tls)  USE_TLS=0 ;;
+        --self-sign) CERT_MODE=self ;;
         --quick)   QUICK=1 ;;
         --force)   FORCE=1 ;;
         --fp)      CLIENT_FP="${2:-}"; shift ;;
@@ -76,7 +84,7 @@ while (( $# )); do
             exit 0 ;;
         *)
             print_error "未知参数: $1"
-            print_error "可用: --dry-run | --no-tls | --quick | --force | --only <ids> | --fp <name>"
+            print_error "可用: --dry-run | --no-tls | --self-sign | --quick | --force | --only <ids> | --fp <name>"
             exit 2 ;;
     esac
     shift
@@ -1556,19 +1564,61 @@ else
     fi
     [[ -n "$CRT" && -f "$CRT" && -n "$KEY" && -f "$KEY" ]] || { CRT=""; KEY=""; SNI=""; }
     if [[ -n "$CRT" ]]; then
-        # 把"本机到底有几张可用证书"这个事实直接摆出来。
-        # 选项写成 "1) 使用本机真实证书 (检测到 4 张 CA 可信证书)" ——
-        # 用户一眼知道有多少备选, 而不是进去之后才发现只有一张。
+        # 把"本机到底有几张可用证书"这个事实直接摆出来 —— 用户一眼知道有多少
+        # 备选, 而不是进去之后才发现只有一张。
+        #
+        # 措辞注意: ALL_CERT_N 来自 scan_certs (全盘 8 处), 而选中的这张可能来自
+        # find_cert (只搜 conf/certs)。两者口径不同时, 说"N 张…已自动选优先级
+        # 最高的这张"会让用户对不上账 (明明选了 A, 却被告知有 4 张 B)。
+        # 所以只陈述"检测到 N 张可用", 不暗示选中项出自这 N 张。
         printf "     ${GREEN}✅${RESET} %s ${DIM}(域名 %s)${RESET}\n" "$(basename "$CRT")" "$SNI" >&2
         if (( ALL_CERT_N > 1 )); then
-            printf "     ${DIM}本机共检测到 %d 张 CA 可信证书, 已自动选优先级最高的这张${RESET}\n" "$ALL_CERT_N" >&2
+            printf "     ${DIM}本机共检测到 %d 张可用证书, 已自动选用其中优先级最高的${RESET}\n" "$ALL_CERT_N" >&2
         fi
         printf "     ${GREEN}[OK]${RESET} 证书: %s\n" "${SNI:-$CRT}" >&2
     else
-        printf "     ${YELLOW}—${RESET} 本机没有可用证书\n" >&2
-        printf "     ${DIM}需要证书的协议 (Hysteria2 / TUIC / AnyTLS / Trojan+TLS / VLESS+WS+TLS 等)${RESET}\n" >&2
-        printf "     ${DIM}会被跳过, 其余照常生成 —— 这不是错误${RESET}\n" >&2
-        printf "     ${GREEN}[OK]${RESET} 证书: 无 ${DIM}(将跳过需要证书的协议)${RESET}\n" >&2
+        # 没找到可用证书。
+        #
+        # 旧行为是直接跳过所有需要 TLS 的协议, 于是 6 个协议
+        # (Trojan+TLS / VLESS+WS+TLS / XHTTP+TLS / Hysteria2 / TUIC / AnyTLS)
+        # 整批记"跳过" —— 用户点了"全协议", 拿到的却是残缺的一套。
+        # 这里补一条自签出路, 让"全协议"真的是全协议。
+        #
+        # 自签的代价必须当场说清, 不能等用户发现连不上才知道:
+        #   * 客户端要 skip-cert-verify —— 6 个 TLS 生成器已经都写了这一行
+        #   * **过 CDN 必然失败** —— Cloudflare 回源校验不认自签 CA。
+        #     所以 CDN 档位照旧跳过 (need_tls=2 的硬拦不动, 这是刻意的)
+        __want_self=0
+        case "$CERT_MODE" in
+            self) __want_self=1 ;;
+            auto)
+                if [[ -t 0 && "$QUICK" != "1" ]]; then
+                    printf "     ${YELLOW}—${RESET} 本机没有可用证书\n" >&2
+                    printf "     ${DIM}不生成的话, 需要证书的协议会被跳过:${RESET}\n" >&2
+                    printf "     ${DIM}Hysteria2 / TUIC / AnyTLS / Trojan+TLS / VLESS+WS+TLS / XHTTP+TLS${RESET}\n" >&2
+                    printf "     ${CYAN}生成自签证书?${RESET} ${DIM}(客户端用 skip-cert-verify 跳过校验; 过 CDN 无效) [Y/n]: ${RESET}" >&2
+                    __ans=""; read -r __ans || true
+                    [[ -z "$__ans" || "$__ans" =~ ^[Yy] ]] && __want_self=1
+                fi ;;
+        esac
+        if (( __want_self )); then
+            if generate_cert "$(random_domain)" >/dev/null 2>&1; then
+                CRT="$CERT_FILE"; KEY="$KEY_FILE"; SNI="$CERT_DOMAIN"
+                printf "     ${GREEN}✅${RESET} 已生成自签证书 %s ${DIM}(域名 %s)${RESET}\n" \
+                    "$(basename "$CRT")" "$SNI" >&2
+                printf "     ${DIM}客户端已写 skip-cert-verify; CDN 档位仍会跳过 (CF 不认自签)${RESET}\n" >&2
+                printf "     ${GREEN}[OK]${RESET} 证书: %s ${DIM}(自签)${RESET}\n" "$SNI" >&2
+            else
+                printf "     ${RED}✗${RESET} 自签证书生成失败, 按无证书处理\n" >&2
+                printf "     ${GREEN}[OK]${RESET} 证书: 无 ${DIM}(将跳过需要证书的协议)${RESET}\n" >&2
+            fi
+        else
+            printf "     ${YELLOW}—${RESET} 本机没有可用证书\n" >&2
+            printf "     ${DIM}需要证书的协议 (Hysteria2 / TUIC / AnyTLS / Trojan+TLS / VLESS+WS+TLS 等)${RESET}\n" >&2
+            printf "     ${DIM}会被跳过, 其余照常生成 —— 这不是错误${RESET}\n" >&2
+            printf "     ${DIM}想让它们也生成: 加 --self-sign (或 ALL_CERT_MODE=self) 生成自签证书${RESET}\n" >&2
+            printf "     ${GREEN}[OK]${RESET} 证书: 无 ${DIM}(将跳过需要证书的协议)${RESET}\n" >&2
+        fi
     fi
 fi
 

@@ -254,8 +254,9 @@ EOF
     printf "    4) \033[33m重建\033[0m                               \033[2m先清掉同协议旧节点再重新生成 ⚠ 会覆盖\033[0m\n"
     printf "    5) 不含证书                               \033[2m跳过所有需要证书的协议\033[0m\n"
     printf "    6) 只生成指定协议                         \033[2m逐个选\033[0m\n"
+    printf "    7) \033[36m自签全量生成\033[0m                       \033[2m没有真证书时生成自签, TLS 协议也全量产出\033[0m\n"
     printf "    0) 返回\n"
-    printf "请选择 [1-6, 0=返回]: "
+    printf "请选择 [1-7, 0=返回]: "
     local c; read -r c
     c=$(clean_input "${c:-}")
     case "$c" in
@@ -265,8 +266,22 @@ EOF
         4) _all_rebuild ;;
         5) _all_run --no-tls ;;
         6) _all_pick ;;
+        7) _all_self_sign ;;
         0) return ;;
         *) ui_invalid "$c" ;;
+    esac
+}
+
+# 自签全量生成。自签的代价要当面讲清: 客户端靠 skip-cert-verify 跳过校验,
+# 而**过 CDN 必然失败** (Cloudflare 回源不认自签 CA), 所以 CDN 档位会照旧跳过。
+_all_self_sign() {
+    print_warn "将生成一张自签证书, 让需要证书的协议也全量产出。"
+    print_info "客户端已写 skip-cert-verify; 但 CDN 档位仍会跳过 —— CF 回源不认自签 CA。"
+    printf "继续? [Y/n]: "
+    local a; read -r a
+    case "$(clean_input "${a:-}")" in
+        n|N|no|NO) print_info "已取消" ;;
+        *) _all_run --quick --self-sign ;;
     esac
 }
 

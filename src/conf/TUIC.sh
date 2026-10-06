@@ -248,33 +248,6 @@ detect_public_ip() {
 }
 
 # ================================
-# 证书
-# ================================
-generate_self_signed_cert() {
-    local domain="$1"
-
-    CERT_FILE="$CERT_DIR/cert-$domain.crt"
-    KEY_FILE="$CERT_DIR/key-$domain.key"
-
-    if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
-        print_info "证书已存在: $CERT_FILE"
-        return
-    fi
-
-    print_info "生成证书..."
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$KEY_FILE" \
-        -out "$CERT_FILE" \
-        -days 365 \
-        -subj "/CN=$domain" >/dev/null 2>&1 || {
-            print_error "openssl 生成证书失败"
-            return 1
-        }
-
-    print_ok "证书生成完成: $CERT_FILE"
-}
-
-# ================================
 # 新增配置
 # ================================
 add_config() {
@@ -294,14 +267,19 @@ add_config() {
     }
     [[ -n "$port" ]] || { print_error "端口为空, 已取消创建"; return 1; }
 
-    printf "证书域名 (默认: bing.com): " >&2
-    read -r domain
-    domain=$(clean_input "$domain")
-    domain="${domain:-bing.com}"
-
     PUBLIC_IP=$(detect_public_ip)
 
-    generate_self_signed_cert "$domain"
+    # 证书走统一菜单 —— 与 Trojan / VLESS / hysteria2 / AnyTLS 一致。
+    #
+    # 原来这里自己问一句"证书域名 (默认: bing.com)"再调本文件的
+    # generate_self_signed_cert: RSA2048 / 365 天 / **无 basicConstraints** / 无 SAN。
+    # 无 basicConstraints 时 openssl 默认打 CA:TRUE, 于是这张**服务端**证书会被
+    # 我们自己的 cert_is_ca 过滤器判成 CA 而排除 —— 别的协议扫描本机证书时
+    # 根本看不到它; 而它又没有 SAN, 现代客户端也会拒。
+    # 统一走 ask_cert 之后: 有真证书的机器上能直接选真证书 (旧实现永远只会自签),
+    # 自签时也拿到 ECDSA P-256 + CA:FALSE + SAN 的正规叶子证书。
+    ask_cert || { print_error "证书选择失败, 已取消创建"; return 1; }
+    domain="$CERT_DOMAIN"
 
     index=$(get_next_index)
 
