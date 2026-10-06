@@ -15,13 +15,22 @@
 #   4. 记录「节点 <-> 域名/站点」绑定, 使删节点时能精确回删并 reload
 #
 # 与 SB (参考实现) 的差异, 以及为什么:
-#   SB 的 cdn.sh 明确「绝不碰你的 Nginx」, 只打印片段让用户手工粘贴。
-#   本项目的 nginx_apply.py 已经能做到安全写入 —— 先备份、只在已存在的
-#   匹配 server 块内插入、插完 nginx -t 校验、失败自动回滚、通过才 reload。
-#   经确认后本项目采用**自动写入**, 并额外补上 SB 没有的**回删**能力。
+#   SB 用 conf/cdn_apply.py 把 location 块插进站点配置, 带
+#   "# >>> SB-Panel CDN BEGIN <域名> >>>" 标记; 插入前备份、插完 nginx -t
+#   校验、通过才 reload。**与我们的做法一致**。
 #
-#   但 location 的内容 (各级指令与踩过的坑) 完全照搬 SB 的实测结论,
-#   不自己造轮子。见 cdn_render_location 里逐条标注的来源。
+#   注意: SB 的 cdn.sh 头部注释写着"绝不自动写入你的 Nginx 配置目录, 绝不
+#   reload", 那是**过期的注释** —— 它的实际行为是插入 + 校验 + reload。
+#   以代码为准, 不要以注释为准。
+#
+#   本项目额外补上 SB 没有的**按节点回删**:
+#   cdn_apply.py 的插入标记是**按域名**索引的 (幂等设计), 所以"删掉这个节点
+#   对应的 nginx 配置"不能只靠域名反查 —— 同一域名下可能有多个节点, 按域名
+#   删会把别人的一起删掉。所以这里维护一张 tag -> 域名/站点 的绑定表,
+#   删除时按 tag 精确摘除, 再**重渲染该域名下的剩余节点**。
+#
+#   location 的内容 (各级指令与坑) 照搬 SB 的实测结论, 不自己造轮子。
+#   见 cdn_render_location 里逐条标注的来源。
 #
 # 依赖: ui.sh, cert.sh ; 调用 src/conf/nginx_apply.py
 # =============================================================
@@ -503,8 +512,8 @@ cdn_bind_menu() { # <tag> <端口> <传输> <路径>
 #   已在 tools/check_menu_ids.sh 补上机械校验 (见该脚本"ui_menu 参数个数")。
 #
 # 菜单项对齐 SB 的 CDN 菜单 (9 项), 但保留我们比 SB 强的两点:
-#   * 自动写入 (SB 的 cdn.sh 明确"绝不碰你的 Nginx", 只打印片段)
-#   * 回删 (SB 没有按节点精确摘除的能力)
+#   * 自动写入 + nginx -t 校验 (与 SB 的 cdn_apply.py 一致)
+#   * 按节点回删 (SB 没有 —— 它的插入标记按域名索引, 删一个会连累同域名下别的节点)
 # =============================================================
 
 # 列出节点, 并逐个标注能否走 CDN。
@@ -636,6 +645,75 @@ cdn_help() {
     cdn_probe 2>&1 | sed 's/^/    /' >&2
 }
 
+# 导出 CDN 版客户端产物。
+#
+# 直连节点和 CDN 节点必须能分别取用: 前者的客户端配置写服务器 IP, 后者写
+# 域名 (由 Cloudflare 边缘终止 TLS 再按 path 回源), 两者的 host/sni/path
+# 完全不同, 混在一起分发必然有人拿到连不上的那份。
+#
+# 节点片段本身已经按传输区分 (out/<mproto>_<proto>_client-<idx>.yaml,
+# CDN 变体的 proto 里带 -cdn), 所以这里**不重新生成配置**, 只做两件事:
+#   1. 把已绑定 CDN 的节点挑出来, 在 out/cdn/ 下放一份带 .cdn 标记的副本
+#      —— 批量收集/分发时一眼能区分, 不用去猜文件名里的 -cdn 后缀
+#   2. 写一份 manifest.tsv, 注明每个产物对应哪个域名和路径
+#
+# 与 SB 的 cdn_node.sh 同一个思路 (它也复用 to_mihomo.py 而不另写转换),
+# 区别是我们的产物已经按传输分好, 不需要二次转换。
+cdn_export_artifacts() {
+    cdn_bind_init
+    if (( $(cdn_bind_count) == 0 )); then
+        print_warn "还没有登记任何 CDN 绑定, 没有可导出的产物"
+        print_info "先用「1) 自动插入 / 更新回源配置」把节点挂到域名上"
+        return 0
+    fi
+
+    local dst="$SRV_OUT/cdn"
+    mkdir -p "$dst" || { print_error "无法创建 $dst"; return 1; }
+    # manifest 每次重写 —— 追加会让上一次的条目残留成"幽灵产物"
+    : > "$dst/manifest.tsv"
+
+    local tag dom site tr path port mproto idx n=0 miss=0
+    while IFS=$'\t' read -r tag dom site tr path port; do
+        [[ -n "$tag" ]] || continue
+        # tag 形如 <mproto>-<idx>; 客户端产物形如 <mproto>_<proto>_client-<idx>.yaml
+        mproto="${tag%-*}"
+        idx="${tag##*-}"
+        local src="" f
+        for f in "$SRV_OUT/${mproto}_"*"_client-${idx}.yaml"; do
+            [[ -f "$f" ]] && { src="$f"; break; }
+        done
+        if [[ -z "$src" ]]; then
+            print_warn "$tag: 找不到客户端产物 (节点可能还没生成或已被删)"
+            miss=$(( miss + 1 ))
+            continue
+        fi
+        if ! cp -f "$src" "$dst/${tag}.cdn.yaml" 2>/dev/null; then
+            print_warn "$tag: 复制失败"
+            miss=$(( miss + 1 ))
+            continue
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "${tag}.cdn.yaml" "$dom" "$tr" "${path:-/}" "$port" \
+            >> "$dst/manifest.tsv"
+        n=$(( n + 1 ))
+    done < "$CDN_BIND_FILE"
+
+    printf '\n' >&2
+    print_ok "已导出 $n 个 CDN 版产物到 $dst"
+    (( miss > 0 )) && print_warn "$miss 个绑定没有对应产物 (见上)"
+    if (( n > 0 )); then
+        printf '\n  %-24s %-30s %s\n' "文件" "域名" "路径" >&2
+        printf '  %s\n' "──────────────────────────────────────────────────────────────" >&2
+        while IFS=$'\t' read -r tag dom site tr path port; do
+            [[ -n "$tag" ]] || continue
+            [[ -f "$dst/${tag}.cdn.yaml" ]] || continue
+            printf '  %-24s %-30s %s\n' "${tag}.cdn.yaml" "$dom" "${path:-/}" >&2
+        done < "$CDN_BIND_FILE"
+    fi
+    printf '\n' >&2
+    print_info "这些配置的服务器地址是域名而非 IP, 只能配合 CDN 使用"
+    return 0
+}
+
 cdn_menu() {
     while true; do
         ui_clear
@@ -654,6 +732,7 @@ cdn_menu() {
         ui_menu  9 "移除已插入的配置"
         ui_menu 10 "探测 Nginx 部署方式"
         ui_menu 11 "CDN 接入说明"
+        ui_menu 12 "导出 CDN 版客户端产物 (out/cdn/)"
         ui_menu  0 "返回"
         local c; c=$(safe_read "选择" "0")
         c=$(clean_input "${c:-}")
@@ -739,6 +818,7 @@ cdn_menu() {
                 pause ;;
             10) cdn_probe 2>&1 | sed 's/^/  /' >&2; pause ;;
             11) ui_clear; ui_title "CDN 接入说明"; cdn_help; pause ;;
+            12) ui_clear; ui_title "导出 CDN 版客户端产物"; cdn_export_artifacts; pause ;;
             0|"") return 0 ;;
             *) ui_invalid "$c" ;;
         esac

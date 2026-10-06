@@ -46,6 +46,7 @@ run_gate "清单漂移"     bash tools/check_manifest.sh
 run_gate "常量漂移"     bash tools/check_mirrors.sh
 run_gate "接线完整"     bash tools/check_wiring.sh
 run_gate "菜单编号"     bash tools/check_menu_ids.sh
+run_gate "yaml 取值守卫" bash tools/check_yaml_guard.sh
 
 # pre-push 钩子是否已安装。
 #

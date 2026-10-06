@@ -78,7 +78,7 @@ unset M_NO_SRV_DIRS
 : "${PORT_CTRL:=9090}"
 # 监听地址默认 **0.0.0.0 (局域网可达)**, 不是 127.0.0.1。
 #
-# 而且默认是我局网的 IP。"
+# 面板是给局域网内其他机器访问的 —— 绑回环等于只有本机能打开。
 #
 # SB 的默认值本来就是局域网 (install.sh: BIND_LAN="${BIND_LAN:-0.0.0.0}",
 # CLASH_LISTEN="${CLASH_LISTEN:-0.0.0.0}") —— 所以这不是"Mihomo 内核不同所以必须
@@ -97,7 +97,7 @@ unset M_NO_SRV_DIRS
 #                            拿它当 URL 只会得到一个连不上的链接。
 #
 # SB 的做法 (client.sh: lan_ip / host_addr) 是这个思路, 但**它的实现有兜底缺陷,
-# 我们补上** (详见 docs/private/sb/SB-DIVERGENCE.md 的 D-2):
+# 我们补上**:
 #   SB 只靠 `ip route get 1.1.1.1`, 没有默认路由时返回空 —— 而"没有默认路由"正是
 #   纯局域网/离线机器 (也就是最需要走本机代理的那类机器) 的常见状态。空了之后
 #   URL 会拼成 "http://:9090/ui/", 一个点不开的坏链接。
@@ -561,7 +561,6 @@ node_add() {
     if [[ "$src" == http://* || "$src" == https://* ]]; then
         # 走下载通道的 sub 作用域 —— 这正是"到服务器拉配置"那条路。
         #
-        # 会走代理的。它有一个专门设置的地方, 我们这边有吗?"
         # 之前是裸 curl, 完全不走代理 —— 而「下载通道」菜单里明明有这个开关,
         # 设了却没人读 (见 dl_route.sh 头部说明)。
         local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
@@ -629,7 +628,8 @@ node_list() {
         local name; name=$(basename "$f" .yaml)
         local cnt; cnt=$(python3 -c "
 import yaml,sys
-d=yaml.safe_load(open(sys.argv[1])) or {}
+d=yaml.safe_load(open(sys.argv[1]))
+if not isinstance(d, dict): d = {}
 print(len(d.get('proxies') or []))" "$f" 2>/dev/null || echo "?")
         local src=""; [[ -f "$CLI_NODES/$name.txt" ]] && src=$(head -1 "$CLI_NODES/$name.txt")
         printf '  \033[1m%-20s\033[0m %s 个节点   来源: %s\n' "$name" "$cnt" "${src:-本地文件}"
@@ -709,7 +709,7 @@ status_block() {
     #
     #     HTTP/SOCKS: 127.0.0.1:9090   控制面板: http://127.0.0.1:9090/ui/
     #
-    # 连接端口是一样的?"
+    # 两个一样的端口 —— 面板把 HTTP/SOCKS 端口和控制面板端口显示成了同一个。
     #
     # 根因是**用"进程监听了哪些端口"去反推"配置想让它听哪个"** —— 这个反推
     # 本身就不成立 (一个进程会听很多端口: 代理、控制 API、DNS)。
@@ -767,8 +767,10 @@ eff_cfg() {
 import sys
 try:
     import yaml
-    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
     sys.exit(0)
 v = d.get(sys.argv[2])
 if v is None:

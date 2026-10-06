@@ -86,7 +86,8 @@ node_count() {
         [[ -f "$f" ]] || continue
         n=$((n + $(python3 -c "
 import yaml,sys
-d=yaml.safe_load(open(sys.argv[1])) or {}
+d=yaml.safe_load(open(sys.argv[1]))
+if not isinstance(d, dict): d = {}
 print(len(d.get('proxies') or []))" "$f" 2>/dev/null || echo 0)))
     done
     printf '%s' "$n"
@@ -101,7 +102,8 @@ list_nodes() {
         printf '  \033[1m%-24s\033[0m %-8s %s\n' "$base" "$proto" \
             "$(python3 -c "
 import yaml,sys
-d=yaml.safe_load(open(sys.argv[1])) or {}
+d=yaml.safe_load(open(sys.argv[1]))
+if not isinstance(d, dict): d = {}
 l=d.get('listeners') or [d]
 for x in l:
     if isinstance(x,dict): print(x.get('name','?'), x.get('listen',''), x.get('port',''), sep='/')
@@ -245,20 +247,40 @@ all_menu() {
 
   生成前可以先预览 (强烈建议先做这一步):
 EOF
-    printf "    1) \033[36m先预览\033[0m (dry-run, 不写入任何文件)  ★推荐第一次选这个\n"
-    printf "    2) 直接生成全部协议\n"
-    printf "    3) 生成全部, 但不生成需要证书的协议\n"
-    printf "    4) 只生成指定协议 (逐个选)\n"
+    printf "    1) \033[36m先预览\033[0m (dry-run, 不写入任何文件)     \033[2m★推荐第一次选这个\033[0m\n"
+    printf "    2) \033[36m快速生成\033[0m                           \033[2m端口自动分配, 不提问 · 已存在的节点跳过\033[0m\n"
+    printf "    3) \033[36m逐项生成\033[0m                           \033[2m会问端口区间, 其余自动 · 已存在的节点跳过\033[0m\n"
+    printf "    4) \033[33m重建\033[0m                               \033[2m先清掉同协议旧节点再重新生成 ⚠ 会覆盖\033[0m\n"
+    printf "    5) 不含证书                               \033[2m跳过所有需要证书的协议\033[0m\n"
+    printf "    6) 只生成指定协议                         \033[2m逐个选\033[0m\n"
     printf "    0) 返回\n"
-    printf "请选择: "
+    printf "请选择 [1-6, 0=返回]: "
     local c; read -r c
+    c=$(clean_input "${c:-}")
     case "$c" in
         1) _all_run --dry-run ;;
-        2) _all_run ;;
-        3) _all_run --no-tls ;;
-        4) _all_pick ;;
+        2) _all_run --quick ;;
+        3) _all_run ;;
+        4) _all_rebuild ;;
+        5) _all_run --no-tls ;;
+        6) _all_pick ;;
         0) return ;;
         *) ui_invalid "$c" ;;
+    esac
+}
+
+# 「重建」是唯一会删东西的档位, 所以单独确认一次。
+#
+# 提醒它"校验不过会自动还原"是有意义的: 用户对"重建"最大的顾虑就是
+# "万一失败了我是不是一个节点都没了"。说清楚回滚存在, 他才敢用。
+_all_rebuild() {
+    print_warn "重建会先清掉同协议的全部旧节点, 再按当前设置重新生成。"
+    print_info "如果末尾校验不通过, 旧节点会**自动还原**, 不会丢。"
+    printf "确认重建? [y/N]: "
+    local a; read -r a
+    case "$(clean_input "${a:-}")" in
+        y|Y|yes|YES) _all_run --force ;;
+        *) print_info "已取消" ;;
     esac
 }
 
@@ -478,7 +500,8 @@ list_imported() {
         local name; name=$(basename "$f" .yaml)
         local n; n=$(python3 -c "
 import yaml,sys
-d=yaml.safe_load(open(sys.argv[1])) or {}
+d=yaml.safe_load(open(sys.argv[1]))
+if not isinstance(d, dict): d = {}
 print(len(d.get('proxies') or []))" "$f" 2>/dev/null)
         printf '  \033[1m%-20s\033[0m %s 个节点\n' "$name" "$n"
         found=1

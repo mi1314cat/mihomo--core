@@ -13,12 +13,15 @@
 #
 # 用法:
 #   bash all.sh                    # 自动检测证书, 生成全部
+#   bash all.sh --quick            # 不提问, 端口区间自动分配
+#   bash all.sh --force            # 重建: 先清掉同协议旧节点再重新生成
 #   bash all.sh --no-tls           # 跳过所有需要证书的协议
 #   bash all.sh --only reality,trojan,hysteria2
 #   bash all.sh --fp firefox       # 换 client-fingerprint (默认 chrome)
 #   bash all.sh --dry-run          # 只看会生成什么, 不落盘
 #
-# 记录过: 交互提问 + 应答串重放必然整体错位):
+# 环境变量 (批量一律走显式环境变量, 绝不读应答串 —— 交互提问 + 应答串重放
+# 必然整体错位):
 #   CLIENT_FP=chrome|firefox|safari|edge|ios|android|random   (等价于 --fp)
 #   XHTTP_MODE=auto|stream-one|stream-up|packet-up             (默认 auto)
 #   XHTTP_PAD=std|strong|max                                   (默认 std)
@@ -55,11 +58,15 @@ CLIENT_FP="${CLIENT_FP:-chrome}"
 DRY_RUN="${DRY_RUN:-0}"
 USE_TLS="${USE_TLS:-1}"
 ONLY="${ONLY:-}"
+QUICK="${QUICK:-0}"
+FORCE="${FORCE:-0}"
 
 while (( $# )); do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --no-tls)  USE_TLS=0 ;;
+        --quick)   QUICK=1 ;;
+        --force)   FORCE=1 ;;
         --fp)      CLIENT_FP="${2:-}"; shift ;;
         --fp=*)    CLIENT_FP="${1#*=}" ;;
         --only)    ONLY="${2:-}"; shift ;;
@@ -69,7 +76,7 @@ while (( $# )); do
             exit 0 ;;
         *)
             print_error "未知参数: $1"
-            print_error "可用: --dry-run | --no-tls | --only <ids> | --fp <name>"
+            print_error "可用: --dry-run | --no-tls | --quick | --force | --only <ids> | --fp <name>"
             exit 2 ;;
     esac
     shift
@@ -85,6 +92,71 @@ OUT_DIR="${OUT_DIR:-$SRV_ROOT/out}"
 CERTS_DIR="${CERTS_DIR:-$SRV_ROOT/conf/certs}"
 MIHOMO_BIN="${MIHOMO_BIN:-$SRV_BIN}"
 
+# =============================================================
+# 重建 (--force) 的暂存区
+#
+# --force 要"先清掉同协议旧节点再重新生成"。直接 rm 是不行的: 万一新配置
+# 没通过末尾的 m_sync_reload 校验, 旧节点已经没了, 用户就从"想重建"变成
+# "一个节点都没有"。所以清掉的东西先**挪进暂存区**, 末尾校验通过才真删,
+# 不通过就原样挪回来。
+#
+# 暂存区放在 $SRV_ROOT 下而不是 /tmp: /tmp 可能被清、可能跨文件系统 (mv 变
+# 成拷贝), 而这里必须保证是同一个文件系统上的原子 mv。
+# =============================================================
+REBUILD_BAK="$SRV_ROOT/.rebuild-bak"
+declare -A _FORCE_DONE=()
+
+if [[ "$FORCE" == "1" && "$DRY_RUN" != "1" ]]; then
+    rm -rf "$REBUILD_BAK"
+    mkdir -p "$REBUILD_BAK"
+fi
+
+# 把某个管理协议名下的节点挪进暂存区 (幂等: 同一 mproto 只做一次)。
+#
+# 按 mproto 而不是 proto: all.sh 一次会生成多个 vless 变体, 它们共享
+# vless-NN 这条编号序列, 所以清理也必须按整条序列来, 否则只清掉变体自己
+# 那几个, 剩下的旧序号还会占着位置。
+force_wipe_mproto() {
+    [[ "$FORCE" == "1" ]] || return 0
+    # 预览绝不能动文件 —— --dry-run 的整个意义就是"不落盘"。
+    # 这里放行会让 `--dry-run --force` 悄悄挪走旧节点, 而用户以为只是看一眼。
+    [[ "$DRY_RUN" == "1" ]] && return 0
+    local mproto="$1"
+    [[ -z "${_FORCE_DONE[$mproto]:-}" ]] || return 0
+    _FORCE_DONE[$mproto]=1
+
+    local f n=0
+    for f in "$CONF_DIR/$mproto"-[0-9][0-9].yaml; do
+        [[ -f "$f" ]] || continue
+        mv -f "$f" "$REBUILD_BAK/" && n=$(( n + 1 ))
+    done
+    for f in "$OUT_DIR/${mproto}_"*_client-[0-9][0-9].yaml; do
+        [[ -f "$f" ]] || continue
+        mv -f "$f" "$REBUILD_BAK/" && n=$(( n + 1 ))
+    done
+    (( n > 0 )) && print_info "重建: 已挪走 $mproto 的 $n 个旧文件 (校验通过后才真删)"
+    return 0
+}
+
+# 末尾用: 校验通过 → 真删暂存区; 不通过 → 挪回来。
+rebuild_commit()  { [[ "$FORCE" == "1" ]] && rm -rf "$REBUILD_BAK"; return 0; }
+rebuild_rollback() {
+    [[ "$FORCE" == "1" && -d "$REBUILD_BAK" ]] || return 0
+    local f n=0
+    for f in "$REBUILD_BAK"/*; do
+        [[ -e "$f" ]] || continue
+        # 按文件名里的协议前缀送回原来的目录
+        if [[ "$(basename "$f")" == *_client-*.yaml ]]; then
+            mv -f "$f" "$OUT_DIR/" && n=$(( n + 1 ))
+        else
+            mv -f "$f" "$CONF_DIR/" && n=$(( n + 1 ))
+        fi
+    done
+    rmdir "$REBUILD_BAK" 2>/dev/null
+    (( n > 0 )) && print_warn "重建未生效, 已还原 $n 个旧文件"
+    return 0
+}
+
 # UI 原语统一来自 src/lib/ui.sh (颜色/消息分级/标题), 此处不再重复定义。
 # 被父级 source 时已加载; 单独运行时由下面的兜底 source 补上。
 
@@ -93,7 +165,8 @@ MIHOMO_BIN="${MIHOMO_BIN:-$SRV_BIN}"
 #
 # 内核对无法识别的指纹只打一条 log.Warnln 就**静默降级成原生 TLS**,
 # 没有任何报错 (component/tls/utls.go:56-59)。
-# 也就是说写错了: 面板全绿、-t 通过, 直到第一次真实握手才暴露 —— 正是
+# 也就是说写错了: 面板全绿、-t 通过, 直到第一次真实握手才暴露 —— 典型的
+# "运行时才炸的开关"。
 # 枚举取 spec §2.3.1, 故意不暴露 5 个已标 deprecated 的历史指纹。
 # =============================================================
 M_FP_VALUES="chrome firefox safari edge ios android random"
@@ -156,12 +229,23 @@ trap 'rm -f "$USED_PORTS_FILE"' EXIT
 
 collect_used_ports() {
     # 已存在的 config.d + 正在运行的监听
+    #
+    # ⚠ 必须判 `isinstance(d, dict)`: yaml.safe_load 对**顶层不是映射**的文件
+    # (被截断的、写了一半的、根本不是 YAML 的) 返回 str / list, 后面 d.get()
+    # 会抛 AttributeError。而那个 try 只包住了 safe_load —— d.get 在 try 外面,
+    # 异常直接逃出去, python 退出码非 0, **USED_PORTS_FILE 只写了一半**。
+    #
+    # 后果不是"少扫一个文件", 而是: 端口表不全 → 已占用的端口被当成空闲重新
+    # 分配 → 新节点启动即 bind 失败。一个坏文件毁掉整批节点, 且现场看不出
+    # 关联 (报的是端口占用, 根因是另一个文件格式坏)。
     python3 - "$CONF_DIR" >> "$USED_PORTS_FILE" <<'PY'
 import glob, sys, yaml
 for f in glob.glob(sys.argv[1] + "/*.yaml"):
     try:
-        d = yaml.safe_load(open(f, encoding="utf-8")) or {}
+        d = yaml.safe_load(open(f, encoding="utf-8"))
     except Exception:
+        continue
+    if not isinstance(d, dict):
         continue
     for l in (d.get("listeners") or []):
         if isinstance(l, dict) and l.get("port"):
@@ -171,8 +255,10 @@ PY
     python3 - "${SRV_CONF}/config.yaml" >> "$USED_PORTS_FILE" 2>/dev/null <<'PY'
 import sys, yaml
 try:
-    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
+    raise SystemExit
+if not isinstance(d, dict):
     raise SystemExit
 for l in (d.get("listeners") or []):
     if isinstance(l, dict) and l.get("port"):
@@ -507,8 +593,16 @@ gen() {
     # (ws / ws+tls / xhttp / xhttp+tls), 若各按 "vless-NN" 排号, 四个生成器
     # 会抢同一个空位互相覆盖; 按 mproto 排则它们共享一条序列, 各占一个号,
     # 互不冲突, 且都能被 VLESS.sh 列出和删除。
+    #
+    # --force (重建) 时先把这个 mproto 的旧节点挪进暂存区, 于是下面的
+    # next_index 从 01 重新开始 —— 这就是"强制覆盖"的实现方式。
+    force_wipe_mproto "$mproto"
+
     local n_exist; n_exist=$(count_indexed "$mproto")
-    if [[ "$n_exist" != "0" ]]; then
+    # --force 下这句必须闭嘴: 旧节点已经被 force_wipe_mproto 挪走了, 这里的
+    # 计数只可能是**本次同一批里先跑完的变体**, 说"已有 N 个, 不覆盖已有配置"
+    # 会让用户以为重建没生效。
+    if [[ "$n_exist" != "0" && "$FORCE" != "1" ]]; then
         print_info "$label: 已有 $n_exist 个 $mproto 节点, 本次**追加**新序号 (不覆盖已有配置)"
     fi
 
@@ -532,6 +626,7 @@ gen() {
     # 生成器失败**不中断整批** (脚本没有 set -e, 这里是显式的 if/else),
     # 但必须: ① 留下失败原因; ② 清掉自己写了一半的文件 ——
     # 半份 YAML 留在 config.d/ 里会让末尾 m_sync_reload 整体校验失败,
+    # 于是"一个协议生成失败"变成"全部节点回滚" (原子性)。
     # 前提是 next_index 保证 in_file/out_file 本来不存在, 所以 rm 不会误伤旧配置。
     local logf why
     logf=$(mktemp)
@@ -602,8 +697,7 @@ _m_reality_block() { # <dest> <私钥> <short-id>
 # =============================================================
 # 补齐的生成器 —— 把「已验证可用」的组合补进一键全协议
 #
-# 每个组合都经过真实内核实测 (见 docs/private/M-KERNEL-ISSUES.md 的矩阵),
-# 并标出它为什么这么写。三条来自实测的硬约束:
+# 每个组合都经过真实内核实测验证, 并标出它为什么这么写。三条硬约束:
 #
 #   ① REALITY 预置绝不排 ws —— vless/vmess/trojan 的 REALITY+ws 实测全 0/5,
 #      而 tcp/grpc/h2 都通过, 且对照组通过 (不是环境问题)。见 K-1。
@@ -1542,6 +1636,7 @@ collect_used_ports
 # 批量模式的约定是"公共参数一律走显式环境变量, 绝不读应答串"
 # (脚本头注释第 21 行), 所以非 TTY 场景不能在这里停顿。
 # 提供 ALL_PORT_RANGE=起-止 走非交互, 否则用默认区间。
+# --quick 与 ALL_PORT_RANGE 一样走非交互, 只是不要求用户先想好区间。
 if [[ -n "${ALL_PORT_RANGE:-}" ]]; then
     if [[ "$ALL_PORT_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then
         PORT_RANGE_START="${BASH_REMATCH[1]}"
@@ -1556,6 +1651,12 @@ if [[ -n "${ALL_PORT_RANGE:-}" ]]; then
     printf "     ${GREEN}[OK]${RESET} 端口区间: %s - %s ${DIM}(%d 个, 来自 ALL_PORT_RANGE)${RESET}\n" \
         "$PORT_RANGE_START" "$PORT_RANGE_END" \
         "$(( PORT_RANGE_END - PORT_RANGE_START + 1 ))" >&2
+elif [[ "$QUICK" == "1" ]]; then
+    # --quick: 不问, 直接用默认起点开一段。
+    PORT_CURSOR=${ALL_PORT_BASE:-20000}
+    PORT_RANGE_END=$(( PORT_CURSOR + 4999 ))
+    printf "     ${GREEN}[OK]${RESET} 端口区间: %s - %s ${DIM}(自动分配, --quick 不提问)${RESET}\n" \
+        "$PORT_CURSOR" "$PORT_RANGE_END" >&2
 elif [[ -t 0 ]]; then
     ask_port_range
     PORT_CURSOR=$PORT_RANGE_START
@@ -1609,6 +1710,7 @@ for r in "${RESULTS[@]}"; do
     printf "  %-18s %-8s %-18b %s\n" "$p" "$port" "$stc" "$note"
 done
 
+# ---------- 三桶汇总 (ok / skip / fail) ----------
 #
 # 只在表尾打一行计数不够 —— 用户真正要回答的问题是"少了什么、为什么少"。
 # 所以跳过项与失败项各自再列一遍明细, 失败项带上生成器 stderr 的尾部。
@@ -1638,12 +1740,15 @@ fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
     printf "\n${YELLOW}预览模式, 未写入任何文件${RESET}\n"
+    [[ "$FORCE" == "1" ]] && printf "${DIM}(--force 在预览下不会挪走任何旧节点)${RESET}\n"
     exit 0
 fi
 
 # ---------- 统一校验 + 重载 ----------
 printf "\n${BOLD}校验并应用${RESET}\n"
 if m_sync_reload; then
+    # 重建成功 → 暂存区里的旧文件正式作废
+    rebuild_commit
     if [[ "$local_fail" -eq 0 ]]; then
         printf "\n${GREEN}${BOLD}全协议节点已生成并生效${RESET}\n"
     else
@@ -1658,6 +1763,9 @@ if m_sync_reload; then
         "$SELF_DIR/../share/build_sub.py" "$OUT_DIR"
     exit $(( local_fail > 0 ? 1 : 0 ))
 else
+    # 校验没过 → 把重建挪走的旧节点原样还回去, 否则用户从"想重建"
+    # 直接变成"一个节点都没有"。
+    rebuild_rollback
     printf "\n${RED}${BOLD}校验未通过, 配置已回滚${RESET}\n"
     exit 1
 fi

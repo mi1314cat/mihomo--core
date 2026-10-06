@@ -9,7 +9,6 @@
 #      实测 (本项目与 SB 各自独立复现): mihomo 用 WebSocket 承载
 #      REALITY 稳定失败 —— 裸TCP/grpc/h2 都 3/3~5/5, ws 是 0/3~0/5。
 #      对照组 (vless+TCP+REALITY) 通过, 所以不是环境问题。
-#      详见 docs/private/M-KERNEL-ISSUES.md K-1。
 #
 #   ② AnyTLS **不提供 REALITY 预置**
 #      SB 的表里注明「mihomo 不支持 AnyTLS+Reality」; 本项目实测 0/5 证实。
