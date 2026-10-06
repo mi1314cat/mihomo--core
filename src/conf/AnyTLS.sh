@@ -4,26 +4,8 @@
 # 彩色定义
 # ================================
 RED="\e[31m"
-GREEN="\e[32m"
-YELLOW="\e[33m"
-BLUE="\e[34m"
-MAGENTA="\e[35m"
-CYAN="\e[36m"
-WHITE="\e[97m"
-BOLD="\e[1m"
-RESET="\e[0m"
-
-print_info()  { printf "${CYAN}[Info]${RESET} %s\n" "$1" >&2; }
-print_ok()    { printf "${GREEN}[OK]${RESET}  %s\n" "$1" >&2; }
-print_error() { printf "${RED}[Error]${RESET} %s\n" "$1" >&2; }
-
-print_title() {
-    printf "${MAGENTA}${BOLD}" >&2
-    printf "╔══════════════════════════════════════════════╗\n" >&2
-    printf "║ %-42s ║\n" "$1" >&2
-    printf "╚══════════════════════════════════════════════╝\n" >&2
-    printf "${RESET}" >&2
-}
+# UI 原语统一来自 src/lib/ui.sh (颜色/消息分级/标题), 此处不再重复定义。
+# 被父级 source 时已加载; 单独运行时由下面的兜底 source 补上。
 
 # ================================
 # 基础路径
@@ -774,12 +756,12 @@ main_menu() {
     while true; do
         print_title "Mihomo AnyTLS 管理面板（独立版）"
 
-        echo "1) 查看配置"
-        echo "2) 新增配置"
-        echo "3) 删除配置"
-        echo "4) 重建客户端文件"
-        echo "5) 导出所有节点订阅（Clash/Mihomo）"
-        echo "0) 退出"
+        ui_menu 1 "查看配置"
+        ui_menu 2 "新增配置"
+        ui_menu 3 "删除配置"
+        ui_menu 4 "重建客户端文件"
+        ui_menu 5 "导出所有节点订阅（Clash/Mihomo）"
+        ui_menu 0 "退出"
 
 
         printf "请选择: " >&2
@@ -793,7 +775,7 @@ main_menu() {
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;
-            *) print_error "无效选项" ;;
+            *) ui_invalid "$c" ;;
         esac
 
         printf "按回车继续..." >&2

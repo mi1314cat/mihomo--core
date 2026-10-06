@@ -13,22 +13,8 @@ set -o pipefail
 # ================================
 # 彩色定义
 # ================================
-RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"
-MAGENTA="\e[35m"; CYAN="\e[36m"; WHITE="\e[97m"; BOLD="\e[1m"
-RESET="\e[0m"
-
-print_info()  { printf "${CYAN}[Info]${RESET} %s\n" "$1" >&2; }
-print_ok()    { printf "${GREEN}[OK]${RESET}  %s\n" "$1" >&2; }
-print_warn()  { printf "${YELLOW}[Warn]${RESET} %s\n" "$1" >&2; }
-print_error() { printf "${RED}[Error]${RESET} %s\n" "$1" >&2; }
-
-print_title() {
-    printf "${MAGENTA}${BOLD}" >&2
-    printf "╔══════════════════════════════════════════════╗\n" >&2
-    printf "║ %-42s ║\n" "$1" >&2
-    printf "╚══════════════════════════════════════════════╝\n" >&2
-    printf "${RESET}" >&2
-}
+# UI 原语统一来自 src/lib/ui.sh (颜色/消息分级/标题), 此处不再重复定义。
+# 被父级 source 时已加载; 单独运行时由下面的兜底 source 补上。
 
 # ================================
 # 基础路径（M 内核专用）
@@ -333,9 +319,9 @@ choose_listen_ip() {
     local detect="$1"
     print_info "检测结果: $detect"
 
-    echo "1) IPv4 (0.0.0.0)" >&2
-    echo "2) IPv6 (::)" >&2
-    echo "3) 自动" >&2
+    ui_menu 1 "IPv4 (0.0.0.0)"
+    ui_menu 2 "IPv6 (::)"
+    ui_menu 3 "自动"
 
     printf "选择 (默认1): " >&2
     if ! read -r choice; then echo >&2; return 1; fi
@@ -1114,12 +1100,12 @@ main_menu() {
     while true; do
         print_title "Hysteria2 管理面板"
 
-        echo "1) 查看配置"
-        echo "2) 新增配置"
-        echo "3) 删除配置"
-        echo "4) 重建客户端文件"
-        echo "5) 导出所有节点订阅"
-        echo "0) 退出"
+        ui_menu 1 "查看配置"
+        ui_menu 2 "新增配置"
+        ui_menu 3 "删除配置"
+        ui_menu 4 "重建客户端文件"
+        ui_menu 5 "导出所有节点订阅"
+        ui_menu 0 "退出"
 
         printf "选择: " >&2
         if ! read -r c; then echo >&2; exit 0; fi   # EOF 防刷屏
@@ -1132,7 +1118,7 @@ main_menu() {
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;
-            *) print_error "无效选项" ;;
+            *) ui_invalid "$c" ;;
         esac
 
         printf "回车继续..." >&2

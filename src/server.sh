@@ -28,20 +28,10 @@ BASE_DIR="$SRV_ROOT"
 # shellcheck source=/dev/null
 source "$M_LIB/env.sh"
 
-GREEN="\033[32m"; RED="\033[31m"; YELLOW="\033[33m"; CYAN="\033[36m"
-MAGENTA="\033[35m"; BLUE="\033[34m"; BOLD="\033[1m"; RESET="\033[0m"
+# UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh, 由上面的 env.sh 带入。
 
-print_info()  { printf "${CYAN}[信息]${RESET} %s\n" "$1" >&2; }
-print_ok()    { printf "${GREEN}[成功]${RESET} %s\n" "$1" >&2; }
-print_warn()  { printf "${YELLOW}[警告]${RESET} %s\n" "$1" >&2; }
-print_error() { printf "${RED}[错误]${RESET} %s\n" "$1" >&2; }
-print_title() {
-    printf "${MAGENTA}${BOLD}" >&2
-    printf "╔══════════════════════════════════════════════╗\n" >&2
-    printf "║ %-42s ║\n" "$1" >&2
-    printf "╚══════════════════════════════════════════════╝\n" >&2
-    printf "${RESET}" >&2
-}
+# 本地覆盖 pause(): ui.sh 那版遇到 EOF 直接 exit, 这里要 return 1 把控制权交回
+# 调用方 —— 主菜单靠它退出循环, 而不是连整个脚本一起带走。
 pause() { printf "\n${CYAN}按回车继续...${RESET}"; read -r || return 1; }
 
 ensure_dirs() { mkdir -p "$SRV_CONF" "$SRV_CONFIGD" "$SRV_CERTS" "$SRV_OUT"; }
@@ -50,12 +40,15 @@ ensure_dirs() { mkdir -p "$SRV_CONF" "$SRV_CONFIGD" "$SRV_CERTS" "$SRV_OUT"; }
 # 状态
 # =============================================================
 status_block() {
+    # 输出统一走 stderr: UI 文本混进 stdout 会污染 $(...) 捕获的数据, 而且
+# 两个流缓冲策略不同, 与 print_title(stderr) 混排时顺序会颠倒 ——
+# 实测出现过"状态先于标题出现"。
     local svc="未运行" ver="-" frag
     systemctl is-active --quiet "$SRV_SERVICE" && svc="${GREEN}运行中${RESET}"
     [[ -x "$SRV_BIN" ]] && ver=$("$SRV_BIN" -v 2>/dev/null | head -1)
     frag=$(ls "$SRV_CONFIGD"/*.yaml 2>/dev/null | wc -l | tr -d ' ')
-    printf "  服务: %-16s 内核: %s\n" "$svc" "$ver"
-    printf "  监听配置: %-8s 节点: %-4s 分享端口: %s\n" "$frag" "$(node_count)" "${SHARE_PORT:-9443}"
+    printf "  服务: %-16s 内核: %s\n" >&2 "$svc" "$ver"
+    printf "  监听配置: %-8s 节点: %-4s 分享端口: %s\n" >&2 "$frag" "$(node_count)" "${SHARE_PORT:-9443}"
     # 注意: ss -tlnp 的进程列是**进程名**(users:(("mihomo",pid=...))),
     # 不是可执行文件全路径。拿 $SRV_BIN (/root/catmi/mihomo/mihomo) 去 grep
     # 永远匹配不上 —— 面板于是永远显示 0, 哪怕十几个端口都在监听。
@@ -71,7 +64,7 @@ status_block() {
         | grep "(\"$nm\"," \
         | awk '{print $4}' | sed -n 's/.*:\([0-9]\{1,5\}\)$/\1/p' \
         | awk '$1 >= 20000 && $1 <= 29999' | sort -un | wc -l | tr -d ' ' )
-    printf "  运行中的协议端口: %s (TCP+UDP, 20000-29999)\n" "${p:-0}"
+    printf "  运行中的协议端口: %s (TCP+UDP, 20000-29999)\n" >&2 "${p:-0}"
 }
 
 node_count() {
@@ -131,7 +124,7 @@ add_node() {
     if [[ "$c" == "$batch_idx" ]]; then
         all_menu; return
     fi
-    [[ "$c" =~ ^[1-6]$ ]] || { print_error "无效选项"; return 1; }
+    [[ "$c" =~ ^[1-6]$ ]] || { ui_invalid "$c"; return 1; }
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
@@ -167,7 +160,7 @@ EOF
         3) _all_run --no-tls ;;
         4) _all_pick ;;
         0) return ;;
-        *) print_error "无效选项" ;;
+        *) ui_invalid "$c" ;;
     esac
 }
 
@@ -214,7 +207,7 @@ manage_node() {
     if [[ "$c" == "$(( ${#PROTO_SCRIPTS[@]} + 1 ))" ]]; then
         wipe_all_nodes; return
     fi
-    [[ "$c" =~ ^[1-6]$ ]] || { print_error "无效选项"; return 1; }
+    [[ "$c" =~ ^[1-6]$ ]] || { ui_invalid "$c"; return 1; }
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
@@ -433,11 +426,13 @@ show_client_files() {
 
 log_menu() {
     print_title "日志"
-    echo "1) 实时查看运行日志 (tail -f)"
-    echo "2) 查看错误日志"
-    echo "3) 清空日志文件"
-    echo "4) 查看内核最近 100 行"
-    printf "请选择: "; local c; read -r c
+    ui_menu 1 "实时查看运行日志 (tail -f)"
+    ui_menu 2 "查看错误日志"
+    ui_menu 3 "清空日志文件"
+    ui_menu 4 "查看内核最近 100 行"
+    echo >&2
+    printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
+    c=$(clean_input "$c")
     case "$c" in
         1) print_info "Ctrl+C 退出"; tail -f "$SRV_ROOT/mihomo.log" 2>/dev/null ;;
         2) journalctl -u "$SRV_SERVICE" -p err -n 80 --no-pager 2>/dev/null \
@@ -510,7 +505,7 @@ EOF
            print_info "证书/out/分享记录已保留在 $SRV_ROOT" ;;
         3) _uninstall_all "$svc" "$shsvc" ;;
         "") print_info "已取消" ;;
-        *)  print_error "无效选项" ;;
+        *)  ui_invalid "$c" ;;
     esac
 }
 
@@ -609,8 +604,12 @@ show_logs() {
 
 svc_menu() {
     print_title "服务管理"
-    echo "1) 启动   2) 停止   3) 重启   4) 状态   5) 开机自启"
-    echo "6) 手动上传内核 (下载不通时用)"
+    ui_menu 1 "启动"
+    ui_menu 2 "停止"
+    ui_menu 3 "重启"
+    ui_menu 4 "状态"
+    ui_menu 5 "开机自启"
+    ui_menu 6 "手动上传内核 (下载不通时用)"
     printf "请选择: "; local c; read -r c
     case "$c" in
         1) systemctl start "$SRV_SERVICE" && print_ok "已启动" ;;
@@ -802,41 +801,44 @@ install_share() {
 # 主菜单
 # =============================================================
 main_menu() {
+    local c
     while true; do
         print_title "Mihomo 服务端面板"
         status_block
-        printf '\n'
-        echo "1) 添加节点"
-        echo "2) 管理节点"
-        echo "3) 生成分享链接"
-        echo "4) 拉取节点"
-        echo "5) 更新配置"
-        printf -- "----------------------------------------\n"
-        echo "6) 服务管理"
-        echo "7) 查看当前节点"
-        echo "8) 查看已拉取订阅"
-        echo "9) 查看日志"
-        echo "a) 查看节点分享内容"
-        echo "b) 系统信息"
-        echo "c) 卸载服务端"
-        printf "0) 退出\n"
-        printf "\n请选择: "
-        local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
+        echo >&2
+        ui_menu 1  "添加节点"
+        ui_menu 2  "管理节点"
+        ui_menu 3  "生成分享链接"
+        ui_menu 4  "拉取节点"
+        ui_menu 5  "更新配置"
+        ui_rule
+        ui_menu 6  "服务管理"
+        ui_menu 7  "查看当前节点"
+        ui_menu 8  "查看已拉取订阅"
+        ui_menu 9  "查看日志"
+        ui_menu 10 "查看节点分享内容"
+        ui_menu 11 "系统信息"
+        ui_menu 12 "卸载服务端"
+        ui_menu 0  "退出"
+        echo >&2
+        printf "  ${CYAN}请选择${RESET}: "
+        read -r c || { printf '\n'; print_info "非交互环境 (stdin 已关闭), 已退出"; break; }
+        c=$(clean_input "$c")
         case "$c" in
-            1) add_node ;;
-            2) manage_node ;;
-            3) install_share ;;
-            4) pull_node ;;
-            5) update_config ;;
-            6) svc_menu ;;
-            7) list_nodes ;;
-            8) list_imported ;;
-            9) log_menu ;;
-            a) show_client_files ;;
-            b) sys_info ;;
-            c) uninstall_service ;;
-            0) exit 0 ;;
-            *) print_error "无效选项" ;;
+            1)  add_node ;;
+            2)  manage_node ;;
+            3)  install_share ;;
+            4)  pull_node ;;
+            5)  update_config ;;
+            6)  svc_menu ;;
+            7)  list_nodes ;;
+            8)  list_imported ;;
+            9)  log_menu ;;
+            10) show_client_files ;;
+            11) sys_info ;;
+            12) uninstall_service ;;
+            0|q|Q) exit 0 ;;
+            *)  ui_invalid "$c" ;;
         esac
         pause
     done

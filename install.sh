@@ -31,11 +31,20 @@ REPO_MIRRORS=(
 SRV_ROOT="${SRV_ROOT:-/root/catmi/mihomo}"
 CLI_ROOT="${CLI_ROOT:-/root/catmi/mihomo-client}"
 
-GREEN="\033[32m"; RED="\033[31m"; CYAN="\033[36m"
-MAGENTA="\033[35m"; BOLD="\033[1m"; RESET="\033[0m"
-say()  { printf "${CYAN}[信息]${RESET} %s\n" "$1"; }
-ok()   { printf "${GREEN}[成功]${RESET} %s\n" "$1"; }
-err()  { printf "${RED}[错误]${RESET} %s\n" "$1"; }
+# install.sh 是独立下载执行的, 拿不到 src/lib/ui.sh, 所以这几行在本地再写一份。
+# 颜色存**真正的 ESC 字节**: 存字面量时只有 printf "格式串"/echo -e 会解转义,
+# printf '%s' "$CYAN" 会原样打印反斜杠, 颜色全废。
+_esc() { printf '%b' "$1"; }
+GREEN="$(_esc '\e[32m')"; RED="$(_esc '\e[31m')"; YELLOW="$(_esc '\e[33m')"
+CYAN="$(_esc '\e[96m')"; MAGENTA="$(_esc '\e[95m')"
+BOLD="$(_esc '\e[1m')"; RESET="$(_esc '\e[0m')"
+
+ui_menu() { printf "  ${CYAN}%2s${RESET}. %s\n" "$1" "$2"; }
+
+say()  { printf "${CYAN}[Info]${RESET} %s\n" "$1"; }
+ok()   { printf "${GREEN}[OK]${RESET} %s\n" "$1"; }
+err()  { printf "${RED}[Error]${RESET} %s\n" "$1"; }
+warn() { printf "${YELLOW}[Warn]${RESET} %s\n" "$1"; }
 die()  { err "$1"; exit 1; }
 
 [[ "$(id -u)" == "0" ]] || die "请使用 root 权限运行"
@@ -126,9 +135,11 @@ fetch_repo() {  # 把面板需要的文件拉到本地
     ok "面板文件已就绪 ($base/src)"
 }
 
+# 与面板 print_title 同款: 左边一个空格 + %-42s + 一个空格, 框才是方的。
+# 之前左边写了两个空格右边不写, 右边框线被顶掉一格, 看着就是歪的。
 banner() {
     printf "${MAGENTA}${BOLD}╔══════════════════════════════════════════════╗\n"
-    printf "║  %-42s ║\n" "$1"
+    printf "║ %-42s ║\n" "$1"
     printf "╚══════════════════════════════════════════════╝${RESET}\n"
 }
 
@@ -168,18 +179,18 @@ install_client() {
 
 menu() {
     banner "mihomo--core 安装"
-    echo "1) 安装服务端 (建节点、发分享)"
-    echo "2) 安装客户端 (拉节点、出网)"
-    echo "3) 两边都装"
-    printf "0) 退出\n"
-    printf "\n请选择: "
+    ui_menu 1 "安装服务端 (建节点、发分享)"
+    ui_menu 2 "安装客户端 (拉节点、出网)"
+    ui_menu 3 "两边都装"
+    ui_menu 0 "退出"
+    printf "\n  ${CYAN}请选择${RESET}: "
     local c; read -r c
     case "$c" in
         1) install_server ;;
         2) install_client ;;
         3) install_server; install_client ;;
         0) exit 0 ;;
-        *) die "无效选项" ;;
+        *) err "无效选项: $c" ;;
     esac
 }
 

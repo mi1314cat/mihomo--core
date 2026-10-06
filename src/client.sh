@@ -54,20 +54,12 @@ CLI_LIB="${CLI_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib}"
 : "${BIND_ADDR:=127.0.0.1}"
 : "${HEALTH_URL:=http://www.gstatic.com/generate_204}"
 
-GREEN="\033[32m"; RED="\033[31m"; YELLOW="\033[33m"; CYAN="\033[36m"
-MAGENTA="\033[35m"; BOLD="\033[1m"; RESET="\033[0m"
-
-print_info()  { printf "${CYAN}[信息]${RESET} %s\n" "$1" >&2; }
-print_ok()    { printf "${GREEN}[成功]${RESET} %s\n" "$1" >&2; }
-print_warn()  { printf "${YELLOW}[警告]${RESET} %s\n" "$1" >&2; }
-print_error() { printf "${RED}[错误]${RESET} %s\n" "$1" >&2; }
-print_title() {
-    printf "${MAGENTA}${BOLD}" >&2
-    printf "╔══════════════════════════════════════════════╗\n" >&2
-    printf "║ %-42s ║\n" "$1" >&2
-    printf "╚══════════════════════════════════════════════╝\n" >&2
-    printf "${RESET}" >&2
-}
+# UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh。
+# 客户端不经过 env.sh, 这里自己兜一道 —— 之前这个文件是第三份独立定义,
+# 标签还用中文 [成功], 与协议脚本的 [OK] 对不上。
+_MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/ui.sh"
+# shellcheck source=/dev/null
+[[ -f "$_MUI" ]] && source "$_MUI"
 
 ensure_dirs() { mkdir -p "$CLI_CONF" "$CLI_PROVIDERS" "$CLI_NODES" "$CLI_UI"; }
 
@@ -553,7 +545,9 @@ status_block() {
     local svc="未运行" ver="-" n; n=$(node_count)
     svc_active && svc="${GREEN}运行中${RESET}"
     if [[ -x "$CLI_BIN" ]]; then ver=$("$CLI_BIN" -v 2>/dev/null | head -1); fi
-    printf "  服务: %-14s 节点: %-4s 内核: %s\n" "$svc" "$n" "$ver"
+    # 输出走 stderr: UI 混进 stdout 会污染 $(...), 且与 print_title(stderr)
+    # 混排时缓冲不同步会出现"状态先于标题"。
+    printf "  服务: %-14s 节点: %-4s 内核: %s\n" "$svc" "$n" "$ver" >&2
     # 端口要显示**内核实际在用的**, 不能只显示 settings.env 里的值。
     # 实测: 全新安装写的是 mixed-port: 0, 面板却显示 7890 ——
     # 而 7890 恰好是本机另一个 mihomo 的端口, 等于显示"别人的端口"。
@@ -627,40 +621,44 @@ PYTEST
 # 菜单
 # =============================================================
 client_menu() {
+    local c
     while true; do
         print_title "Mihomo 客户端面板"
         status_block
-        printf '\n'
-        echo "1) 初始化基础配置"
-        echo "2) 添加节点 (分享链接 / 订阅 / 本地文件)"
-        echo "3) 查看节点"
-        echo "4) 更新订阅节点"
-        echo "5) 删除节点"
-        echo "6) 启动 / 停止 / 重启服务"
-        echo "7) 配置检查"
-        echo "8) 节点测速"
-        echo "9) 客户端设置 (端口 / 绑定 / 面板密钥)"
-        echo "10) 分享订阅 (把我的节点发给别人)"
-        echo "d) 卸载客户端"
-        echo "0) 退出"
-        printf "\n请选择: "
-        local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
+        echo >&2
+        ui_menu 1  "初始化基础配置"
+        ui_menu 2  "添加节点 (分享链接 / 订阅 / 本地文件)"
+        ui_menu 3  "查看节点"
+        ui_menu 4  "更新订阅节点"
+        ui_menu 5  "删除节点"
+        ui_rule
+        ui_menu 6  "启动 / 停止 / 重启服务"
+        ui_menu 7  "配置检查"
+        ui_menu 8  "节点测速"
+        ui_menu 9  "客户端设置 (端口 / 绑定 / 面板密钥)"
+        ui_menu 10 "分享订阅 (把我的节点发给别人)"
+        ui_menu 11 "卸载客户端"
+        ui_menu 0  "退出"
+        echo >&2
+        printf "  ${CYAN}请选择${RESET}: " >&2
+        read -r c || { printf '\n' >&2; print_info "非交互环境 (stdin 已关闭), 已退出"; break; }
+        c=$(clean_input "$c")
         case "$c" in
-            1) apply_change ;;
-            2) node_add ;;
-            3) node_list ;;
-            4) node_update ;;
-            5) node_delete ;;
-            6) svc_menu ;;
-            7) check_menu ;;
-            8) node_test ;;
-            9) settings_menu ;;
+            1)  apply_change ;;
+            2)  node_add ;;
+            3)  node_list ;;
+            4)  node_update ;;
+            5)  node_delete ;;
+            6)  svc_menu ;;
+            7)  check_menu ;;
+            8)  node_test ;;
+            9)  settings_menu ;;
             10) cli_share_menu ;;
-            d|D) cli_uninstall ;;
-            0) exit 0 ;;
-            *) print_error "无效选项" ;;
+            11|d|D) cli_uninstall ;;
+            0|q|Q) exit 0 ;;
+            *)  ui_invalid "$c" ;;
         esac
-        printf "\n按回车继续..."; read -r || break
+        pause
     done
 }
 
@@ -698,7 +696,7 @@ EOF
            print_info "配置与节点已保留在 $CLI_ROOT" ;;
         2) _cli_uninstall_all "$svc" "$shsvc" ;;
         "") print_info "已取消" ;;
-        *)  print_error "无效选项" ;;
+        *)  ui_invalid "$c" ;;
     esac
 }
 
@@ -848,8 +846,13 @@ cli_share_menu() {
 
 svc_menu() {
     print_title "服务管理"
-    echo "1) 启动   2) 停止   3) 重启   4) 查看状态"
-    printf "请选择: "; local c; read -r c
+    ui_menu 1 "启动"
+    ui_menu 2 "停止"
+    ui_menu 3 "重启"
+    ui_menu 4 "查看状态"
+    echo >&2
+    printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
+    c=$(clean_input "$c")
     case "$c" in
         1) systemctl start "$CLI_SERVICE" && print_ok "已启动" ;;
         2) systemctl stop "$CLI_SERVICE" && print_ok "已停止" ;;
@@ -1090,13 +1093,15 @@ PYSAVE
 
 settings_menu() {
     print_title "客户端设置"
-    echo "1) HTTP/SOCKS 端口      当前: $PORT_MIXED"
-    echo "2) 控制面板端口         当前: $PORT_CTRL"
-    echo "3) 监听地址             当前: $BIND_ADDR  (127.0.0.1=仅本机, 0.0.0.0=局域网)"
-    echo "4) 显示面板密钥"
-    echo "5) 重新生成面板密钥"
-    echo "6) geo 自动更新                当前: ${GEO_AUTO_UPDATE:-0}"
-    printf "请选择: "; local c; read -r c
+    ui_menu 1 "HTTP/SOCKS 端口    当前: $PORT_MIXED"
+    ui_menu 2 "控制面板端口       当前: $PORT_CTRL"
+    ui_menu 3 "监听地址           当前: $BIND_ADDR  (127.0.0.1=仅本机, 0.0.0.0=局域网)"
+    ui_menu 4 "显示面板密钥"
+    ui_menu 5 "重新生成面板密钥"
+    ui_menu 6 "geo 自动更新       当前: ${GEO_AUTO_UPDATE:-0}"
+    echo >&2
+    printf "  ${CYAN}请选择${RESET}: "; local c; read -r c
+    c=$(clean_input "$c")
     case "$c" in
         1) ask_port PORT_MIXED "HTTP/SOCKS" && { save_settings; apply_change; } ;;
         2) ask_port PORT_CTRL "控制面板" && { save_settings; apply_change; } ;;

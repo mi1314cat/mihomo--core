@@ -36,36 +36,8 @@ OUT_DIR="${OUT_DIR:-$SRV_ROOT/out}"
 CERTS_DIR="${CERTS_DIR:-$SRV_ROOT/conf/certs}"
 MIHOMO_BIN="${MIHOMO_BIN:-$SRV_BIN}"
 
-GREEN="\033[32m"; RED="\033[31m"; YELLOW="\033[33m"; CYAN="\033[36m"
-MAGENTA="\033[35m"; BOLD="\033[1m"; RESET="\033[0m"
-info()  { printf "${CYAN}·${RESET} %s\n" "$1" >&2; }
-# env.sh 的 m_sync / m_sync_reload 会调用 print_*, 这里必须提供
-print_info()  { info "$1"; }
-print_ok()    { ok "$1"; }
-print_warn()  { warn "$1"; }
-print_error() { err "$1"; }
-ok()    { printf "${GREEN}✓${RESET} %s\n" "$1" >&2; }
-warn()  { printf "${YELLOW}!${RESET} %s\n" "$1" >&2; }
-err()   { printf "${RED}✗${RESET} %s\n" "$1" >&2; }
-
-DRY_RUN=0
-USE_TLS=1
-ONLY=""
-CLIENT_FP="${CLIENT_FP:-chrome}"
-# 打印本文件顶部那段用法注释 (从第 3 行到第一行 "# ====..." 为止)
-# 不能写死行号 —— 往用法说明里加一行, sed 的范围就悄悄截错。
-usage() { sed -n '3,/^# =\{10,\}/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --dry-run) DRY_RUN=1 ;;
-        --no-tls)  USE_TLS=0 ;;
-        --only)    shift; ONLY="$1" ;;
-        --fp)      shift; CLIENT_FP="$1" ;;
-        -h|--help) usage; exit 0 ;;
-        *) err "未知参数: $1"; exit 1 ;;
-    esac
-    shift
-done
+# UI 原语统一来自 src/lib/ui.sh (颜色/消息分级/标题), 此处不再重复定义。
+# 被父级 source 时已加载; 单独运行时由下面的兜底 source 补上。
 
 # =============================================================
 # client-fingerprint 校验 (必须在这里拦, 不能只靠内核)

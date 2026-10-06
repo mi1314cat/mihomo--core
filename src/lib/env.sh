@@ -10,6 +10,13 @@
 # 用途: 被 src/conf/*.sh 与 src/*.sh 共同 source
 # =============================================================
 
+# ---------- UI 基座 ----------
+# 颜色/消息/标题/菜单 全在这里定义, 由 ui.sh 一处维护。
+# 放在最前面: env.sh 里后面要用 print_warn/print_error, 得先有定义。
+_MUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ui.sh"
+# shellcheck source=/dev/null
+[[ -f "$_MUI" ]] && source "$_MUI"
+
 # ---------- 基础路径 ----------
 : "${SRV_ROOT:=/root/catmi/mihomo}"
 : "${SRV_CONF:=$SRV_ROOT/conf}"

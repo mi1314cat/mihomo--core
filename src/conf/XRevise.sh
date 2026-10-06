@@ -1,18 +1,12 @@
 #!/bin/bash
 
-# 颜色
-GREEN="\033[32m"
-RED="\033[31m"
-YELLOW="\033[33m"
-PLAIN="\033[0m"
-
-print_info() {
-    echo -e "${GREEN}[Info]${PLAIN} $1"
-}
-
-print_error() {
-    echo -e "${RED}[Error]${PLAIN} $1"
-}
+# UI 原语统一来自 src/lib/ui.sh (颜色/消息分级/标题), 此处不再重复定义。
+# 这个脚本会被父级 source, 也可能被单独执行, 所以自己兜一道。
+_MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../lib" && pwd)/ui.sh"
+# shellcheck source=/dev/null
+[[ -f "$_MUI" ]] && source "$_MUI"
+# 旧脚本里管重置叫 PLAIN, 统一后仍留着这个别名免得下面的用法失效
+PLAIN="$RESET"
 
 INSTALL_DIR="/root/catmi/mihomo"
 ENV_FILE="$INSTALL_DIR/install_info.env"

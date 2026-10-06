@@ -47,20 +47,13 @@ fi
 SHARES="$SHARE_DIR/shares"
 
 # 允许单独 source (不经过 server.sh)。父级已定义时不覆盖, 保持父级配色。
-if ! declare -F print_info >/dev/null 2>&1; then
-    GREEN="\033[32m"; RED="\033[31m"; YELLOW="\033[33m"
-    CYAN="\033[36m"; MAGENTA="\033[35m"; BOLD="\033[1m"; RESET="\033[0m"
-    print_info()  { printf "${CYAN}[信息]${RESET} %s\n" "$1" >&2; }
-    print_ok()    { printf "${GREEN}[成功]${RESET} %s\n" "$1" >&2; }
-    print_warn()  { printf "${YELLOW}[警告]${RESET} %s\n" "$1" >&2; }
-    print_error() { printf "${RED}[错误]${RESET} %s\n" "$1" >&2; }
-    print_title() {
-        printf "${MAGENTA}${BOLD}" >&2
-        printf "╔══════════════════════════════════════════════╗\n" >&2
-        printf "║ %-42s ║\n" "$1" >&2
-        printf "╚══════════════════════════════════════════════╝\n" >&2
-        printf "${RESET}" >&2
-    }
+# UI 原语统一来自 src/lib/ui.sh。被 server.sh source 时那边已经加载过;
+# 单独 source (不经父级) 时这里兜一道。
+# 之前这里自己定义了一套中文标签 [成功], 与协议脚本的 [OK] 不一致。
+_MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../lib" && pwd)/ui.sh"
+# shellcheck source=/dev/null
+if ! declare -F print_info >/dev/null 2>&1 && [[ -f "$_MUI" ]]; then
+    source "$_MUI"
 fi
 
 # ---------- 小工具 ----------
@@ -489,16 +482,16 @@ share_menu() {
         print_title "分享链接管理"
         share_service_status
         printf '\n'
-        echo "1) 生成分享链接"
-        echo "2) 查看全部分享链接"
-        echo "3) 查看链接地址"
-        echo "4) 禁用 / 启用"
-        echo "5) 重新生成 Token"
-        echo "6) 删除分享链接"
-        echo "7) 安装 / 启用分享服务"
-        echo "8) 重启分享服务"
-        echo "9) 停止分享服务"
-        echo "0) 返回"
+        ui_menu 1 "生成分享链接"
+        ui_menu 2 "查看全部分享链接"
+        ui_menu 3 "查看链接地址"
+        ui_menu 4 "禁用 / 启用"
+        ui_menu 5 "重新生成 Token"
+        ui_menu 6 "删除分享链接"
+        ui_menu 7 "安装 / 启用分享服务"
+        ui_menu 8 "重启分享服务"
+        ui_menu 9 "停止分享服务"
+        ui_menu 0 "返回"
         printf "\n请选择 [0-9]: "
         local c; read -r c || { printf "\n[信息] 非交互环境 (stdin 已关闭), 已退出\n" >&2; break; }
         case "$c" in
@@ -512,7 +505,7 @@ share_menu() {
             8) share_service_restart ;;
             9) share_service_stop ;;
             0) return ;;
-            *) print_error "无效选项" ;;
+            *) ui_invalid "$c" ;;
         esac
         printf "\n按回车继续..."; read -r || break
     done
