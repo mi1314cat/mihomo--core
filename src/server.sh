@@ -536,11 +536,12 @@ update_config() {
         print_error "内核校验失败, 配置未生效"; return 1; }
     print_ok "全部校验通过"
 
-    #     [OK] sing-box check 通过 (全部配置合并合法)
+    # 校验完**顺手把状态摆出来**, 而不是只报一句"通过"就走。
+    # 用户刚做完"确认配置"这件事, 最想知道的就是"现在到底什么状态":
+    #     校验结果: 通过
     #     运行状态: active
-    #     内核版本: 1.14.2
-    #     占用端口: 53,80,443,<SSH_PORT>,...
-    # 用户刚做完"确认配置"这件事, 最想知道的就是"现在到底什么状态"。
+    #     内核版本: <版本号>
+    #     占用端口: 53,80,443,2087,...
     printf '\n' >&2
     local st ver ports
     st=$(systemctl is-active "$SRV_SERVICE" 2>/dev/null || echo "unknown")

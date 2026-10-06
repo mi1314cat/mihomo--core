@@ -94,6 +94,25 @@ syntax_py() {
 run_gate "shell 语法"   syntax_shell
 run_gate "python 语法"  syntax_py
 
+printf "\n${CYAN}── 发布脱敏 ──${RESET}\n"
+scrub_scan() {
+    # GitHub 只给我们自己用, 是功能性的 —— 不能把部署信息带上去。
+    #
+    # 为什么必须做成门: 这个坑**重犯过**。历史上手动跑过一次脱敏, 之后又改
+    # 了代码, 新写的注释里把真实 IP / 隧道地址 / SSH 端口又带回来了。手工
+    # 跑一次的检查不是检查。
+    #
+    # 只查 git 跟踪的文件 —— 未被跟踪的 docs/private/ 本来就不上传。
+    # 排除 tools/scrub.py 自己: 它的 RULES 里就是这些模式的正则文本,
+    # 查它必然自命中。校验器不能校验自己。
+    local files
+    files=$(git ls-files | grep -v '^tools/scrub\.py$')
+    [[ -n "$files" ]] || { printf "❌ 没拿到文件清单 (不在 git 仓库里?)\n"; return 1; }
+    # shellcheck disable=SC2086
+    python3 tools/scrub.py --check $files
+}
+run_gate "发布脱敏"     scrub_scan
+
 printf "\n${CYAN}── 幽灵函数 (定义了但没人调) ──${RESET}\n"
 phantom_scan() {
     python3 - <<'PY'

@@ -328,6 +328,8 @@ ask_port_range() {
     (( PORT_RANGE_START < 1024 )) && PORT_RANGE_START=1024
     (( PORT_RANGE_END > 65535 )) && PORT_RANGE_END=65535
 
+    # 把**实际选中的结果**回显出来, 例如:
+    #     [OK] 端口区间: 31025 - 36025 (5001 个, 每个节点一个)
     # 只说"回车=随机"而不回显, 用户不知道到底挑了哪一段 ——
     # 而这个区间后面要写进客户端配置, 是要能对得上的。
     printf "     ${GREEN}[OK]${RESET} 端口区间: %s - %s ${DIM}(%d 个, 每个节点一个)${RESET}\n" \
