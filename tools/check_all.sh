@@ -47,6 +47,31 @@ run_gate "常量漂移"     bash tools/check_mirrors.sh
 run_gate "接线完整"     bash tools/check_wiring.sh
 run_gate "菜单编号"     bash tools/check_menu_ids.sh
 
+# pre-push 钩子是否已安装。
+#
+# 钩子本体在 tools/git-hooks/pre-push (版本控制的一部分), 但 git 只认
+# .git/hooks/ 下的副本 —— 换台机器 clone 出来是没有的, 于是「推 main 把
+# 远端推回退」那个坑会重新出现。所以这里查一次。
+#
+# 这个坑实际踩了三次, 每次都报 forced update 且**退出码 0**, 看起来像成功。
+git_hook() {
+    local src=tools/git-hooks/pre-push dst=.git/hooks/pre-push
+    [[ -f "$src" ]] || { printf "❌ 钩子源文件缺失: %s\n" "$src"; return 1; }
+    if [[ ! -x "$dst" ]]; then
+        printf "❌ pre-push 钩子未安装 (或不可执行): %s\n" "$dst"
+        printf "   安装: cp %s %s && chmod 755 %s\n" "$src" "$dst" "$dst"
+        return 1
+    fi
+    # 内容必须一致 —— 只存在但内容过期同样没意义
+    if ! cmp -s "$src" "$dst"; then
+        printf "❌ pre-push 钩子内容过期: %s\n" "$dst"
+        printf "   更新: cp %s %s\n" "$src" "$dst"
+        return 1
+    fi
+    return 0
+}
+run_gate "pre-push 钩子" git_hook
+
 printf "\n${CYAN}── 语法 ──${RESET}\n"
 syntax_shell() {
     local bad=0 f
