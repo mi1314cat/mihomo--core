@@ -169,8 +169,20 @@ _mihomo_probe() {   # $1=可执行文件
     [[ -s "$f" ]] || return 1
     hdr=$(head -c 4 "$f" 2>/dev/null)
     [[ "$hdr" == $'\x7fELF' ]] || return 1
-    # 真跑一下 —— 这是唯一可靠的判据
-    "$f" -v 2>/dev/null | grep -qi mihomo || return 1
+    # 真跑一下 —— 这是唯一可靠的判据。
+    #
+    # 必须**先整体捕获再匹配**, 不能写成 "$f" -v 2>/dev/null | grep -qi mihomo:
+    # grep -q 一命中就退出, 上游 mihomo 写管道时收到 SIGPIPE (退出码 141),
+    # 而本脚本开头是 `set -euo pipefail`, 管道因此被判为失败。
+    #
+    # 致命的是这是竞态 —— 取决于内核把版本行写完的快慢, 同一台机器时灵时不灵。
+    # 实测 2026-10-06 <SERVER_ALIAS> 上连跑 12 次, 管道式挂了 7 次 (全是 141), 捕获式 12/12。
+    #
+    # 影响的不只是这里: _kernel_from_dir (上传目录扫描) 也调它, 于是
+    # "手动上传内核" 在 <SERVER_ALIAS> 上约六成概率被误判成"目录里没有可用的内核"。
+    # 这种时灵时不灵比一直坏更难查 —— 用户传了、提示说没有、又传一次。
+    out="$("$f" -v 2>/dev/null)" || return 1
+    [[ "$out" =~ [Mm][Ii][Hh][Oo][Mm][Oo] ]] || return 1
     return 0
 }
 
@@ -234,6 +246,29 @@ _kernel_from_dir() {
     return 1
 }
 
+# ---------- 已装且可用 → 直接跳过 ----------
+#
+# 对齐 SB 的 install.sh:
+#     if [[ ! -x "$CLI_ROOT/core/sing-box" ]]; then ... 安装 ... fi
+# 有就不装。
+#
+# 为什么需要: install.sh 兼任「装」和「进面板」两个角色 (用户的其它脚本
+# 直接调它进面板), 所以会被反复执行。之前每次都重下一遍内核 —— 一是慢,
+# 二是网络不通时 install.sh 直接 die, 明明本机已经有能跑的内核却进不去面板。
+#
+# 判据用 _mihomo_probe (真跑一次取版本) 而不是只看 -x: 架构不对的文件同样
+# 有执行权限, 那种情况必须继续往下走去装对的, 不能在这里糊弄过去。
+if [[ -z "${MIHOMO_LOCAL_BIN:-}" && -x "$INSTALL_DIR/mihomo" ]] \
+   && _mihomo_probe "$INSTALL_DIR/mihomo"; then
+    say "检测到本机已有可用内核, 跳过内核安装"
+    say "  版本: $("$INSTALL_DIR/mihomo" -v 2>/dev/null | head -1)"
+    say "  位置: $INSTALL_DIR/mihomo"
+    say "  需要换版本请用面板: 服务管理 → 手动上传内核"
+    _SKIP_CORE=1
+else
+    _SKIP_CORE=0
+fi
+
 LOCAL_BIN="${MIHOMO_LOCAL_BIN:-}"
 LOCAL_SRC=""
 
@@ -271,6 +306,9 @@ if [[ -z "$LOCAL_BIN" && -d "$KERNEL_DIR" ]]; then
     fi
 fi
 
+# 内核获取整段: 只在"本机还没装出可用内核"时才走。
+# 已经装好的情况在上面就短路返回 _SKIP_CORE=1, 不重复下载。
+if [[ "$_SKIP_CORE" -eq 0 ]]; then
 if [[ -n "$LOCAL_BIN" && -x "$LOCAL_BIN" ]]; then
     say "使用指定内核: $LOCAL_BIN"
     say "  版本: $("$LOCAL_BIN" -v 2>/dev/null | head -1)"
@@ -399,6 +437,7 @@ fi
 chmod +x "$TMP/mihomo"
 "$TMP/mihomo" -v >/dev/null 2>&1 || die "内核无法执行, 架构或指令集不匹配"
 say "内核可执行: $("$TMP/mihomo" -v | head -1)"
+fi
 
 # ---------- 目录 ----------
 mkdir -p "$INSTALL_DIR/conf/config.d" "$INSTALL_DIR/conf/certs" "$INSTALL_DIR/out"
@@ -523,13 +562,17 @@ EOF
 fi
 
 # ---------- 替换内核 (保留旧版以便回滚) ----------
+# 跳过时不能动内核: 老内核正跑着, 无谓地 cp 一份 .bak 再原样写回去,
+# 只会凭空多出个 mihomo.bak, 让人以为"刚才换过版本"。
 OLD=""
-if [[ -x "$INSTALL_DIR/mihomo" ]]; then
-    OLD="$INSTALL_DIR/mihomo.bak"
-    cp -f "$INSTALL_DIR/mihomo" "$OLD"
+if [[ "$_SKIP_CORE" -eq 0 ]]; then
+    if [[ -x "$INSTALL_DIR/mihomo" ]]; then
+        OLD="$INSTALL_DIR/mihomo.bak"
+        cp -f "$INSTALL_DIR/mihomo" "$OLD"
+    fi
+    cp -f "$TMP/mihomo" "$INSTALL_DIR/mihomo"
+    chmod +x "$INSTALL_DIR/mihomo"
 fi
-cp -f "$TMP/mihomo" "$INSTALL_DIR/mihomo"
-chmod +x "$INSTALL_DIR/mihomo"
 
 # ---------- systemd ----------
 cat > "$SERVICE_FILE" <<EOF
@@ -582,3 +625,4 @@ printf '  管理面板: bash <(curl -fsSL <仓库地址>/install.sh)\n\n'
 # 告警。在配置生成前调用, 判断永远是"没用", 客户端那套含 geosite:cn,private
 # 的规则就永远收不到提示 —— 而那正是会让 mihomo 卡在启动阶段的场景。
 seed_geodata
+

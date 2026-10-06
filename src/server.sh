@@ -679,7 +679,17 @@ kernel_probe() {   # $1=文件  $2=解包目标
     esac
     chmod +x "$out" 2>/dev/null
     [[ -s "$out" ]] || return 1
-    "$out" -v 2>/dev/null | grep -qi mihomo || return 1
+    # 真跑 —— 这是唯一可靠的判据。
+    #
+    # 必须**先整体捕获再匹配**, 不能写成 "$out" -v 2>/dev/null | grep -qi mihomo:
+    # grep -q 一命中就退出, 上游 mihomo 写管道时收到 SIGPIPE (141), 而本脚本
+    # 开头是 `set -euo pipefail`, 管道因此被判为失败。
+    #
+    # 致命的是这是竞态 —— 取决于内核把版本行写完的快慢, 同一台机器时灵时不灵。
+    # 实测 2026-10-06 <SERVER_ALIAS> 上连跑 12 次, 管道式挂了 7 次 (全是 141), 捕获式 12/12。
+    # 用户传了好端端的内核却被判成"不可用", 再传一次又"可用" —— 比一直坏更难查。
+    _v="$("$out" -v 2>/dev/null)" || return 1
+    [[ "$_v" =~ [Mm][Ii][Hh][Oo][Mm][Oo] ]] || return 1
     return 0
 }
 

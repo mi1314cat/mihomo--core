@@ -183,9 +183,24 @@ menu() {
     esac
 }
 
+# ---------- 进面板 ----------
+#
+# install.sh 同时是"装"和"进面板"的入口 —— 用户的其它脚本直接调它进面板,
+# 所以这里统一收尾: 装完(发现内核已存在而跳过下载也一样)直接拉起面板。
+#
+# 为什么放在 install.sh 而不是 core_install.sh: 面板脚本 (server.sh /
+# client.sh) 是 core_install **之后**才下载的, 从 core_install 里拉会找不到
+# 文件 —— 那正是最容易在旧机器上踩到的顺序问题。
+enter_panel() {
+    local root="$1" script="$2"
+    [[ -f "$root/src/$script" ]] || { err "面板未就绪, 请手动运行 $root/src/$script"; return 0; }
+    printf '\n'
+    bash "$root/src/$script"
+}
+
 case "${1:-}" in
-    server) install_server ;;
-    client) install_client ;;
-    all)    install_server; install_client ;;
+    server) install_server; enter_panel "$SRV_ROOT" server.sh ;;
+    client) install_client; enter_panel "$CLI_ROOT" client.sh ;;
+    all)    install_server; install_client; enter_panel "$CLI_ROOT" client.sh ;;
     *)      menu ;;
 esac
