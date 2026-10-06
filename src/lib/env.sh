@@ -45,7 +45,17 @@ if [[ -z "${M_LIB:-}" ]]; then
     M_LIB="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 fi
 
-mkdir -p "$SRV_CONFIGD" "$SRV_CERTS" "$SRV_OUT"
+# ---------- 服务端目录 ----------
+# 只有服务端上下文才建这套目录树。
+#
+# 客户端 (src/client.sh) 也会 source 本文件 —— 它需要 m_resolve_ports /
+# m_free_port / m_port_in_use 这些公共 helper, 而它们**只在这里定义**。
+# 但客户端不该在 /root/catmi/mihomo 下建出**服务端**的目录树: 那台机器上
+# 可能根本没有服务端, 甚至 /root/catmi/mihomo 属于别的项目。
+# 所以客户端先设 M_NO_SRV_DIRS=1 再 source。
+if [[ -z "${M_NO_SRV_DIRS:-}" ]]; then
+    mkdir -p "$SRV_CONFIGD" "$SRV_CERTS" "$SRV_OUT"
+fi
 
 # ---------- 外部依赖 URL ----------
 # 仅保留确实无法本地化的第三方资源; 全部走代理回退链。

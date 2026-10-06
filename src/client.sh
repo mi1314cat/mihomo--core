@@ -49,20 +49,45 @@ fi
 # 否则脚本被复制/截断到别处时就找不到 validate.py 了。
 CLI_LIB="${CLI_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib}"
 
+# ---------- 共享库 ----------
+# 客户端**也要**走 env.sh。
+#
+# 之前的注释写的是"客户端不经过 env.sh, 这里自己兜一道", 于是只单独 source
+# 了 ui.sh。那个决定本身没错 (env.sh 会在 /root/catmi/mihomo 下建服务端
+# 目录树), 但它漏掉了一件事: m_resolve_ports / m_free_port / m_port_in_use
+# 这些端口 helper **只定义在 env.sh 里**, 客户端一个都拿不到。
+#
+# 后果是首次生成配置必炸 (实测, 全新安装后从面板拉第一个订阅):
+#     src/client.sh: line 185: m_resolve_ports: command not found
+#     src/client.sh: line 186: M_PORT_MIXED: unbound variable
+# gen_config 里那段"写配置前先把端口定死"的逻辑因此从来没生效过, 而
+# set -u 会让它直接中断 —— 新用户第一次拉订阅就卡在这。
+#
+# env.sh 现在已经把"建服务端目录"那步用 M_NO_SRV_DIRS 关掉了, 所以这里
+# 可以放心 source。加载顺序: env.sh 自己会带入 ui.sh / core_mgmt.sh /
+# fw.sh / cert.sh / preset.sh / cdn.sh (都依赖 ui.sh, 顺序已在 env.sh 里
+# 排好), 下面的循环只补它没带的那些。
+M_NO_SRV_DIRS=1
+# shellcheck source=/dev/null
+[[ -f "$CLI_LIB/env.sh" ]] && source "$CLI_LIB/env.sh"
+unset M_NO_SRV_DIRS
+
+# 端口与出网探测的默认值。放在 env.sh 之后: 这几个是**客户端独有**的,
+# env.sh 里没有, 但 save_settings / gen_config 要读。
 : "${PORT_MIXED:=7890}"
 : "${PORT_CTRL:=9090}"
 : "${BIND_ADDR:=127.0.0.1}"
 : "${HEALTH_URL:=http://www.gstatic.com/generate_204}"
 
 # UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh。
-# 客户端不经过 env.sh, 这里自己兜一道 —— 之前这个文件是第三份独立定义,
-# 标签还用中文 [成功], 与协议脚本的 [OK] 对不上。
+# 客户端不经过 env.sh 的老路已经改掉, 这里保留兜底: env.sh 缺失时面板
+# 至少还能显示出中文而不是一堆 command not found。
 _MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/ui.sh"
 # shellcheck source=/dev/null
 [[ -f "$_MUI" ]] && source "$_MUI"
 
 # Web UI 管理与内核/版本管理。两者依赖上面的 ui.sh, 必须在它之后加载。
-for _mx in webui core_mgmt portcheck fw rules_bind dl_route simple_proxy lan_dispatch cert preset cdn; do
+for _mx in webui portcheck rules_bind dl_route simple_proxy lan_dispatch; do
     _MEXTRA="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/$_mx.sh"
     [[ -f "$_MEXTRA" ]] && source "$_MEXTRA"
 done
