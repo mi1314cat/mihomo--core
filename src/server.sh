@@ -848,6 +848,7 @@ main_menu() {
         ui_menu 12 "查看节点分享内容"
         ui_menu 13 "系统信息"
         ui_menu 14 "卸载服务端"
+        ui_menu 15 "切换到客户端面板 (装/进另一端)"
         ui_menu 0  "退出"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -868,6 +869,7 @@ main_menu() {
             12) show_client_files ;;
             13) sys_info ;;
             14) uninstall_service ;;
+            15) switch_side "$SRV_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

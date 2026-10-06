@@ -148,26 +148,49 @@ core_update_scripts() {
     local tmp; tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' RETURN
 
-    local files=(
-        "src/lib/env.sh" "src/lib/ui.sh" "src/lib/core_mgmt.sh" "src/lib/webui.sh" "src/lib/portcheck.sh"
-        "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
-        "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
-        "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
-        "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"
-        "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
-        "src/core_install.sh" "src/server.sh" "src/client.sh"
-    )
+    # ---------- 要更新哪些文件: 以 manifest.txt 为准 ----------
+    #
+    # 这里原本硬编码 23 个文件名, 而 manifest.txt 有 31 个 —— 于是从面板
+    # 「更新脚本」会有 8 个文件**永远不更新**:
+    #     cdn.sh cert.sh dl_route.sh fw.sh lan_dispatch.sh
+    #     preset.sh rules_bind.sh simple_proxy.sh
+    # 其余文件往前走了, 这 8 个留在旧版本 —— 而它们之间是互相调用的
+    # (cert.sh 被 server.sh source、cdn.sh 被 all.sh 用…), 半新半旧比全旧更难查。
+    #
+    # 这是 K-14 (install.sh 漏下 8 个文件) 的翻版, 只是发生在另一条路径上。
+    # 所以改成和 install.sh 同一套: **清单是唯一真源**, 拉不到才用兜底。
+    local files=()
+    local line
+    if m_fetch_any "src/manifest.txt" "$tmp/manifest.txt" 2>/dev/null; then
+        while IFS= read -r line; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | tr -d '[:space:]')"
+            [[ -n "$line" ]] && files+=("$line")
+        done < "$tmp/manifest.txt"
+    fi
+    if [[ ${#files[@]} -eq 0 ]]; then
+        print_warn "清单拉取失败, 使用内置兜底清单"
+        files=(
+            "src/lib/env.sh" "src/lib/ui.sh" "src/lib/core_mgmt.sh" "src/lib/webui.sh" "src/lib/portcheck.sh"
+            "src/lib/cert.sh" "src/lib/preset.sh" "src/lib/cdn.sh" "src/lib/fw.sh"
+            "src/lib/rules_bind.sh" "src/lib/lan_dispatch.sh" "src/lib/dl_route.sh" "src/lib/simple_proxy.sh"
+            "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
+            "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
+            "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
+            "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"
+            "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
+            "src/core_install.sh" "src/server.sh" "src/client.sh"
+        )
+    fi
 
-    # 仓库地址优先取本机记录的, 取不到用默认
-    local repo="${MIHOMO_REPO:-https://github.com/mi1314cat/mihomo--core}"
-    local branch="${MIHOMO_BRANCH:-main}"
-    local base="$repo/raw/refs/heads/$branch"
-
-    print_info "从 $base 拉取面板文件"
+    print_info "拉取面板文件 (${#files[@]} 个)"
+    # 走 m_fetch_any: 它会依次试整条镜像链, 并在直连全灭时带上本机代理。
+    # 原来是裸的 github.com 直连 —— 在国内机器上这一项**根本不可能成功**,
+    # 而"连不上 GitHub"恰恰是用户最需要这个功能的场景。
     local f n=0
     for f in "${files[@]}"; do
         mkdir -p "$tmp/$(dirname "$f")"
-        if curl -fsSL --max-time 45 "$base/$f" -o "$tmp/$f" 2>/dev/null; then
+        if m_fetch_any "$f" "$tmp/$f" 2>/dev/null; then
             n=$((n + 1))
             printf "\r  已拉取 $n/${#files[@]}" >&2
         else
@@ -296,4 +319,103 @@ core_menu() {   # <安装根目录> <服务名>
         esac
         pause
     done
+}
+
+# =============================================================
+# 切换到另一端 (服务端 <-> 客户端)
+# =============================================================
+#
+# 它的配置里面有一个切换的方式"。
+#
+# 两边的安装目录是 install.sh 定死的默认值 (都允许用环境变量覆盖), 所以这里
+# 按同一套默认值推导另一端在哪 —— 不去猜, 也不写死第二份。
+#
+# 注意本函数**不自己实现下载**: 装另一端的活交回 install.sh。它是唯一知道
+# 仓库地址与整条镜像链的地方, 在这儿再写一份下载逻辑就是第二个真源, 迟早漂移
+# (那正是 K-14 那类问题的成因)。
+#
+# 但 install.sh 得先下下来才谈得上交给它 —— 那一步本身就要求仓库可达, 而
+# "仓库不可达"恰恰是用户点这个菜单的原因。所以这里必须有一条自己的取件路径,
+# 于是就有了下面这份与 install.sh 同源的镜像链。
+#
+# 两份必须一致, 所以 tools/check_mirrors.sh 会机械比对它们 —— 不靠"记得同步"。
+m_repo_mirrors() {   # 输出 install.sh 里同一条链, 一行一个 base
+    local repo="${MIHOMO_REPO:-https://github.com/mi1314cat/mihomo--core}"
+    local branch="${MIHOMO_BRANCH:-main}"
+    printf '%s/raw/refs/heads/%s\n' "$repo" "$branch"
+    printf '%s\n' \
+        "https://ghproxy.net/https://raw.githubusercontent.com/mi1314cat/mihomo--core/main" \
+        "https://gh-proxy.com/https://raw.githubusercontent.com/mi1314cat/mihomo--core/main" \
+        "${REPO_PROXY:-https://cfgithub.gw2333.workers.dev/https://github.com/mi1314cat/mihomo--core/raw/refs/heads/main}" \
+        "https://cdn.jsdelivr.net/gh/mi1314cat/mihomo--core@main" \
+        "https://fastly.jsdelivr.net/gh/mi1314cat/mihomo--core@main"
+}
+
+# 依次试镜像链, 成功则把内容写到 $2。顺带支持本机代理兜底。
+m_fetch_any() {      # $1=相对路径  $2=落地文件
+    local rel="$1" out="$2" base code
+    local -a extra=()
+    # 用户显式设过代理 -> curl 自己就认, 不用额外参数
+    if [[ -z "${https_proxy:-}${http_proxy:-}" ]]; then
+        scan_proxy 2>/dev/null || true
+        ((${#_PROXY_CAND[@]})) && extra=(--proxy "${_PROXY_CAND[0]}")
+    fi
+    while IFS= read -r base; do
+        [[ -n "$base" ]] || continue
+        code=$(curl -fsSL --max-time 45 "${extra[@]}" "$base/$rel" -o "$out" 2>/dev/null && echo ok || echo fail)
+        [[ "$code" == "ok" && -s "$out" ]] && return 0
+    done < <(m_repo_mirrors)
+    return 1
+}
+
+switch_side() {
+    local here="$1"
+    local srv="${SRV_ROOT_OTHER:-/root/catmi/mihomo}"
+    local cli="${CLI_ROOT_OTHER:-/root/catmi/mihomo-client}"
+    local other script label sub
+
+    if [[ "$here" == "$cli" ]]; then
+        other="$srv"; script="server.sh"; label="服务端"; sub="server"
+    else
+        other="$cli"; script="client.sh"; label="客户端"; sub="client"
+    fi
+
+    print_title "切换到$label"
+
+    # 已经装了就直接进 —— 这是最常见的情况, 也是"切换"该有的手感
+    if [[ -f "$other/src/$script" ]]; then
+        print_ok "本机已安装$label, 直接进入面板"
+        ui_kv_ascii "目录" "$other"
+        pause
+        bash "$other/src/$script"
+        return 0
+    fi
+
+    print_info "本机还没装$label"
+    ui_kv_ascii "安装目录" "$other"
+    echo >&2
+    printf "  现在安装? [y/N]: " >&2
+    local a; read -r a || return 0
+    [[ "$a" == [yY]* ]] || { print_info "已取消"; return 0; }
+
+    local t; t="$(mktemp -d)"
+    print_info "拉取安装脚本..."
+    if m_fetch_any "install.sh" "$t/install.sh"; then
+        # 把两个根目录都显式传过去: 用户可能自定义过路径, 让 install.sh 按
+        # 同一套路径装, 而不是用它的默认值再装出第三个目录。
+        SRV_ROOT="$srv" CLI_ROOT="$cli" bash "$t/install.sh" "$sub"
+    else
+        # 全部镜像 + 本机代理都不通。这时不该只丢一句"失败", 而要给出可执行
+        # 的下一步 —— 用户手上可能有别的通道 (手机热点/另一台机器/手动下载)。
+        print_error "所有下载通道都不通 (已试镜像链 + 本机代理)"
+        echo >&2
+        print_info "三个办法, 任选其一:"
+        printf '    1) 本机开代理后重试 (脚本会自动探测 7890/7891/1080 等端口)\n' >&2
+        printf '    2) 手动下载 install.sh 后执行: bash install.sh %s\n' "$sub" >&2
+        printf '    3) 直接在有网的机器上跑: bash <(curl -fsSL %s/raw/refs/heads/%s/install.sh) %s\n' \
+            "${MIHOMO_REPO:-https://github.com/mi1314cat/mihomo--core}" \
+            "${MIHOMO_BRANCH:-main}" "$sub" >&2
+    fi
+    rm -rf "$t"
+    return 0
 }

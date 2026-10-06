@@ -61,24 +61,171 @@ scan_proxy() {
         done
     done
 }
-# 选一个代理打印到 stdout (调用方自己捕获); 没有可用代理返回 1
-pick_proxy() {
-    scan_proxy
-    ((${#_PROXY_CAND[@]})) || return 1
-    local pick="${_PROXY_CAND[0]}"
-    if ((${#_PROXY_CAND[@]} > 1)) && [[ -t 0 ]]; then
-        say "检测到本机可用代理 (内核下载将走其中之一):"
-        local i=1 p
-        for p in "${_PROXY_CAND[@]}"; do say "  $i) $p"; i=$((i+1)); done
-        printf "  用哪个? [默认 1, 回车=直连]: " >&2
-        local c; read -r c
-        [[ "$c" =~ ^[0-9]+$ ]] || { printf '\n' >&2; return 1; }
-        (( c >= 1 && c <= ${#_PROXY_CAND[@]} )) || { printf '\n' >&2; return 1; }
-        pick="${_PROXY_CAND[$((c-1))]}"
-    else
-        say "检测到本机代理 $pick, 内核下载将走它"
+# =============================================================
+# 下载代理: 先"读确定的地方", 再"猜端口"
+# =============================================================
+#
+# 用常用端口有点不可靠。有没有更可靠一点的?"
+#
+# 他说得对, 而且有实测反例: 扫描表 (7890/7891/1080/8080...) 在某台机器上
+# "命中"了 10808/10809/8080/1080 四个端口, 但那四个是**别的服务**, 真实代理
+# 根本不在表里。**扫端口本质是猜**, 只能当最后一道。
+#
+# 所以按可靠性从高到低排:
+#   1. 显式环境变量            —— 用户亲手设的, curl 原生就认
+#   2. 本项目自己的配置         —— 我们亲手写下的 mixed-port, 就是我们自己
+#                                 内核正在听的那个口, 100% 对得上
+#   3. 系统配置文件里真写着的    —— /etc/profile.d/*、~/.bashrc、git config
+#                                 这些是**持久化过的**真实设置, 不是猜
+#   4. 手动输入                —— 用户知道自己用的什么, 永远该给这个口子
+#   5. 端口扫描                —— 兜底
+#
+# 第 2 条特别值得强调: 客户端装好之后, "本机代理"往往就是**它自己**。那我们还
+# 猜什么端口? 直接读自己写下去的值就行。
+
+# 从本项目自己的配置里读 mixed-port。$1 = 根目录
+_own_mixed_port() {
+    local root="$1" f p
+    # settings.env 优先: 那是面板在端口冲突顺延后写下的**最终值**
+    f="$root/settings.env"
+    if [[ -f "$f" ]]; then
+        p=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\{2,5\}\)["]*$/\1/p' "$f" 2>/dev/null | head -1)
+        [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
     fi
-    printf '%s' "$pick"
+    # 退而读生成好的 config.yaml
+    f="$root/conf/config.yaml"
+    if [[ -f "$f" ]]; then
+        p=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\{2,5\}\)$/\1/p' "$f" 2>/dev/null | head -1)
+        [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
+    fi
+    return 1
+}
+
+# 从系统配置文件里读真实写过的代理 (只认明确赋值的行)
+_sys_file_proxies() {
+    local f v
+    for f in /etc/environment /etc/profile /etc/wgetrc /etc/curlrc \
+             "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$HOME/.curlrc"; do
+        [[ -f "$f" ]] || continue
+        # 取 = 或空格赋值的 http_proxy / https_proxy, 且行首不是注释
+        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | head -1)
+        [[ -n "$v" ]] && printf '%s\n' "$v"
+    done
+    # /etc/profile.d/*.sh 是最常见的"只写在这里"的位置
+    for f in /etc/profile.d/*.sh; do
+        [[ -f "$f" ]] || continue
+        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | head -1)
+        [[ -n "$v" ]] && printf '%s\n' "$v"
+    done
+    # git 的 http.proxy
+    v=$(git config --global --get http.proxy 2>/dev/null)
+    [[ -n "$v" ]] && printf '%s\n' "$v"
+    return 0
+}
+
+# 把用户输入规整成 curl 能用的 URL。接受:
+#   7890                  -> http://127.0.0.1:7890
+#   127.0.0.1:7890        -> http://127.0.0.1:7890
+#   socks5://1.2.3.4:1080 -> 原样
+_normalize_proxy() {
+    local v="$1"
+    v="${v// /}"
+    [[ -z "$v" ]] && return 1
+    # 端口必须 <=65535 —— 只按位数判会放过 99999 这种不存在的端口
+    if [[ "$v" =~ ^[0-9]+$ ]]; then
+        (( v >= 1 && v <= 65535 )) && { printf 'http://127.0.0.1:%s' "$v"; return 0; }
+        return 1
+    fi
+    if [[ "$v" =~ ^([^:/]+):([0-9]+)$ ]]; then
+        (( BASH_REMATCH[2] >= 1 && BASH_REMATCH[2] <= 65535 )) || return 1
+        printf 'http://%s:%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
+    fi
+    [[ "$v" =~ ^(https?|socks5h?|socks4a?):// ]] && { printf '%s' "$v"; return 0; }
+    return 1
+}
+
+# 真发一个请求验证代理确实能用 (1xx~4xx 都算通; 000 才是不可用)
+_proxy_works() {
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+           --proxy "$1" https://api.github.com/ 2>/dev/null)
+    [[ "$code" =~ ^[1-4] ]]
+}
+
+# 汇总候选 (按可靠性排序), 结果放 _PCAND
+_collect_proxy_candidates() {
+    _PCAND=()
+    local p
+    # 1. 显式环境变量
+    for p in "${https_proxy:-}" "${http_proxy:-}" "${HTTPS_PROXY:-}" "${HTTP_PROXY:-}"; do
+        [[ -n "$p" ]] && _PCAND+=("$p")
+    done
+    # 2. 本项目自己的 mixed-port (客户端 + 服务端两处都看)
+    for p in "${CLI_ROOT:-/root/catmi/mihomo-client}" "${SRV_ROOT:-/root/catmi/mihomo}"; do
+        local mp; mp="$(_own_mixed_port "$p" 2>/dev/null)" || continue
+        _PCAND+=("http://127.0.0.1:$mp")
+    done
+    # 3. 系统配置文件
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && _PCAND+=("$p")
+    done < <(_sys_file_proxies)
+    # 去重, 保序
+    local -a uniq=()
+    local seen="|"
+    for p in "${_PCAND[@]}"; do
+        [[ "$seen" == *"|$p|"* ]] && continue
+        seen="$seen$p|"; uniq+=("$p")
+    done
+    _PCAND=("${uniq[@]}")
+}
+
+# 选一个代理打印到 stdout; 没有可用代理返回 1
+pick_proxy() {
+    # 非交互: 有环境变量就用, 没有就静默直连 (与 SB 一致)
+    if [[ ! -t 0 ]]; then
+        [[ -n "${https_proxy:-}${http_proxy:-}" ]] && { printf '%s' "${https_proxy:-$http_proxy}"; return 0; }
+        _collect_proxy_candidates
+        local q
+        for q in "${_PCAND[@]}"; do _proxy_works "$q" && { printf '%s' "$q"; return 0; }; done
+        return 1
+    fi
+
+    _collect_proxy_candidates
+    # 扫端口只作为**追加**的兜底候选, 不抢占前面的可靠来源
+    scan_proxy
+    local p
+    for p in "${_PROXY_CAND[@]}"; do _PCAND+=("$p"); done
+
+    # 逐个验证, 只留真能用的
+    local -a ok=()
+    for p in "${_PCAND[@]}"; do _proxy_works "$p" && ok+=("$p"); done
+    _PCAND=("${ok[@]}")
+
+    ((${#_PCAND[@]})) || return 1
+
+    say "检测到可用代理 (内核下载将走其中之一):"
+    local i=1
+    for p in "${_PCAND[@]}"; do say "  $i) $p"; i=$((i+1)); done
+    say "  m) 手动输入 (推荐: 填你自己知道的端口)"
+    say "  0) 不用代理, 直连"
+    printf "  用哪个? [默认 1]: " >&2
+    local c; read -r c
+    c="${c// /}"
+
+    if [[ "$c" == [mM] ]]; then
+        printf "  输入代理 (端口如 7890 / 地址如 127.0.0.1:7890 / 完整如 socks5://1.2.3.4:1080): " >&2
+        local man; read -r man
+        local nv; nv="$(_normalize_proxy "$man")" || { say "格式认不出来, 已改为直连"; return 1; }
+        if _proxy_works "$nv"; then
+            printf '%s' "$nv"; return 0
+        fi
+        say "这个代理连不通 (拿 api.github.com 试过), 已改为直连"
+        return 1
+    fi
+    [[ -z "$c" ]] && c=1
+    [[ "$c" =~ ^[0-9]+$ ]] || return 1
+    (( c >= 1 && c <= ${#_PCAND[@]} )) || return 1
+    printf '%s' "${_PCAND[$((c-1))]}"
 }
 
 [[ "$(id -u)" == "0" ]] || die "请使用 root 权限运行"
@@ -630,7 +777,16 @@ fi
 
 printf '\n  安装目录: %s\n  配置目录: %s\n  节点目录: %s/conf/config.d\n' \
     "$INSTALL_DIR" "$INSTALL_DIR/conf" "$INSTALL_DIR"
-printf '  管理面板: bash <(curl -fsSL <仓库地址>/install.sh)\n\n'
+
+# 面板脚本名按本机实际存在的那一个来定 —— 服务端是 server.sh, 客户端是
+# client.sh, 而这个脚本两边共用。
+#
+# 这里原来写的是 `bash <(curl -fsSL <仓库地址>/install.sh)` —— 一个从没被
+# 填上的占位符, 用户照着敲只会得到一条无效命令。改成指本机面板: 不依赖网络、
+# 不依赖仓库地址, 而且一定指向"这个目录下真正存在的那个面板"。
+_panel="server.sh"
+[[ -f "$INSTALL_DIR/src/client.sh" ]] && _panel="client.sh"
+printf '  管理面板: bash %s/src/%s\n\n' "$INSTALL_DIR" "$_panel"
 
 # ---------- geo 数据库 (放在最后) ----------
 # 必须等配置全部生成完再跑: _geo_rules_used 要读到真实的规则才能判断该不该

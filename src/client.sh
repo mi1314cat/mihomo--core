@@ -725,6 +725,7 @@ client_menu() {
         ui_menu 15 "安装 / 内核管理 (版本/更新/脚本)"
         ui_menu 16 "分享订阅 (把我的节点发给别人)"
         ui_menu 17 "卸载客户端"
+        ui_menu 18 "切换到服务端面板 (装/进另一端)"
         ui_menu 0  "退出"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -748,6 +749,7 @@ client_menu() {
             15) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
             16) cli_share_menu ;;
             17|d|D) cli_uninstall ;;
+            18) switch_side "$CLI_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

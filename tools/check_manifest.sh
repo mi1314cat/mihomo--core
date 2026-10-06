@@ -66,6 +66,49 @@ done
 [[ "$ignored" -eq 0 ]] && echo "  ✅ 无"
 
 echo ""
+echo "════ 各处硬编码清单 vs manifest (必须一致) ════"
+#
+# 除了 install.sh 会按清单下载, 面板的「更新脚本」(core_mgmt.sh) 也要拉一整套。
+# 那份原本也是硬编码, 且比清单少 8 个文件 —— 从面板更新会留下半新半旧的面板。
+# 现在它也是"清单优先 + 兜底", 但兜底那份仍必须和清单一致, 否则清单拉取失败时
+# 就会悄悄少更新几个文件。这里把每个兜底清单都比一遍。
+check_list_against_manifest() {
+    local label="$1" file="$2" startpat="$3"
+    local -a got=()
+    local line
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | tr -d '[:space:]')"
+        [[ -n "$line" ]] && got+=("$line")
+    # 只取形如 src/... 的路径 —— 否则会把上面"读清单"那段代码里的
+    # $tmp/manifest.txt、$(printf ...) 之类也当成清单条目。
+    done < <(sed -n "/${startpat}/,/^[[:space:]]*)/p" "$file" \
+             | grep -oE '"[^"]+"' | tr -d '"' | grep -E '^src/')
+    if [[ ${#got[@]} -eq 0 ]]; then
+        echo "  ⚠  $label: 没解析到清单 (结构变了? 请同步更新本检查)"
+        return 0
+    fi
+    local diff_n=0 f found
+    for f in "${listed[@]}"; do
+        found=0
+        for g in "${got[@]}"; do [[ "$f" == "$g" ]] && { found=1; break; }; done
+        [[ "$found" -eq 0 ]] && { echo "  ❌ $label 少了: $f"; diff_n=$((diff_n + 1)); }
+    done
+    for f in "${got[@]}"; do
+        found=0
+        for g in "${listed[@]}"; do [[ "$f" == "$g" ]] && { found=1; break; }; done
+        [[ "$found" -eq 0 ]] && { echo "  ❌ $label 多了: $f"; diff_n=$((diff_n + 1)); }
+    done
+    if [[ "$diff_n" -eq 0 ]]; then
+        echo "  ✅ $label 与清单一致 (${#got[@]} 条)"
+    else
+        rc=1
+    fi
+}
+
+check_list_against_manifest "core_mgmt.sh 兜底清单" "src/lib/core_mgmt.sh" "files=($"
+
+echo ""
 if [[ "$rc" -eq 0 ]]; then
     echo "✅ 清单一致 (${#listed[@]} 个文件)"
 else

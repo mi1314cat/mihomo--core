@@ -71,9 +71,146 @@ ensure_yaml() {
 # 之前是每个文件都把整条镜像链重试一遍, 在只能走镜像的国内机器上
 # 14 个文件要磨好几十分钟 —— 实测 4 分钟才下完 2 个。
 _SRC=""
+
+# ---------- 本机代理兜底 ----------
+#
+# 客户端的机器常常"网络不行", 这是安装路径上最先撞到的墙。三道防线:
+#   1. 用户显式设过 http_proxy/https_proxy -> curl 原生就认, 不用管
+#   2. 镜像链 (上面那 6 条)
+#   3. 本机自己开着代理, 但代理只写在 /etc/profile.d 下 —— 而
+#      `bash <(curl ...)`、ssh 非登录 shell、cron 都不加载那个文件。
+#      于是"明明开着代理, 却一路直连到超时"。
+#
+# 对。扫端口本质是猜 —— 实测有过扫描表"命中"四个端口、结果全是别的服务。
+# 所以按可靠性从高到低找, 扫端口放最后:
+#   1. 显式环境变量
+#   2. 本项目自己的 mixed-port (我们亲手写下去的值, 最对得上)
+#   3. 系统配置文件里真写着的 (/etc/profile.d、~/.bashrc、git config)
+#   4. 手动输入
+#   5. 端口扫描
+_PROXY=""
+
+# 从本项目自己的配置里读 mixed-port
+_own_mixed_port() {
+    local root="$1" f p
+    f="$root/settings.env"
+    if [[ -f "$f" ]]; then
+        p=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\{2,5\}\)["]*$/\1/p' "$f" 2>/dev/null | head -1)
+        [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
+    fi
+    f="$root/conf/config.yaml"
+    if [[ -f "$f" ]]; then
+        p=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\{2,5\}\)$/\1/p' "$f" 2>/dev/null | head -1)
+        [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
+    fi
+    return 1
+}
+
+# 从系统配置文件里读真实写过的代理
+_sys_file_proxies() {
+    local f v
+    for f in /etc/environment /etc/profile /etc/wgetrc /etc/curlrc \
+             "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$HOME/.curlrc" \
+             /etc/profile.d/*.sh; do
+        [[ -f "$f" ]] || continue
+        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | head -1)
+        [[ -n "$v" ]] && printf '%s\n' "$v"
+    done
+    v=$(git config --global --get http.proxy 2>/dev/null)
+    [[ -n "$v" ]] && printf '%s\n' "$v"
+    return 0
+}
+
+_normalize_proxy() {
+    local v="$1"
+    v="${v// /}"
+    [[ -z "$v" ]] && return 1
+    # 端口必须 <=65535 —— 只按位数判会放过 99999 这种不存在的端口
+    if [[ "$v" =~ ^[0-9]+$ ]]; then
+        (( v >= 1 && v <= 65535 )) && { printf 'http://127.0.0.1:%s' "$v"; return 0; }
+        return 1
+    fi
+    if [[ "$v" =~ ^([^:/]+):([0-9]+)$ ]]; then
+        (( BASH_REMATCH[2] >= 1 && BASH_REMATCH[2] <= 65535 )) || return 1
+        printf 'http://%s:%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
+    fi
+    [[ "$v" =~ ^(https?|socks5h?|socks4a?):// ]] && { printf '%s' "$v"; return 0; }
+    return 1
+}
+
+_proxy_works() {
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+           --proxy "$1" https://api.github.com/ 2>/dev/null)
+    [[ "$code" =~ ^[1-4] ]]
+}
+
+# 扫端口: 最后的兜底
+_scan_ports() {
+    local host port code
+    for host in 127.0.0.1 localhost; do
+        for port in 7890 7891 7897 10808 10809 8080 8118 1080 1081 20171 33211 9444; do
+            (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null || continue
+            exec 3<&- 2>/dev/null; exec 3>&- 2>/dev/null
+            _proxy_works "http://$host:$port" && printf '%s\n' "http://$host:$port"
+        done
+    done
+    return 0
+}
+
+# 找代理。找到就设 _PROXY, 返回 0
+_find_proxy() {
+    # 用户显式设过 -> 不打扰, curl 自己会认
+    [[ -n "${https_proxy:-}${http_proxy:-}${HTTPS_PROXY:-}${HTTP_PROXY:-}" ]] && return 0
+
+    local -a cand=()
+    local p mp
+    # 2. 本项目自己的 mixed-port
+    for p in "$CLI_ROOT" "$SRV_ROOT"; do
+        mp="$(_own_mixed_port "$p" 2>/dev/null)" || continue
+        cand+=("http://127.0.0.1:$mp")
+    done
+    # 3. 系统配置文件
+    while IFS= read -r p; do [[ -n "$p" ]] && cand+=("$p"); done < <(_sys_file_proxies)
+
+    # 逐个验证
+    for p in "${cand[@]}"; do
+        if _proxy_works "$p"; then
+            _PROXY="$p"
+            say "直连全不通, 但读到本机代理: $_PROXY (改走它)"
+            return 0
+        fi
+    done
+
+    # 4. 手动输入 (只在交互时问)
+    if [[ -t 0 ]]; then
+        printf "  直连与镜像都不通。若你知道本机代理端口, 现在可以填 (直接回车=跳过): " >&2
+        local man; read -r man || man=""
+        if [[ -n "${man// /}" ]]; then
+            local nv; nv="$(_normalize_proxy "$man")" || nv=""
+            if [[ -n "$nv" ]] && _proxy_works "$nv"; then
+                _PROXY="$nv"
+                say "使用手动指定的代理: $_PROXY"
+                return 0
+            fi
+            err "这个代理连不通 (拿 api.github.com 试过)"
+        fi
+    fi
+
+    # 5. 扫端口
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && { _PROXY="$p"; say "扫描发现可用代理: $_PROXY"; return 0; }
+    done < <(_scan_ports)
+    return 1
+}
+
+# curl 参数: 有代理就带上
+_cargs() { [[ -n "$_PROXY" ]] && printf '%s' "--proxy $_PROXY"; }
+
 _pick_source() {
     [[ -n "$_SRC" ]] && return 0
-    local base probe="$1"
+    local base probe="$1" i
+    # 第一轮: 直连 / 镜像
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
         # 探测给 25 秒而不是 12 秒, 且每个源试两次。
         #
@@ -81,15 +218,24 @@ _pick_source() {
         # 12 秒的探测窗口会把本来能用的镜像也判成"不通", 结果整条链全废、
         # 安装直接卡死。而 cdn.jsdelivr.net / ghproxy.net 实际都能通,
         # 只是首包慢 —— 给够时间 + 重试一次就下来了。
-        local i
         for i in 1 2; do
-            if curl -fsSL --max-time 25 "$base/$probe" -o /dev/null 2>/dev/null; then
+            if curl -fsSL --max-time 25 $(_cargs) "$base/$probe" -o /dev/null 2>/dev/null; then
                 _SRC="$base"
                 [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已选用镜像: $(echo "$base" | cut -d/ -f3)"
                 return 0
             fi
         done
     done
+    # 第二轮: 按可靠性找本机代理, 带着它把整条链再走一遍
+    if _find_proxy; then
+        for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
+            if curl -fsSL --max-time 25 $(_cargs) "$base/$probe" -o /dev/null 2>/dev/null; then
+                _SRC="$base"
+                say "已选用: $(echo "$base" | cut -d/ -f3) (经代理 $_PROXY)"
+                return 0
+            fi
+        done
+    fi
     return 1
 }
 
@@ -97,17 +243,21 @@ fetch() {  # fetch <远端相对路径> <本地路径>
     local rel="$1" dst="$2" base
     mkdir -p "$(dirname "$dst")"
     rm -f "$dst"
-    _pick_source "README.md" || { err "所有下载源都不可用 (github.com 及各镜像)"; return 1; }
+    _pick_source "README.md" || {
+        err "所有下载通道都不可用 (github.com + 各镜像 + 本机代理)"
+        err "可先在本机开好代理再重跑; 或用有网的机器下载后 scp 过来"
+        return 1
+    }
     # 下载超时 90 秒: 内核解压脚本之类的文件在慢网线上确实要这个量级
     for base in "$_SRC"; do
-        if curl -fsSL --max-time 90 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+        if curl -fsSL --max-time 90 $(_cargs) "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
             return 0
         fi
     done
     # 选中的源中途挂了, 换一个再来
     _SRC=""
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
-        if curl -fsSL --max-time 90 "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+        if curl -fsSL --max-time 90 $(_cargs) "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
             _SRC="$base"
             [[ "$base" == "$REPO_RAW" ]] || say "切换到镜像: $(echo "$base" | cut -d/ -f3)"
             return 0
@@ -225,9 +375,9 @@ menu() {
     printf "\n  ${CYAN}请选择${RESET}: "
     local c; read -r c
     case "$c" in
-        1) install_server ;;
-        2) install_client ;;
-        3) install_server; install_client ;;
+        1) install_server; enter_panel "$SRV_ROOT" server.sh ;;
+        2) install_client; enter_panel "$CLI_ROOT" client.sh ;;
+        3) install_server; install_client; enter_panel "$CLI_ROOT" client.sh ;;
         0) exit 0 ;;
         *) err "无效选项: $c" ;;
     esac
@@ -248,9 +398,65 @@ enter_panel() {
     bash "$root/src/$script"
 }
 
+# ---------- 已装检测: 这条命令的心智模型是"进面板", 不是"安装" ----------
+#
+# 对齐 SB install.sh 的 existing():
+#
+#     if systemctl is-active sing-box && [[ -x "$SRV_ROOT/sing-box.sh" ]]; then
+#         existing; exit $?        # 装过的机器再跑一次 -> 整个安装菜单直接跳过
+#     fi
+#
+# 它那条一键命令的意思是"**进入面板**"。第一次跑是装完进面板, 第一百次跑是
+# 直接进面板 —— 用户永远不需要记住"我这边到底是客户端还是服务端"。
+#
+# 我们之前没这一步: 每次跑都先甩一个"1. 服务端 / 2. 客户端"的安装菜单,
+# 用户明明已经装好了客户端, 还是得先回答一个和当下意图无关的问题, 然后
+# 打完安装日志就退出 (menu() 当时没接 enter_panel) —— 一点都不丝滑。
+#
+# 我们比 SB 多一侧 (服务端 + 客户端), 所以规则按"装了几侧"分:
+#   只装了一侧 -> 直接进那一侧   (用户不用回忆自己在哪边)
+#   两侧都装了 -> 让用户选进哪边 (不猜, 猜错比多问一句更烦)
+#   一侧都没装 -> 走安装菜单
+_panel_ready() { [[ -f "$1/src/$2" ]]; }
+
+smart_entry() {
+    local s=0 c=0
+    _panel_ready "$SRV_ROOT" server.sh && s=1
+    _panel_ready "$CLI_ROOT" client.sh && c=1
+
+    if (( s && c )); then
+        banner "mihomo--core"
+        say "本机已装: 服务端 + 客户端"
+        ui_menu 1 "进入服务端面板 (建节点、发分享)"
+        ui_menu 2 "进入客户端面板 (拉节点、出网)"
+        ui_menu 3 "重新安装 / 安装另一端"
+        ui_menu 0 "退出"
+        printf "\n  ${CYAN}请选择${RESET}: "
+        local k; read -r k
+        case "$k" in
+            1) enter_panel "$SRV_ROOT" server.sh ;;
+            2) enter_panel "$CLI_ROOT" client.sh ;;
+            3) menu ;;
+            0) exit 0 ;;
+            *) err "无效选项: $k" ;;
+        esac
+    elif (( c )); then
+        say "检测到已安装客户端, 直接进入面板"
+        enter_panel "$CLI_ROOT" client.sh
+    elif (( s )); then
+        say "检测到已安装服务端, 直接进入面板"
+        enter_panel "$SRV_ROOT" server.sh
+    else
+        menu
+    fi
+}
+
+# 面板里的"切换到另一端"会以 `install.sh client` / `install.sh server` 回来,
+# 所以这两条子命令必须既能装也能进 —— 装完直接进, 已装则直接进。
 case "${1:-}" in
-    server) install_server; enter_panel "$SRV_ROOT" server.sh ;;
-    client) install_client; enter_panel "$CLI_ROOT" client.sh ;;
-    all)    install_server; install_client; enter_panel "$CLI_ROOT" client.sh ;;
-    *)      menu ;;
+    server)  install_server; enter_panel "$SRV_ROOT" server.sh ;;
+    client)  install_client; enter_panel "$CLI_ROOT" client.sh ;;
+    all)     install_server; install_client; enter_panel "$CLI_ROOT" client.sh ;;
+    install) menu ;;        # 想强制走安装菜单时用 (不给就按已装情况智能进)
+    *)       smart_entry ;;
 esac
