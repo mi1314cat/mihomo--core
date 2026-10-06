@@ -117,23 +117,58 @@ fetch() {  # fetch <远端相对路径> <本地路径>
     return 1
 }
 
+# 兜底清单 —— 只在连 src/manifest.txt 都拉不下来时使用。
+#
+# 为什么不把清单直接写死在这里: 原先就是写死的, 后来新增了 cert.sh /
+# preset.sh / cdn.sh 却没人记得同步, 于是全新安装缺了 8 个文件:
+# 证书、推荐配置、CDN、防火墙四块功能全部失效, 而**面板照样能启动** ——
+# 报错只在启动瞬间刷三行, 用户根本不会注意到, 直到点「添加节点」才发现
+# 命令不存在。清单挪进仓库变成 src/manifest.txt 之后, 它和代码在同一个
+# 提交里, 改代码时更容易被一起改到, 而且能用 tools/check_manifest.sh 卡住。
+_FALLBACK_FILES=(
+    "src/lib/cdn.sh" "src/lib/cert.sh" "src/lib/core_mgmt.sh"
+    "src/lib/dl_route.sh" "src/lib/env.sh" "src/lib/envtool.py"
+    "src/lib/fw.sh" "src/lib/lan_dispatch.sh" "src/lib/merge.py"
+    "src/lib/portcheck.sh" "src/lib/preset.sh" "src/lib/rules_bind.sh"
+    "src/lib/simple_proxy.sh" "src/lib/ui.sh" "src/lib/validate.py"
+    "src/lib/webui.sh"
+    "src/conf/AnyTLS.sh" "src/conf/Reality.sh" "src/conf/TUIC.sh"
+    "src/conf/Trojan.sh" "src/conf/VLESS.sh" "src/conf/XRevise.sh"
+    "src/conf/all.sh" "src/conf/hysteria2.sh" "src/conf/nginx_apply.py"
+    "src/share/build_sub.py" "src/share/share.sh" "src/share/share_server.py"
+    "src/core_install.sh" "src/server.sh" "src/client.sh"
+)
+
 fetch_repo() {  # 把面板需要的文件拉到本地
     local base="$1"
-    local files=(
-        "src/lib/env.sh" "src/lib/ui.sh" "src/lib/core_mgmt.sh" "src/lib/webui.sh" "src/lib/portcheck.sh" "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
-        "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
-        "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
-        "src/conf/all.sh" "src/conf/XRevise.sh"
-        "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
-        "src/conf/nginx_apply.py"
-        "src/core_install.sh"
-    )
+    local files=()
+    local mf="$base/src/manifest.txt"
+
+    # 清单优先走仓库 —— 它是唯一真源
+    local tmp; tmp="$(mktemp)"
+    if fetch "src/manifest.txt" "$tmp" 2>/dev/null; then
+        local line
+        while IFS= read -r line; do
+            line="${line%%#*}"                    # 去注释
+            line="$(printf '%s' "$line" | tr -d '[:space:]')"
+            [[ -n "$line" ]] && files+=("$line")
+        done < "$tmp"
+    fi
+    rm -f "$tmp"
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        say "清单拉取失败, 使用内置兜底清单"
+        files=("${_FALLBACK_FILES[@]}")
+    fi
+
     local f
     for f in "${files[@]}"; do
         fetch "$f" "$base/$f" || { err "下载失败: $f"; return 1; }
     done
     chmod +x "$base/src/core_install.sh" 2>/dev/null
-    ok "面板文件已就绪 ($base/src)"
+    [[ -f "$base/src/server.sh" ]] && chmod +x "$base/src/server.sh" 2>/dev/null
+    [[ -f "$base/src/client.sh" ]] && chmod +x "$base/src/client.sh" 2>/dev/null
+    ok "面板文件已就绪 ($base/src, ${#files[@]} 个文件)"
 }
 
 # 与面板 print_title 同款: 左边一个空格 + %-42s + 一个空格, 框才是方的。
@@ -170,7 +205,10 @@ install_client() {
     INSTALL_DIR="$CLI_ROOT" SERVICE_NAME="mihomo-client" \
         bash "$CLI_ROOT/src/core_install.sh" || die "内核安装失败"
 
-    fetch "src/client.sh" "$CLI_ROOT/src/client.sh" || die "客户端面板下载失败"
+    # fetch_repo 已经按清单拉过了, 这里只是兜底 (与服务端那段保持一致)
+    [[ -f "$CLI_ROOT/src/client.sh" ]] || {
+        fetch "src/client.sh" "$CLI_ROOT/src/client.sh" || die "客户端面板下载失败"
+    }
     chmod +x "$CLI_ROOT/src/client.sh"
 
     # 客户端的配置目录名与服务端一致 (core_install.sh 统一用 conf/)

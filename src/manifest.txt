@@ -1,0 +1,39 @@
+# mihomo--core 面板文件清单 (唯一真源)
+#
+# install.sh 读这个文件决定下载什么。此前清单硬编码在 install.sh 里,
+# 新增 lib 时忘了同步 —— 结果全新安装缺 8/16 个文件, 证书/推荐配置/CDN/
+# 防火墙四块功能全废, 而面板还能启动, 报错只在启动时一闪而过。
+#
+# 改动本文件后请跑: bash tools/check_manifest.sh
+
+src/lib/cdn.sh
+src/lib/cert.sh
+src/lib/core_mgmt.sh
+src/lib/dl_route.sh
+src/lib/env.sh
+src/lib/envtool.py
+src/lib/fw.sh
+src/lib/lan_dispatch.sh
+src/lib/merge.py
+src/lib/portcheck.sh
+src/lib/preset.sh
+src/lib/rules_bind.sh
+src/lib/simple_proxy.sh
+src/lib/ui.sh
+src/lib/validate.py
+src/lib/webui.sh
+src/conf/AnyTLS.sh
+src/conf/Reality.sh
+src/conf/TUIC.sh
+src/conf/Trojan.sh
+src/conf/VLESS.sh
+src/conf/XRevise.sh
+src/conf/all.sh
+src/conf/hysteria2.sh
+src/conf/nginx_apply.py
+src/share/build_sub.py
+src/share/share.sh
+src/share/share_server.py
+src/core_install.sh
+src/server.sh
+src/client.sh
