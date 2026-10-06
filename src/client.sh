@@ -172,7 +172,18 @@ apply_change() {
 # =============================================================
 gen_config() {
     ensure_dirs
-    [[ -f "$CLI_SETTINGS" ]] || save_settings
+    # 首次生成配置前先把端口定死。
+    #
+    # 之前只在 save_settings 里写默认值 7890/9090, 而"值是不是可用"
+    # 从来没人查过 —— 撞了就是内核起不来, 面板却显示"运行中"
+    # (实测 2026-10-06 CC: 同机另一个项目的 mihomo 占着 7890/9090)。
+    # 这里在写配置前探一次, 冲突就顺延并写进 settings.env。
+    if [[ ! -f "$CLI_SETTINGS" ]]; then
+        m_resolve_ports "$PORT_MIXED" "$PORT_CTRL" "" >/dev/null
+        PORT_MIXED="$M_PORT_MIXED"
+        PORT_CTRL="$M_PORT_CTRL"
+        save_settings
+    fi
     local secret_file="$CLI_ROOT/.secret"
     [[ -f "$secret_file" ]] || gen_secret > "$secret_file"
     chmod 600 "$secret_file"

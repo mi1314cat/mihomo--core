@@ -195,6 +195,101 @@ m_port_in_use() {
     ss -tulHn 2>/dev/null | awk '{print $5}' | grep -oE '[0-9]+$' | grep -qx "$1"
 }
 
+# m_free_port [首选端口] [扫描范围]
+#
+# 首选端口空闲就用它, 被占用则向后顺延找一个空闲的。
+# 输出选定的端口号; 全被占满返回 1。
+#
+# 为什么需要它
+# ------------
+# 踩过的坑: 全新安装时默认 mixed-port 7890,
+# 而这台机器上**另一个**项目的 mihomo 正占着 7890/9090。结果是
+# 新装的客户端起不来 —— mihomo 进程直接退出, 面板却显示"运行中"。
+# 用户看到的是一个"装好了但连不上"的死局, 还得自己想到去查端口冲突。
+#
+# 这不是"检测一下就好"的问题: 端口冲突的**表现**与内核崩溃、证书错误、
+# 订阅为空全都一样 (面板只说"运行中"或一句报错), 排查成本很高。
+# 安装阶段就把这件事定死, 比事后让人去猜要划算。
+#
+# 顺延而不是报错: 用户不关心你为什么不能用 7890, 只关心能用。
+m_free_port() {
+    local want="${1:-}" span="${2:-200}"
+    [[ -n "$want" ]] || { printf '1\n'; return 0; }
+
+    if ! m_port_in_use "$want"; then
+        printf '%s\n' "$want"
+        return 0
+    fi
+
+    local i p
+    for (( i = 1; i <= span; i++ )); do
+        p=$(( want + i ))
+        (( p <= 65535 )) || break
+        m_port_in_use "$p" && continue
+        printf '%s\n' "$p"
+        return 0
+    done
+    return 1
+}
+
+# m_resolve_ports —— 安装阶段把三个端口定死, 有冲突就顺延并说明。
+#
+# 输出三个变量名对应的值, 由调用方 source 或读回:
+#   M_PORT_MIXED  代理口   (客户端)
+#   M_PORT_CTRL   控制面板 (客户端)
+#   M_PORT_SHARE  分享口   (服务端)
+#
+# 已经在用的端口 (自己刚起的服务) 不算冲突 —— 那种情况下宁可沿用旧值,
+# 否则每次重跑安装都会把端口推着往前跑, 用户会发现端口一直在变。
+m_resolve_ports() {
+    local mixed="${1:-7890}" ctrl="${2:-9090}" share="${3-}"
+    local changed=0
+
+    if m_port_in_use "$mixed"; then
+        local n
+        if n=$(m_free_port "$mixed" 200); then
+            if [[ "$n" != "$mixed" ]]; then
+                print_warn "端口 $mixed 已被占用, 代理口改用 $n"
+                mixed="$n"; changed=1
+            fi
+        else
+            print_warn "端口 $mixed 起顺延 200 个都被占, 保留原值 (请手工改)"
+        fi
+    fi
+
+    if m_port_in_use "$ctrl"; then
+        local n
+        if n=$(m_free_port "$ctrl" 200); then
+            if [[ "$n" != "$ctrl" ]]; then
+                print_warn "端口 $ctrl 已被占用, 控制面板口改用 $n"
+                ctrl="$n"; changed=1
+            fi
+        else
+            print_warn "端口 $ctrl 起顺延 200 个都被占, 保留原值 (请手工改)"
+        fi
+    fi
+
+    # 分享口只服务端要用。客户端传空串跳过 —— 客户端的分享口是
+    # 另一个变量 (CLI_SHARE_PORT, 默认 9444), 不该在这里被 9443 顶掉。
+    if [[ -n "$share" ]] && m_port_in_use "$share"; then
+        local n
+        if n=$(m_free_port "$share" 200); then
+            if [[ "$n" != "$share" ]]; then
+                print_warn "端口 $share 已被占用, 分享口改用 $n"
+                share="$n"; changed=1
+            fi
+        else
+            print_warn "端口 $share 起顺延 200 个都被占, 保留原值 (请手工改)"
+        fi
+    fi
+
+    M_PORT_MIXED="$mixed"
+    M_PORT_CTRL="$ctrl"
+    M_PORT_SHARE="$share"
+    [[ "$changed" -eq 1 ]] && print_info "端口已按实际占用情况调整, 见上方提示"
+    return 0
+}
+
 # m_cert_in_use <证书路径>
 #
 # 该证书是否还被**其它**片段引用。删除节点时必须先问一遍, 否则会连带

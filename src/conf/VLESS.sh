@@ -841,8 +841,57 @@ EOF
             ;;
     esac
     print_ok "Nginx 转发片段: $NGINX_FILE"
+    nginx_insert_menu "$NGINX_FILE"
     echo -e "${CYAN}  ----- Nginx 配置片段 -----${RESET}" >&2
     cat "$NGINX_FILE" >&2
+}
+
+# 把片段插进本机已有的 Nginx 站点。
+#
+# 之前这里只生成文件、打印一句"粘到 conf.d 的 server{} 里", 把最难的一步
+# 留给了用户。实际做的时候: 得先判断 nginx 是宿主还是容器 (<SERVER_ALIAS> 上就是容器,
+# 宿主 /etc/nginx/sites-enabled 里的站点文件根本不是生效配置)、要找到域名
+# 对应���那个 server 块、要插在对的层级、插完还得 nginx -t 确认。
+# 这些每一步都可能出错, 而且出错方式和内核崩溃长得一样难查。
+#
+# 刻意**不**自动 reload —— reload 会影响这台机器上的所有站点, 那是用户的
+# 决定, 不是面板该替他做的。插入完把命令打给他。
+nginx_insert_menu() {
+    local frag="$1"
+    local apply="$SELF_DIR/nginx_apply.py"
+    [[ -f "$apply" ]] || return 0
+    [[ -n "${CERT_DOMAIN:-}" ]] || return 0
+
+    printf '\n' >&2
+    printf "  这台机器上的 Nginx 要不要直接配好？\n" >&2
+    printf "    1) 插入到 Nginx 站点 (自动定位 / 备份 / nginx -t 校验)\n" >&2
+    printf "    2) 跳过, 我自己粘贴\n" >&2
+    printf "  请选择 [2]: " >&2
+    local c; read -r c
+    [[ "$c" == "1" ]] || return 0
+
+    printf '\n  可选站点:\n' >&2
+    python3 "$apply" --list 2>&1 | sed 's/^/    /' >&2
+    printf "  回源域名: %s\n" "$CERT_DOMAIN" >&2
+    printf "  请输入要写入的站点配置文件 (留空跳过): " >&2
+    local f; read -r f
+    f="${f#"${f%%[![:space:]]*}"}"; f="${f%"${f##*[![:space:]]}"}"
+    [[ -n "$f" && -f "$f" ]] || { print_warn "未指定有效文件, 跳过"; return 0; }
+
+    # 校验命令: 容器化要用 docker exec。
+    # 否则 nginx -t 验的是宿主那份 —— 宿主那份可能根本没挂进容器,
+    # 验过了也不代表真正生效的配置没问题 (实测 2026-10-06 <SERVER_ALIAS> 就是这个坑)。
+    local chk="none"
+    if command -v docker >/dev/null 2>&1; then
+        local cname
+        cname=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+                | awk 'tolower($0) ~ /nginx/ {print $1; exit}')
+        [[ -n "$cname" ]] && chk="docker exec $cname nginx"
+    fi
+    [[ "$chk" == "none" ]] && command -v nginx >/dev/null 2>&1 && chk="nginx"
+
+    python3 "$apply" --domain "$CERT_DOMAIN" --file "$f" \
+            --block "$frag" --nginx "$chk" 2>&1 | sed 's/^/    /' >&2
 }
 
 # 生成 WebSocket 升级所需的 map 块。
