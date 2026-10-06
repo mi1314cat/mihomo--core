@@ -17,17 +17,27 @@ server{} 块内部**插 location。
 4. 写入后自动跑 nginx -t; 不通过立即回滚并报错。
 5. 找不到 nginx 部署方式 / 站点文件 / 没权限 —— 一律拒绝并说明原因。
 
-刻意不做的事
-------------
-**不 reload / 不 restart nginx。** reload 会影响这台机器上的其它所有站点,
-不是本面板该替用户做的决定。插入完成后把命令打给用户, 由他自己执行。
+关于重载
+--------
+**配置过了 nginx -t 就直接 reload。** 改了不重载等于没改:
 
-这与 参考实现 的判断一致 (cdn_menu.sh 的 "面板做什么" 一节明写
-"✗ 不自动重载 nginx —— 重载会影响你的其它服务, 留给你确认后自己执行")。
+  插入方向 —— 片段写进文件了但 nginx 还跑着旧配置, 节点照样连不上,
+              用户看到的是"配好了但用不了", 且没有任何报错;
+  移除方向 —— 旧规则仍在生效, 等于没删。
+
+nginx 的 reload 是平滑的 (不断开现有连接), 所以"会影响其它服务"这个
+顾虑不成立。
+
+这与 参考实现 的**实际代码**一致 —— cdn_menu.sh:254 (插入后) 和
+:315 (移除后) 都调 cdn_nginx_reload, 它自己在 cdn_nginx.sh:53 起的注释
+写的是 "插入成功但没重载 = 配置没生效, 节点照样连不上"。
+
+⚠ 注意 SB 的帮助文本 cdn_menu.sh:348 写着 "✗ 不自动重载 nginx" ——
+   与它自己第 254/315 行调用的代码直接矛盾。那是陈旧说法, 以代码为准。
 
 用法:
     nginx_apply.py --domain <域名> --file <站点配置> [--block <片段文件>]
-                   [--remove] [--nginx docker:<容器名>|systemd|none]
+                   [--remove] [--nginx docker exec <容器> nginx|nginx|none]
                    [--dry-run] [--list]
     nginx_apply.py --list                      # 列出所有候选站点配置
     nginx_apply.py --probe                     # 只探测部署方式与配置根
@@ -332,15 +342,25 @@ def commit(args, path, lines, nl, had_bom, remove_only):
     # nginx -t; 不通过立刻回滚
     cmd = args.nginx
     if cmd == "none" or not cmd:
-        print(f"[成功] 已{'移除' if remove_only else '插入'} (未做语法校验, --nginx none)")
+        # 没检测到可用的 nginx (面板/容器/宿主都没找着), 写完只能靠用户自己
+        # reload。这里不做校验也不做重载 —— 硬跑一条必然失败的命令没意义。
+        verb = "移除" if remove_only else "插入"
+        print(f"[成功] 已{verb} (未检测到可用的 nginx, 跳过校验与重载)")
+        print("[提示] 配置已写入文件, 需你自己重载才生效:")
+        print("[提示]   docker exec <容器> nginx -s reload   (Docker 部署)")
+        print("[提示]   systemctl reload nginx                (宿主部署)")
+        print(f"[信息] 备份: {bak}")
         return 0
 
     argv = cmd.split() + ["-t"]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"[提示] 无法执行 {' '.join(argv)}: {e}", file=sys.stderr)
-        print(f"[提示] 请自行确认配置无误再 reload。备份: {bak}", file=sys.stderr)
+        # 连校验都跑不了 —— 绝不能在这时候盲重载
+        print(f"[提示] 无法执行校验 ({' '.join(argv)}: {e})", file=sys.stderr)
+        print("[提示] 配置已写入但**未校验**, 请自己确认后再重载:", file=sys.stderr)
+        print(f"[提示]   {' '.join(argv[:-1] + ['-s', 'reload'])}", file=sys.stderr)
+        print(f"[提示] 备份: {bak}", file=sys.stderr)
         return 0
 
     if p.returncode != 0:
@@ -355,15 +375,56 @@ def commit(args, path, lines, nl, had_bom, remove_only):
     verb = "移除" if remove_only else "插入"
     print(f"[成功] 已{verb}到 {path}")
     print(f"[信息] 备份: {bak}")
+    return do_reload(cmd, bak)
+
+
+def do_reload(cmd, bak):
+    """配置过了 nginx -t 就重载 —— 改了不重载等于没改。
+
+    插入方向: 片段写进文件了但 nginx 还跑着旧配置, 节点照样连不上,
+              用户看到的是"配好了但用不了", 且没有任何报错。
+    移除方向: 旧规则仍在生效, 等于没删。
+
+    reload 本身是平滑的 (不断开现有连接), 所以这里的顾虑不成立。
+    这与 参考实现 的实际代码一致 —— cdn_menu.sh:254 (插入后) 和
+    :315 (移除后) 都调 cdn_nginx_reload, 它自己 cdn_nginx.sh:53 起的
+    注释写的是 "插入成功但没重载 = 配置没生效, 节点照样连不上"。
+
+    ⚠ cdn_menu.sh 的帮助文本里 "✗ 不自动重载 nginx" 与它自己调用的代码
+    是矛盾的 —— 那段是陈旧说法, 以代码为准 (参见 docs/PRODUCT-BASELINE.md
+    记录的 SB 内部不一致)。
+
+    reload 失败不回滚文件: 配置已经通过 nginx -t, 留着比撤掉有用。
+    只提示手工命令。
+    """
     # 重载命令 = 校验命令去掉末尾的 -t, 换成 -s reload。
     # 别图省事切前两个词: cmd 是 "docker exec nginx nginx" 时,
     # 切前两个会拼出 "docker exec -s reload" (踩过的坑)。
-    reload_argv = cmd.split()
-    if reload_argv and reload_argv[-1] == "-t":
-        reload_argv.pop()
-    print("[提示] 现在可以自己重载 (本工具刻意不自动 reload —— "
-          "reload 会影响这台机器上的其它站点):")
-    print(f"       {' '.join(reload_argv + ['-s', 'reload'])}")
+    argv = cmd.split()
+    if argv and argv[-1] == "-t":
+        argv.pop()
+    reload_argv = argv + ["-s", "reload"]
+    pretty = " ".join(reload_argv)
+
+    try:
+        p = subprocess.run(reload_argv, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[提示] 无法执行重载 ({e})", file=sys.stderr)
+        print(f"[提示] 配置已写入且通过校验, 请自己执行: {pretty}", file=sys.stderr)
+        print(f"[提示] 备份: {bak}", file=sys.stderr)
+        return 0
+
+    if p.returncode == 0:
+        print(f"[成功] 已重载 nginx: {pretty}")
+        return 0
+
+    msg = (p.stderr or p.stdout or "").strip()
+    print(f"[提示] 重载未成功, 但配置已写入且通过了 nginx -t。", file=sys.stderr)
+    if msg:
+        for ln in msg.splitlines()[-3:]:
+            print("       " + ln, file=sys.stderr)
+    print(f"[提示] 请手工执行: {pretty}", file=sys.stderr)
+    print(f"[提示] 备份: {bak}", file=sys.stderr)
     return 0
 
 

@@ -854,8 +854,9 @@ EOF
 # 对应���那个 server 块、要插在对的层级、插完还得 nginx -t 确认。
 # 这些每一步都可能出错, 而且出错方式和内核崩溃长得一样难查。
 #
-# 刻意**不**自动 reload —— reload 会影响这台机器上的所有站点, 那是用户的
-# 决定, 不是面板该替他做的。插入完把命令打给他。
+# 插入并校验通过后由 nginx_apply.py 直接 reload —— 改了不重载等于没改:
+# 片段在文件里但 nginx 跑的还是旧配置, 节点照样连不上, 且没有任何报错。
+# nginx 的 reload 是平滑的 (不断现有连接), 顾虑不成立。
 nginx_insert_menu() {
     local frag="$1"
     local apply="$SELF_DIR/nginx_apply.py"
