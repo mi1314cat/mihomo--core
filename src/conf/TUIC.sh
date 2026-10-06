@@ -418,6 +418,12 @@ delete_config() {
               "$OUT_DIR/${PROTO}_client-$num.yaml" \
               "$OUT_DIR/${PROTO}_share-$num.txt"
 
+        # 记下"这次删掉的是哪个协议桶", 供菜单项在**重载成功之后**吊销分享链接。
+        # 不能在这里直接吊销: 重载失败会回滚, 那时节点还在, 链接却已经废了
+        # (清空路径 server.sh 里记过这个反序踩坑)。
+        # 注意 PROTO 是 tuicv5 —— 分享 tag 取的就是它, 不是 "tuic"。
+        _DELETED_PROTO_TAG="$PROTO"
+
         # 已删干净? 原来不管删没删掉都报"已删除"
         if [[ -e "$CONF_DIR/${PROTO}-$num.yaml" ]]; then
             print_error "删除失败, 文件仍在: $CONF_DIR/${PROTO}-$num.yaml"
@@ -611,7 +617,7 @@ main_menu() {
         case "$c" in
             1) list_configs ;;
             2) add_config; m_sync_reload ;;
-            3) delete_config; m_sync_reload ;;
+            3) _DELETED_PROTO_TAG=""; delete_config; m_sync_reload && share_revoke_on_delete "${_DELETED_PROTO_TAG:-}" ;;
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;

@@ -414,6 +414,11 @@ delete_config() {
     cdn_node_unregister "$(basename "$IN_FILE" .yaml)" 2>/dev/null || true
     rm -f "$IN_FILE" "$OUT_FILE" "$SHARE_FILE"
 
+    # 记下"这次删掉的是哪个协议桶", 供菜单项在**重载成功之后**吊销分享链接。
+    # 不能在这里直接吊销: 重载失败会回滚, 那时节点还在, 链接却已经废了
+    # (清空路径 server.sh 里记过这个反序踩坑)。
+    _DELETED_PROTO_TAG="$PROTO"
+
     # 删除对应 public-key
     if [[ -f "$PUB_ENV" ]]; then
         sed -i "/^PUBKEY_${num2}=/d" "$PUB_ENV"
@@ -622,7 +627,7 @@ main_menu() {
         case $c in
             1) list_configs ;;
             2) add_config; m_sync_reload ;;
-            3) delete_config; m_sync_reload ;;
+            3) _DELETED_PROTO_TAG=""; delete_config; m_sync_reload && share_revoke_on_delete "${_DELETED_PROTO_TAG:-}" ;;
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;

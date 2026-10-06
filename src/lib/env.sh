@@ -966,3 +966,16 @@ _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
 # DNS 管理 (服务端)。只定义函数, 不依赖上面几个, 放最后避免引入顺序耦合。
 # shellcheck source=/dev/null
 [[ -f "$_m_libdir/dns.sh" ]]    && source "$_m_libdir/dns.sh"
+
+# =============================================================
+# 分享 (share.sh)
+#
+# 也在这里带入。原来只在 server.sh 的 install_share() 里 source, 于是
+# **协议脚本拿不到 share_* 函数** —— 删节点时想吊销对应分享链接就调不到。
+# share.sh 加载期只做变量赋值和函数定义 (带 declare -F 守卫), 没有副作用,
+# 可以安全地全局带入。它依赖 SHARE_DIR, 而 SHARE_DIR 在本文件前部已定义。
+# =============================================================
+if [[ -f "$_m_libdir/../share/share.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_m_libdir/../share/share.sh"
+fi

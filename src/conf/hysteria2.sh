@@ -749,6 +749,11 @@ delete_config() {
               "$OUT_DIR/${PROTO}_share-$pad.txt" \
               "$OUT_DIR/${PROTO}_meta-$pad.json"
 
+        # 记下"这次删掉的是哪个协议桶", 供菜单项在**重载成功之后**吊销分享链接。
+        # 不能在这里直接吊销: 重载失败会回滚, 那时节点还在, 链接却已经废了
+        # (清空路径 server.sh 里记过这个反序踩坑)。
+        _DELETED_PROTO_TAG="$PROTO"
+
         # 只删本脚本自签的证书; 外部证书保留原文件
         if [[ "$cert_file" == "$CERT_DIR"/cert-* ]]; then
             local dom
@@ -911,7 +916,7 @@ main_menu() {
         case "$c" in
             1) list_configs ;;
             2) add_config; m_sync_reload ;;
-            3) delete_config; m_sync_reload ;;
+            3) _DELETED_PROTO_TAG=""; delete_config; m_sync_reload && share_revoke_on_delete "${_DELETED_PROTO_TAG:-}" ;;
             4) rebuild_client ;;
             5) export_subscription ;;
             0) exit 0 ;;

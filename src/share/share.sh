@@ -319,6 +319,78 @@ share_pick() {
 }
 
 # ---------- 操作 ----------
+
+# 按 tag 吊销分享链接 —— 删节点时用。
+#
+# 为什么是"禁用"而不是"删除": 节点删掉后这条链接已经没用了, 但直接删文件
+# 会让用户失去记录 (发给谁、什么时候、用过几次)。禁用让它**立刻返回 410**,
+# 记录还在, 需要时可以再启用。这与分享服务端的约定一致
+# (share_server.py: "200 订阅 / 404 不存在 / 410 失效 / 503 暂不可用")。
+#
+# ★ 粒度提醒: 分享 tag 是**协议桶** (out/<proto>_client-NN.yaml → tag=<proto>),
+#   不是单节点。所以删一个 trojan 节点会把所有 tag=trojan 的链接一起吊销 ——
+#   这是当前数据模型的必然结果, 必须显式告知用户, 不能让他以为只吊销了一个。
+#
+# 结果写进全局 _SHARE_REVOKED_N, 供调用方决定要不要提示。
+share_revoke_by_tag() {
+    local tag="${1:-}"
+    _SHARE_REVOKED_N=0
+    [[ -n "$tag" ]] || return 0
+    [[ -d "${SHARES:-}" ]] || return 0
+    local f out
+    for f in "$SHARES"/*.json; do
+        [[ -f "$f" ]] || continue
+        # python 的输出要自己收, 不能裸跑 (裸跑时 stdout 混进面板流)
+        out=$(python3 - "$f" "$tag" <<'PY' 2>/dev/null
+import json, sys, time
+p, tag = sys.argv[1], sys.argv[2]
+try:
+    m = json.load(open(p, encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if m.get("tag") != tag:
+    raise SystemExit(0)
+if not m.get("enabled", True):
+    raise SystemExit(0)
+m["enabled"] = False
+m["revoked_at"] = int(time.time())
+m["revoked_reason"] = "node deleted"
+with open(p, "w", encoding="utf-8") as fh:
+    json.dump(m, fh, indent=1, ensure_ascii=False)
+print("revoked")
+PY
+        )
+        [[ "$out" == "revoked" ]] && _SHARE_REVOKED_N=$(( _SHARE_REVOKED_N + 1 ))
+    done
+    return 0
+}
+
+# 删节点后的用户可见提示。
+#
+# ★ 调用时机有硬约束: **必须在校验通过之后**。清空路径 (server.sh) 里记过
+#   这个坑 —— 校验失败会回滚配置, 那时节点还在, 而 token 已经吊销了, 用户
+#   手里的链接就莫名其妙全废。所以调用点是
+#       delete_config; m_sync_reload && share_revoke_on_delete ...
+#   而不是在 delete_config 内部。
+share_revoke_on_delete() {
+    local tag="${1:-}" label="${2:-${1:-}}"
+    # 空 tag = 这次没有真的删掉任何节点 (比如用户输了个不存在的编号),
+    # 静默返回, 既不吊销也不提示。
+    [[ -n "$tag" ]] || return 0
+    share_revoke_by_tag "$tag"
+    if (( ${_SHARE_REVOKED_N:-0} > 0 )); then
+        print_info "已吊销 ${label} 的分享链接 ${_SHARE_REVOKED_N} 条 (立即返回 410)"
+        print_warn "分享粒度是协议桶不是单节点 —— 同协议其它节点的链接也一并失效了"
+    fi
+    # tag=all 的链接**不吊销**: 它还包含其它节点, 吊销它会误伤。但要说清楚。
+    local alln=0
+    if [[ -d "${SHARES:-}" ]]; then
+        alln=$(grep -l '"tag"[[:space:]]*:[[:space:]]*"all"' "$SHARES"/*.json 2>/dev/null | wc -l) || alln=0
+    fi
+    (( alln > 0 )) && print_info "另有 ${alln} 条 tag=all 的链接仍可用 (它们还包含其它节点)"
+    return 0
+}
+
 share_delete() {
     print_title "删除分享链接"
     share_pick || return
