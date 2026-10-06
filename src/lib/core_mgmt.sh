@@ -270,18 +270,26 @@ core_menu() {   # <安装根目录> <服务名>
         read -r c || return 0
         c=$(clean_input "$c")
         case "$c" in
-            1) bash "$root/src/server.sh" init 2>/dev/null || _core_init_base "$root" ;;
+            1) if [[ "$svc" == "mihomo" ]]; then
+                   bash "$root/src/server.sh" init \
+                     || print_error "初始化失败, 见上面输出"
+               else
+                   bash "$root/src/client.sh" init \
+                     || print_error "初始化失败, 见上面输出"
+               fi ;;
             2) core_do_install "$root" "$svc" ;;
             3) core_do_update "$root" "$svc" ;;
             4) core_version_menu "$root" "$svc" ;;
             5) core_do_uninstall "$root" "$svc" ;;
             6) core_update_scripts "$root" ;;
-            7) if [[ "$svc" == "mihomo" ]]; then
-                   bash "$root/src/server.sh" uninstall 2>/dev/null \
-                     || { print_warn "请用面板的「卸载服务端」"; }
+            7) # 去掉 2>/dev/null: 现在子命令真的存在了, 卸载过程中的提示
+               # (删了哪些 unit、回收了哪些端口) 对用户是有用信息, 不该吞掉。
+               if [[ "$svc" == "mihomo" ]]; then
+                   bash "$root/src/server.sh" uninstall \
+                     || print_warn "请用面板的「卸载服务端」"
                else
-                   bash "$root/src/client.sh" uninstall 2>/dev/null \
-                     || { print_warn "请用面板的「卸载客户端」"; }
+                   bash "$root/src/client.sh" uninstall \
+                     || print_warn "请用面板的「卸载客户端」"
                fi ;;
             0|q|Q) return 0 ;;
             *) ui_invalid "$c" ;;

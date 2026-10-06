@@ -875,4 +875,30 @@ main_menu() {
     done
 }
 
-main_menu "$@"
+# =============================================================
+# 入口 / 子命令
+#
+# `init` 与 `uninstall` 是给 core_menu (src/lib/core_mgmt.sh) 调的 ——
+# 那边一直写着:
+#     bash "$root/src/server.sh" init
+#     bash "$root/src/server.sh" uninstall
+#
+# 但这里以前只有 `main_menu "$@"`, 而 main_menu 从不读 $1。于是这两个
+# "子命令"实际会**递归打开一个完整面板**: 调用处又带了 2>/dev/null,
+# 用户什么都看不到, 子面板却会抢走 stdin —— 表现为"点了没反应, 后面
+# 几个按键全乱"。core_mgmt.sh 里那个兜底的 _core_init_base 更是全项目
+# 从未定义过 (git log -S 查过), 所以连报错都报不出个所以然。
+#
+# 现在按调用处的本意把子命令补齐 —— 调用点写的是对的, 缺的是这里。
+# =============================================================
+case "${1:-}" in
+    init)
+        # 建目录 + 用 merge.py 生成基础 config.yaml (配置生成的唯一真源)
+        ensure_dirs || exit 1
+        python3 "$M_LIB/merge.py" --conf "$SRV_CONF" >/dev/null 2>&1 || exit 1
+        exit 0 ;;
+    uninstall)
+        uninstall_service ;;
+    *)
+        main_menu "$@" ;;
+esac

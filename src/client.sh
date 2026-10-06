@@ -702,8 +702,8 @@ cli_uninstall() {
     # 作用域校验: 安装目录被改到别处时 (CLI_ROOT 可被环境变量覆盖),
     # 这两个服务名可能属于**别的** mihomo 实例, 删 unit 就是误删。
     # 单元文件里记了安装路径, 对不上就只提示不动手。
-    _unit_owned_by_me "$svc" || { svc=""; print_warn "$svc 的 unit 不属于 $CLI_ROOT, 不会删除"; }
-    _unit_owned_by_me "$shsvc" || { shsvc=""; print_warn "$shsvc 的 unit 不属于 $CLI_ROOT, 不会删除"; }
+    _cli_unit_owned_by_me "$svc" || { svc=""; print_warn "$svc 的 unit 不属于 $CLI_ROOT, 不会删除"; }
+    _cli_unit_owned_by_me "$shsvc" || { shsvc=""; print_warn "$shsvc 的 unit 不属于 $CLI_ROOT, 不会删除"; }
     cat <<EOF
   1) 仅卸载服务     停服务+删 unit, 保留配置/节点
   2) 彻底删除       本脚本在本机创建的全部内容, 见下方清单
@@ -1137,4 +1137,27 @@ settings_menu() {
     esac
 }
 
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && client_menu
+# =============================================================
+# 入口 / 子命令
+#
+# 与服务端同理: core_menu (src/lib/core_mgmt.sh) 一直用
+#     bash "$root/src/client.sh" init
+#     bash "$root/src/client.sh" uninstall
+# 这两个子命令调过来, 而这里以前只无条件进 client_menu, 从不读 $1 ——
+# 于是会递归打开一个看不见的面板并抢走 stdin。
+# 这里按调用处的本意补齐 (保留原有的"被 source 时不执行"守卫)。
+# =============================================================
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-}" in
+        init)
+            ensure_dirs || exit 1
+            # 有 settings 就顺手应用一次, 让基础配置真正落盘;
+            # 失败不算错 (还没配过端口是正常状态)。
+            apply_change >/dev/null 2>&1 || true
+            exit 0 ;;
+        uninstall)
+            cli_uninstall ;;
+        *)
+            client_menu ;;
+    esac
+fi
