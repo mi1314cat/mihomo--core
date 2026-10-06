@@ -121,6 +121,7 @@ PROTO_SCRIPTS=(Reality.sh VLESS.sh Trojan.sh hysteria2.sh TUIC.sh AnyTLS.sh)
 PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" "Trojan" "Hysteria2" "TUIC v5" "AnyTLS")
 # 每项的**变体与限制**, 内联在菜单里。
 #
+# 节点菜单的说明写法:
 #     7. 添加 VMess 节点 (ws/grpc/h2/tcp + TLS/Reality)
 #     6. 添加 TUIC 节点 (v5 · 仅 TLS, 不支持 Reality)
 #     3. 添加 AnyTLS 节点 (可选 REALITY · 非 Reality 形态 mihomo 也能用)
@@ -977,6 +978,7 @@ main_menu() {
         echo >&2
         # ── 每项内联子项说明 ──
         #
+        # 每个菜单项后面都跟着括号说明,
         # 例 "1. 安装 / 内核 (初始化/安装/更新/版本/卸载/脚本更新)"。
         # 进菜单前就知道里面有什么, 不用靠记忆或试错。
         #
