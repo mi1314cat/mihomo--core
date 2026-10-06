@@ -47,6 +47,10 @@ run_gate "常量漂移"     bash tools/check_mirrors.sh
 run_gate "接线完整"     bash tools/check_wiring.sh
 run_gate "菜单编号"     bash tools/check_menu_ids.sh
 run_gate "yaml 取值守卫" bash tools/check_yaml_guard.sh
+# 调用方 vs 生产者: flag 必须存在, 且不许按"给人看的表格"的字段数/分隔符解析。
+# 这一类 bug 全部是**静默失败** (列表变空 → 循环不跑 → 检查器打印"没问题"),
+# 已经踩过三次 (share 的 NF==2、cdn 的 -F'|'、以及被 2>/dev/null 吞掉的 flag 错)。
+run_gate "接口一致"     bash tools/check_interfaces.sh
 
 # pre-push 钩子是否已安装。
 #

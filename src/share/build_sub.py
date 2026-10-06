@@ -130,7 +130,9 @@ def main() -> int:
                     help="客户端 proxy-providers 目录 (每个 *.yaml 单独成一个 tag)")
     ap.add_argument("--tag", default="all", help="all 或某个协议前缀 (reality/trojan/...)")
     ap.add_argument("-o", "--output", default="")
-    ap.add_argument("--list", action="store_true", help="只列出可用 tag")
+    ap.add_argument("--list", action="store_true", help="只列出可用 tag (给人看的表格)")
+    ap.add_argument("--list-tags", action="store_true",
+                    help="只列出可用 tag, 每行一个 (给脚本用, 无表头无计数)")
     args = ap.parse_args()
 
     buckets = collect(args.out_dir)
@@ -141,6 +143,19 @@ def main() -> int:
         # 每个 provider 文件单开一个 tag, 这样可以只分享其中一个订阅。
         for pf in sorted(glob.glob(os.path.join(args.providers_dir, "*.yaml"))):
             collect_dir(os.path.dirname(pf), os.path.splitext(os.path.basename(pf))[0], buckets)
+
+    if args.list_tags:
+        # 机器可读: 每行一个 tag, 没有表头、没有计数、没有单位字。
+        #
+        # ★ 为什么必须有这个开关 (而不是让调用方去 awk 那张表格):
+        #   --list 的表格是给人看的, 格式随时可能加列 (例如曾经加上 " 个"),
+        #   调用方一旦按字段数过滤 (awk 'NF==2'), 格式一变就**静默变空** ——
+        #   面板上表现为"分享哪些节点"只剩 "全部" 一个选项, 且没有任何报错。
+        #   这类"两处必须一致但无机制保证"是本项目的头号 bug 类, 所以这里
+        #   直接提供稳定的接口, 让调用方不再依赖表格长什么样。
+        for proto in sorted(buckets):
+            print(proto)
+        return 0
 
     if args.list:
         if not buckets:

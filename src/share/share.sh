@@ -151,14 +151,18 @@ share_create() {
     printf "  1) 全部节点 (all)\n"
     local i=2 tagname
     local tags
+    # ★ 用 --list-tags (每行一个 tag), **不要**去 awk --list 的表格。
+    #   原来这里写的是 `awk 'NF==2 && $1!="合计"{print $1}'`, 而 --list 的输出
+    #   是 "  trojan_trojan 1 个" = **3 个字段**, 于是过滤**永远为空**:
+    #   菜单里除了 "1) 全部节点" 再也列不出任何协议桶, 且没有任何报错 ——
+    #   按协议分享这个功能实际是死的。格式一变就静默变空, 这类
+    #   "两处必须一致但无机制保证" 是本项目的头号 bug 类, 故改为稳定接口。
     if [[ -n "$SHARE_PROVIDERS_DIR" && -d "$SHARE_PROVIDERS_DIR" ]]; then
         print_info "分享来源: proxy-providers ($SHARE_PROVIDERS_DIR)"
         tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" \
-               --providers-dir "$SHARE_PROVIDERS_DIR" --list 2>/dev/null \
-               | awk 'NF==2 && $1!="合计"{print $1}')
+               --providers-dir "$SHARE_PROVIDERS_DIR" --list-tags 2>/dev/null)
     else
-        tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" --list 2>/dev/null \
-               | awk 'NF==2 && $1!="合计"{print $1}')
+        tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" --list-tags 2>/dev/null)
     fi
     for tagname in $tags; do
         printf "  %d) 仅 %s\n" "$i" "$tagname"; i=$((i+1))
@@ -168,12 +172,22 @@ share_create() {
 
     local TAG="all"
     if [[ "$c" =~ ^[0-9]+$ && "$c" -gt 1 ]]; then
-        local idx=2 pick=0
+        # ★ pick 的初值必须是**空串**, 不能是 0。
+        #   原来写 `local idx=2 pick=0`, 而下面判空用的是 `[[ -n "$pick" ]]` ——
+        #   "0" 是非空字符串, 所以只要没匹配到 (tag 列表为空, 或用户输入越界编号),
+        #   TAG 就会变成字面量 "0"。而 "0" 不是任何协议桶, 于是生成的订阅**是空的**:
+        #   用户拿到一条能打开、但里面一个节点都没有的链接, 且全程无提示。
+        #   实测在真实部署上复现过 (选 "2" 且列表为空 → tag=0)。
+        local idx=2 pick=""
         for tagname in $tags; do
             if [[ "$idx" -eq "$c" ]]; then pick="$tagname"; break; fi
             idx=$((idx+1))
         done
-        [[ -n "$pick" ]] && TAG="$pick"
+        if [[ -n "$pick" ]]; then
+            TAG="$pick"
+        else
+            print_warn "编号 $c 不在范围内, 已回退为「全部节点」"
+        fi
     fi
 
     # max_uses

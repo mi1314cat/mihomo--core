@@ -609,10 +609,17 @@ cdn_check_residue() {
 }
 
 # 所有候选站点文件 (去重)。cdn_list_sites 是给人看的表格, 这里要的是路径列表。
+#
+# ★ 必须用 --list-paths (每行一个路径), **不要**去解析 --list 的表格。
+#   原来写的是 `awk -F'|' '{...$2...}'`, 即按**竖线**取第 2 列; 而 --list 的实际
+#   格式是 "  {mode:8} {sn:30} {f}" —— **空格分隔**, 根本没有竖线。
+#   于是这个函数**永远返回空**, 于是 cdn.sh 的"幽灵配置"自检循环一次都不执行,
+#   恒打印 "没有幽灵配置": 一个查不到东西就报成功的假绿灯。
+#   与 share_create 的 `awk 'NF==2'` 完全同类 —— 生产者和消费者对格式的理解
+#   不一致, 且没有机制保证一致。改用稳定接口, 不再依赖表格长什么样。
 cdn_site_files_all() {
     cdn_available || return 0
-    python3 "$CDN_APPLY_PY" --list 2>/dev/null \
-        | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2); if ($2 != "") print $2}'
+    python3 "$CDN_APPLY_PY" --list-paths 2>/dev/null
 }
 
 # CDN 接入说明。SB 有 `9) CDN 接入说明` —— 把"怎么接"写进面板,

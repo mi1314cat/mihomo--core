@@ -152,7 +152,23 @@ def server_name_of(path):
     return m.group(1).strip() if m else None
 
 
-def list_sites():
+def list_sites(paths_only=False):
+    if paths_only:
+        # 机器可读: 每行一个站点配置**路径**, 没有表头、没有对齐列。
+        #
+        # ★ 为什么必须有这个开关:
+        #   list_sites() 的表给人看, 格式是 "  {mode:8} {sn:30} {f}" —— **空格分隔**。
+        #   而调用方 cdn_site_files_all() 用的是 `awk -F'|' '{...$2...}'`, 即按
+        #   **竖线**分隔取第 2 列。输出里根本没有竖线, 所以它**永远返回空**,
+        #   于是 cdn.sh 的"幽灵配置"自检循环一次都不执行, 恒打印
+        #   "没有幽灵配置" —— 一个查不到东西就报成功的假绿灯。
+        #   根因与 share_create 的 `awk 'NF==2'` 完全同类: 生产者和消费者
+        #   对格式的理解不一致, 而没有任何机制保证它们一致。
+        for mode, root, f in site_files():
+            if not server_name_of(f):
+                continue
+            print(f)
+        return 0
     print("候选站点配置:")
     found = 0
     for mode, root, f in site_files():
@@ -442,11 +458,15 @@ def main():
     ap.add_argument("--nginx", default="", help="校验命令前缀, 如 'docker exec nginx' / 'nginx' / 'none'")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--list-paths", action="store_true",
+                    help="只列出站点配置路径, 每行一个 (给脚本用)")
     ap.add_argument("--probe", action="store_true")
     args = ap.parse_args()
 
     if args.list:
         return list_sites()
+    if args.list_paths:
+        return list_sites(paths_only=True)
     if args.probe:
         dk = probe_docker()
         print(f"容器化 nginx: {dk[0] if dk else '否'}"
