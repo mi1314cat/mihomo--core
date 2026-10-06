@@ -1,0 +1,64 @@
+#!/bin/sh
+# =============================================================
+# pre-push 闸门: 挡住「本地 main 落后 → 把远端 main 推回退」
+#
+# 为什么需要这个钩子 (这个坑实际踩了三次):
+#
+#   本项目 main 与 refactor/v2 约定**完全一致**。日常开发只提交到
+#   refactor/v2, 本地 main 会一直停在旧位置。此时 `git push origin main`
+#   推的是**那个过期的本地 main**, 远端 main 直接倒退两个提交。
+#   更糟的是 git 会报 `forced update` 且**退出码 0** —— 看起来像成功。
+#
+#   实测三次:
+#     第一次  以为 `git push --force origin main refactor/v2` 能同时推两个,
+#             其实只更新了 refactor/v2
+#     第二次  改推 `main` 单独一次 —— 把 main 推回退了 88e7545 -> b0188bb
+#     第三次  `git branch -f main refactor/v2` 之后又提交了新东西,
+#             main 再次落后 —— 一次性修复挡不住下一次
+#
+#   结论: **一次性修复不是修复。** 必须让错误做法在机制上无法完成。
+#
+# 行为: 要推 refs/heads/main 时, 先比对本地 main 与 refactor/v2;
+#       不一致就拒绝, 并直接给出正确的命令。
+# =============================================================
+set -u
+
+remote="${1:-origin}"
+status=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/main) ;;
+        *) continue ;;
+    esac
+
+    # 删除分支的推送 (local_sha 全 0) 不拦
+    case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+
+    tip_ref=$(git rev-parse --verify --quiet refs/heads/refactor/v2 || echo "")
+    if [ -z "$tip_ref" ]; then
+        echo "pre-push: 找不到本地 refactor/v2, 无法校验 main" >&2
+        exit 1
+    fi
+
+    if [ "$local_sha" != "$tip_ref" ]; then
+        echo "" >&2
+        echo "  ✘ 拒绝推送 refs/heads/main" >&2
+        echo "" >&2
+        echo "    本地 main      = $(git rev-parse --short "$local_sha" 2>/dev/null || echo "$local_sha")" >&2
+        echo "    refactor/v2    = $(git rev-parse --short "$tip_ref")" >&2
+        echo "" >&2
+        echo "    本地 main 落后于 refactor/v2。直接推 main 会让**远端 main 倒退**。" >&2
+        echo "    (git 对此只报 forced update, 退出码仍是 0 —— 看起来像成功)" >&2
+        echo "" >&2
+        echo "    正确做法 (用 refspec 映射, 不碰本地 main):" >&2
+        echo "        git push --force $remote refactor/v2:main" >&2
+        echo "" >&2
+        echo "    或者先对齐再推:" >&2
+        echo "        git branch -f main refactor/v2 && git push $remote main" >&2
+        echo "" >&2
+        status=1
+    fi
+done
+
+exit $status
