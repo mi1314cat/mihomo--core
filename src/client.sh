@@ -62,7 +62,7 @@ _MUI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/ui.sh"
 [[ -f "$_MUI" ]] && source "$_MUI"
 
 # Web UI 管理与内核/版本管理。两者依赖上面的 ui.sh, 必须在它之后加载。
-for _mx in webui core_mgmt portcheck fw rules_bind dl_route simple_proxy lan_dispatch cert; do
+for _mx in webui core_mgmt portcheck fw rules_bind dl_route simple_proxy lan_dispatch cert cdn; do
     _MEXTRA="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/$_mx.sh"
     [[ -f "$_MEXTRA" ]] && source "$_MEXTRA"
 done

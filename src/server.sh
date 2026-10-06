@@ -33,6 +33,10 @@ source "$M_LIB/env.sh"
 # shellcheck source=/dev/null
 source "$M_LIB/cert.sh"
 
+# CDN 回源编排 (渲染 location / 安全写入 Nginx / 删节点时回删)
+# shellcheck source=/dev/null
+source "$M_LIB/cdn.sh"
+
 # UI 原语 (颜色/消息分级/标题/菜单) 统一来自 src/lib/ui.sh, 由上面的 env.sh 带入。
 
 # 本地覆盖 pause(): ui.sh 那版遇到 EOF 直接 exit, 这里要 return 1 把控制权交回

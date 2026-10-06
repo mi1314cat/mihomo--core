@@ -294,7 +294,13 @@ def do_apply(args):
         f"{pad}# 由 mihomo--core 面板自动插入 (CDN 回源)。",
         f"{pad}# 删除本段请用面板, 或直接删掉这两行标记之间的内容。",
     ]
-    out += [pad + b.strip() if b.strip() else "" for b in body]
+    # 保留片段内部的相对缩进: 先按最小缩进统一左移, 再整体加 pad。
+    # 原先写的是 pad + b.strip(), 会把所有层级压平到同一缩进 ——
+    # nginx 不敏感所以不影响功能, 但读起来是错的 (location 的
+    # proxy_pass 与 location 本身同缩进), 排查时容易看错层级。
+    _ne = [b for b in body if b.strip()]
+    _base = min((len(b) - len(b.lstrip()) for b in _ne), default=0)
+    out += [(pad + b[_base:]) if b.strip() else "" for b in body]
     out.append(f"{pad}# <<< {MARK} END {domain} <<<")
 
     # 插在块的收尾 } **之前**。
