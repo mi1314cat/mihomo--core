@@ -521,7 +521,7 @@ record() {  # record <协议> <端口> <状态> <说明>
     RESULTS+=("$1|$2|$3|$4")
 }
 
-ALL_GEN_IDS="reality reality-grpc reality-xhttp trojan trojan-grpc trojan-h2 vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
+ALL_GEN_IDS="reality reality-grpc reality-xhttp trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
 
 # --only 的 token 必须能对上真实标识符。原来的 want() 对不匹配的 token 静默
 # 返回 false, 于是 `--only tuic` (真名 tuicv5) 会安静地什么都不生成,
@@ -901,65 +901,16 @@ proxies:
 EOF
 }
 
-# ---------- Trojan + HTTP/2 + REALITY (直连) ----------
-# 注: 这条名字里的 H2 **不是真的 HTTP/2**。
-#   mihomo 的 trojan **出站** switch 只认 ws / grpc / default, 没有 `case "h2"`
-#   (adapter/outbound/trojan.go:79), 所以客户端写的 `network: h2` 落到 default
-#   —— 实际走的是裸 TCP。服务端 trojan listener 又对传输完全不敏感 (只认
-#   ws-path / grpc-service-name, 且不校验路径), 于是两边都不做 h2, 反而连得上。
-#   实测 5/5 是真的, 但连上的是 TCP 而非 H2: **名字与事实不符**, 留此备查。
-g_trojan_h2_reality() {
-    local path; path=$(m_check_ws_path "$(m_gen_path trojan-h2)") || return 1
-    NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
-    # 服务端**不写任何 h2 键**。
-    #
-    # 原先是 `h2-path: $path`, 但 mihomo 的 trojan 监听端白名单里根本没有这个键
-    # (只有 ws-path / grpc-service-name), 于是每次生成都报一条
-    #   [WARN] listeners[N](...): 未知键 `h2-path`（内核会静默忽略）
-    # —— 用户看到"内核会静默忽略"会以为自己配错了。
-    #
-    # 实测 (真实内核, 四种组合两两对照): trojan 监听端对传输**不敏感**,
-    #   服务端无 network + 客户端 h2      -> 204
-    #   服务端无 network + 客户端无 network -> 204
-    #   服务端 network:h2 + 客户端 h2      -> 204
-    #   服务端 network:h2 + 客户端无 network -> 204
-    # 而且把客户端路径改成 /wrong 照样连上 —— 说明**监听端不校验 path**。
-    # 所以服务端写不写都无所谓, 写了只会多一条误导性警告, 干脆不写。
-    #
-    # path 仍然保留在**客户端**: 它真正起作用的地方是 CDN / 反向代理按路径
-    # 回源, 而不是 mihomo 自己。
-    cat > "$3" <<EOF
-# 由 all.sh 一键生成 · Trojan + HTTP/2 + REALITY (直连)
-# 注意: mihomo 的 trojan 监听端不区分传输, 也不校验 h2 路径,
-#       所以服务端没有任何 h2 字段 —— 这是刻意的, 不是漏写。
-listeners:
-  - name: $NODE_TAG
-    type: trojan
-    listen: "0.0.0.0"
-    port: $2
-    users:
-      - password: $UUID
-$(_m_reality_block "$dest_server" "$PRIVATE_KEY" "$SHORT_ID")
-EOF
-    NODE_TAG="$(m_node_tag Trojan "$1" reality H2)"
-    cat > "$4" <<EOF
-proxies:
-  - name: $NODE_TAG
-    type: trojan
-    server: $PUBLIC_IP
-    port: $2
-    password: $UUID
-    udp: true
-    sni: $dest_server
-    reality-opts:
-      public-key: $PUBLIC_KEY
-      short-id: $SHORT_ID
-    client-fingerprint: $CLIENT_FP
-    network: h2
-    h2-opts:
-      path: $path
-EOF
-}
+# ---------- Trojan + HTTP/2 + REALITY: 不提供 ----------
+# mihomo 的 trojan **出站**没有 h2 传输, 所以这个组合在本内核上不存在:
+#   * TrojanOption 没有 HTTP2Opts 字段 (adapter/outbound/trojan.go:45-69)
+#   * `switch t.option.Network` 只认 ws / grpc, 其余落到 default
+#     -> `DialContext(ctx, "tcp", ...)` 裸 TCP (trojan.go:79 / :211-216)
+#   * 全内核 `h2-opts` 只在 vless.go:79 与 vmess.go:80 定义
+# 即客户端写 `network: h2` 会被**静默降级**成裸 TCP, 写 `h2-opts` 则被静默忽略。
+# 二者都写, 产物就是一个"名字写着 H2、实际走 TCP"的节点, 且 `h2-opts` 会被
+# validate.py 判为 trojan 的 ERROR —— 生成器不该产出自家校验器拒绝的东西。
+# 参考实现 (sing-box) 的 trojan 支持 http 传输, 这是**内核差异**, 不是待补的功能。
 
 # ---------- VMess + 裸 TCP + REALITY (直连) ----------
 g_vmess_reality() {
@@ -1696,7 +1647,7 @@ gen reality-grpc   "VLESS+gRPC+Reality"    1 0 reality   g_vless_grpc_reality
 gen reality-xhttp  "VLESS+xHTTP+Reality"   1 0 reality   g_vless_xhttp_reality
 gen trojan         "Trojan+Reality"        1 0 trojan    g_trojan_reality
 gen trojan-grpc    "Trojan+gRPC+Reality"   1 0 trojan    g_trojan_grpc_reality
-gen trojan-h2      "Trojan+H2+Reality"     1 0 trojan    g_trojan_h2_reality
+# trojan-h2 不在此列: mihomo 的 trojan 出站没有 h2 传输 (见上方说明)。
 gen vmess-reality  "VMess+TCP+Reality"     1 0 vmess     g_vmess_reality
 gen vmess-grpc     "VMess+gRPC+Reality"    1 0 vmess     g_vmess_grpc_reality
 # 证书组
