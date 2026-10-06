@@ -1003,18 +1003,19 @@ main_menu() {
         ui_menu  3 "安装 / 内核管理 (版本/更新/脚本)"
         ui_menu  4 "防火墙 (放行/孤儿清理/SSH 保护)"
         ui_menu  5 "CDN 回源 (Nginx 自动插入/证书/残留检查)"
+        ui_menu  6 "DNS 管理 (解析/加密/防泄露)"
         ui_rule
-        ui_menu  6 "生成分享链接 (单节点/全部)"
-        ui_menu  7 "拉取节点 (从订阅导入)"
-        ui_menu  8 "校验配置 + 重载 (合并/字段/内核三道关)"
-        ui_menu  9 "服务管理 (启动/停止/重启)"
-        ui_menu 10 "查看当前节点"
-        ui_menu 11 "查看已拉取订阅"
-        ui_menu 12 "查看日志"
-        ui_menu 13 "查看节点分享内容"
-        ui_menu 14 "系统信息 (端口/IP/资源)"
-        ui_menu 15 "卸载服务端"
-        ui_menu 16 "切换到客户端面板 (装/进另一端)"
+        ui_menu  7 "生成分享链接 (单节点/全部)"
+        ui_menu  8 "拉取节点 (从订阅导入)"
+        ui_menu  9 "校验配置 + 重载 (合并/字段/内核三道关)"
+        ui_menu 10 "服务管理 (启动/停止/重启)"
+        ui_menu 11 "查看当前节点"
+        ui_menu 12 "查看已拉取订阅"
+        ui_menu 13 "查看日志"
+        ui_menu 14 "查看节点分享内容"
+        ui_menu 15 "系统信息 (端口/IP/资源)"
+        ui_menu 16 "卸载服务端"
+        ui_menu 17 "切换到客户端面板 (装/进另一端)"
         ui_menu  0 "退出"
         echo >&2
         ui_rule
@@ -1035,17 +1036,18 @@ main_menu() {
             3)  core_menu "$SRV_ROOT" "$SRV_SERVICE" ;;
             4)  fw_menu ;;
             5)  cdn_menu ;;
-            6)  install_share ;;
-            7)  pull_node ;;
-            8)  update_config ;;
-            9)  svc_menu ;;
-            10) list_nodes ;;
-            11) list_imported ;;
-            12) log_menu ;;
-            13) show_client_files ;;
-            14) sys_info ;;
-            15) uninstall_service ;;
-            16) switch_side "$SRV_ROOT" ;;
+            6)  dns_menu ;;
+            7)  install_share ;;
+            8)  pull_node ;;
+            9)  update_config ;;
+            10) svc_menu ;;
+            11) list_nodes ;;
+            12) list_imported ;;
+            13) log_menu ;;
+            14) show_client_files ;;
+            15) sys_info ;;
+            16) uninstall_service ;;
+            17) switch_side "$SRV_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

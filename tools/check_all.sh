@@ -103,10 +103,15 @@ scrub_scan() {
     # 跑一次的检查不是检查。
     #
     # 只查 git 跟踪的文件 —— 未被跟踪的 docs/private/ 本来就不上传。
-    # 排除 tools/scrub.py 自己: 它的 RULES 里就是这些模式的正则文本,
-    # 查它必然自命中。校验器不能校验自己。
+    #
+    # ★ 这里**不再排除 tools/scrub.py**。以前排除它, 理由是"它的 RULES 里
+    #   就是这些模式的正则文本, 查它必然自命中" —— 但这个理由本身是错的:
+    #   正因为把**真实值**写进了公开的正则, 这份工具才变成了泄露索引
+    #   (确切的出口 IPv6 段 / 主机名 / 自有域名 / SSH 端口 / 内部别名全在里面)。
+    #   现在 scrub.py 只放通用规则, 具体值在 gitignored 的 scrub-private.py。
+    #   于是校验器可以、也必须校验自己。
     local files
-    files=$(git ls-files | grep -v '^tools/scrub\.py$')
+    files=$(git ls-files | grep -v '^tools/scrub-private\.py$')
     [[ -n "$files" ]] || { printf "❌ 没拿到文件清单 (不在 git 仓库里?)\n"; return 1; }
     # shellcheck disable=SC2086
     python3 tools/scrub.py --check $files

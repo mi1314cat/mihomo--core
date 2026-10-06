@@ -174,6 +174,7 @@ core_update_scripts() {
             "src/lib/env.sh" "src/lib/ui.sh" "src/lib/core_mgmt.sh" "src/lib/webui.sh" "src/lib/portcheck.sh"
             "src/lib/cert.sh" "src/lib/preset.sh" "src/lib/cdn.sh" "src/lib/fw.sh"
             "src/lib/rules_bind.sh" "src/lib/lan_dispatch.sh" "src/lib/dl_route.sh" "src/lib/simple_proxy.sh"
+            "src/lib/dns.sh" "src/lib/dns_edit.py"
             "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py"
             "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
             "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"

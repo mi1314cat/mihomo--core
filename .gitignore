@@ -4,3 +4,5 @@ __pycache__/
 *.tmp
 .env
 docs/private/
+# 与具体部署绑定的脱敏规则 (含真实出口 IPv6 / 主机名 / 自有域名 / SSH 端口 / 别名)
+tools/scrub-private.py

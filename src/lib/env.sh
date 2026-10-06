@@ -963,3 +963,6 @@ _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
 [[ -f "$_m_libdir/preset.sh" ]] && source "$_m_libdir/preset.sh"
 # shellcheck source=/dev/null
 [[ -f "$_m_libdir/cdn.sh" ]]    && source "$_m_libdir/cdn.sh"
+# DNS 管理 (服务端)。只定义函数, 不依赖上面几个, 放最后避免引入顺序耦合。
+# shellcheck source=/dev/null
+[[ -f "$_m_libdir/dns.sh" ]]    && source "$_m_libdir/dns.sh"
