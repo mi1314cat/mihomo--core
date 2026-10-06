@@ -637,3 +637,13 @@ m_sync_reload() {
     rm -f "$bak"
     return 1
 }
+# =============================================================
+# 证书体系 (扫描 / 识别 / 生成 / 钉扎 / 回收)
+#
+# 协议脚本都 source 本文件, 在这里带入 cert.sh, 于是它们不再需要各自
+# 定义 generate_cert/ask_cert/scan_certs —— 那些副本已删除。
+# 放在文件末尾: cert.sh 依赖 ui.sh 的 print_*/safe_read, 而 ui.sh 由
+# 本文件前部引入。
+# =============================================================
+# shellcheck source=/dev/null
+[[ -f "$(dirname "${BASH_SOURCE[0]}")/cert.sh" ]] && source "$(dirname "${BASH_SOURCE[0]}")/cert.sh"

@@ -361,121 +361,18 @@ detect_public_ip() {
 # ================================
 # 从证书提取域名 (三级回退: SAN → CN → 文件名)
 # ================================
-extract_cert_domain() {
-    local crt="$1" dom=""
-    if command -v openssl >/dev/null 2>&1 && [[ -f "$crt" ]]; then
-        dom=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null |
-            grep -oE "DNS:[^,]+" | head -1 | cut -d: -f2 | tr '[:upper:]' '[:lower:]')
-        [[ -z "$dom" ]] && dom=$(openssl x509 -in "$crt" -noout -subject 2>/dev/null |
-            grep -oE "CN *= *[^,]+" | head -1 | sed 's/.*CN *= *//' | tr -d '"' | tr '[:upper:]' '[:lower:]')
-    fi
-    [[ -z "$dom" ]] && dom=$(basename "$crt" | sed -E 's/\.(crt|pem)$//; s/_cert$//' | sed 's/^cert-//')
-    echo "$dom"
-}
 
-cert_not_expired() {
-    [[ -f "$1" ]] || return 1
-    openssl x509 -in "$1" -noout -checkend 86400 >/dev/null 2>&1
-}
 
-cert_is_trusted() {
-    local issuer
-    issuer=$(openssl x509 -in "$1" -noout -issuer 2>/dev/null)
-    echo "$issuer" | grep -qiE "Let['\x27]?s Encrypt|ZeroSSL|Sectigo|Google Trust|DigiCert|GlobalSign|R[0-9]{2,}|Polaris"
-}
 
 # key 配对: 给定 crt 尽力找到对应 key
-find_key_for_cert() {
-    local crt="$1" k
-    k="${crt%.crt}.key"; [[ -f "$k" ]] && { echo "$k"; return; }
-    k="${crt%.pem}.key"; [[ -f "$k" ]] && { echo "$k"; return; }
-    k="${crt%_cert.pem}_key.pem"; [[ -f "$k" ]] && { echo "$k"; return; }
-    k="$(dirname "$crt")/server.key"; [[ -f "$k" ]] && { echo "$k"; return; }
-    echo ""
-}
 
 # ================================
 # 证书扫描 (与 X 内核版一致: 多路径 + key 配对 + 过期剔除)
 # ================================
-scan_certs() {
-    FOUND_CERTS=()
-    SEEN_CERTS_TMP=()
-    local f k d i src cid
-    shopt -s nullglob
-    local -a search_dirs=() labels=()
-
-    [[ -d /root/catmi/cloudflare/certs ]] && { search_dirs+=(/root/catmi/cloudflare/certs); labels+=(catmi/cloudflare-certs); }
-    [[ -d /root/catmi/mihomo/conf/certs ]] && { search_dirs+=(/root/catmi/mihomo/conf/certs); labels+=(mihomo-certs); }
-    [[ -d /root/catmi ]] && { search_dirs+=(/root/catmi); labels+=(catmi-root); }
-    [[ -d /etc/v2ray-agent/tls ]] && { search_dirs+=(/etc/v2ray-agent/tls); labels+=(v2ray-agent); }
-    [[ -d /root/.acme.sh ]] && { search_dirs+=(/root/.acme.sh); labels+=(acme.sh); }
-    [[ -d /etc/nginx/certs ]] && { search_dirs+=(/etc/nginx/certs); labels+=(nginx-certs); }
-    [[ -d /home/web/certs ]] && { search_dirs+=(/home/web/certs); labels+=(web-certs); }
-
-    if command -v docker >/dev/null 2>&1; then
-        cid=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -i nginx | head -1)
-        if [[ -n "$cid" ]]; then
-            src=$(docker inspect "$cid" --format '{{range .Mounts}}{{if eq .Destination "/etc/nginx/certs"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
-            [[ -n "$src" && -d "$src" ]] && { search_dirs+=("$src"); labels+=("docker-nginx($cid)"); }
-        fi
-    fi
-
-    for ((i=0; i<${#search_dirs[@]}; i++)); do
-        d="${search_dirs[$i]}"
-        for f in "$d"/*.pem "$d"/*.crt; do
-            [[ -f "$f" ]] || continue
-            [[ "$f" == *_key.pem || "$f" == *key*.pem ]] && continue
-            case "$(basename "$f")" in
-                ca.cer|fullchain.cer|*.issuer.cer|chain.cer|key.pem) continue ;;
-            esac
-
-            local dup=false sf
-            for sf in "${SEEN_CERTS_TMP[@]:-}"; do [[ "$sf" == "$f" ]] && dup=true && break; done
-            $dup && continue
-            SEEN_CERTS_TMP+=("$f")
-
-            openssl x509 -in "$f" -noout -text 2>/dev/null | grep -q "CA:TRUE" && continue
-            cert_not_expired "$f" || continue
-
-            local k
-            k=$(find_key_for_cert "$f")
-            FOUND_CERTS+=("$f|$k|${labels[$i]}")
-        done
-    done
-    shopt -u nullglob
-}
 
 # ================================
 # 生成自签证书 (ECDSA P-256 + SAN, 10 年)
 # ================================
-generate_cert() {
-    local dom
-    dom=$(safe_read_prompt "自签证书域名(伪装域名)" "$(random_domain)")
-    [[ -z "$dom" ]] && dom=$(random_domain)
-
-    CERT_DOMAIN="$dom"
-    CERT_FILE="$CERT_DIR/cert-$dom.crt"
-    KEY_FILE="$CERT_DIR/key-$dom.key"
-
-    if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
-        print_ok "已有自签证书: $dom"
-        CERT_TRUSTED=false
-        return 0
-    fi
-
-    print_info "生成自签证书 (ECDSA P-256, 10年): $dom"
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
-        -pkeyopt ec_param_enc:named_curve -nodes \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" -days 3650 \
-        -subj "/CN=$dom" \
-        -addext "subjectAltName=DNS:$dom" >/dev/null 2>&1 || {
-            print_error "openssl 生成证书失败"
-            return 1
-        }
-
-    CERT_TRUSTED=false
-    print_ok "自签证书生成完成: $CERT_FILE"
-}
 
 safe_read_prompt() {
     local p="$1" d="$2" input
@@ -488,114 +385,10 @@ safe_read_prompt() {
 # ================================
 # 证书选择 (扫描 / 手动 / 自签, 失败退自签)
 # ================================
-ask_cert() {
-    local choice f pair k lbl next_idx default_choice=""
-    echo "  证书方案：" >&2
-    echo "  1) 扫描本机已有证书 (ACME/nginx/CF Origin CA, CA可信)" >&2
-    echo "  2) 手动输入证书路径" >&2
-    echo "  3) 生成自签证书 (无需域名)" >&2
-    printf "  选择 (默认1): " >&2
-    if ! read -r choice; then return 1; fi
-    choice=$(clean_input "$choice")
-
-    case "$choice" in
-        2)
-            printf "  证书 crt 路径: " >&2; read -r f
-            CERT_FILE=$(clean_input "$f")
-            printf "  证书 key 路径: " >&2; read -r f
-            KEY_FILE=$(clean_input "$f")
-            if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
-                cert_not_expired "$CERT_FILE" || { print_error "证书已过期"; return 1; }
-                CERT_DOMAIN=$(extract_cert_domain "$CERT_FILE")
-                if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
-                print_ok "使用手动证书: $CERT_DOMAIN (crt=$CERT_FILE)"
-                return 0
-            fi
-            print_error "证书路径无效, 退回自签"
-            generate_cert
-            return $?
-            ;;
-        3)
-            generate_cert
-            return $?
-            ;;
-    esac
-
-    # 自动扫描
-    scan_certs
-    if ((${#FOUND_CERTS[@]} > 0)); then
-        echo "  检测到已有证书:" >&2
-        local i=1 usable=()
-        for pair in "${FOUND_CERTS[@]}"; do
-            f="${pair%%|*}"; k="${pair#*|}"; k="${k%%|*}"; lbl="${pair##*|}"
-            if [[ -n "$k" && -f "$k" ]] && cert_not_expired "$f"; then
-                echo "    $i) $(extract_cert_domain "$f") (有密钥, 来源: $lbl)" >&2
-                [[ -z "$default_choice" ]] && default_choice="$i"
-                usable+=("$i|$f|$k")
-            else
-                echo "    $i) $(extract_cert_domain "$f") (无密钥或已过期, 忽略)" >&2
-            fi
-            ((i++))
-        done
-        echo "    $i) 手动输入路径" >&2
-        echo "    $((i+1))) 生成自签证书" >&2
-        printf "  选择 (默认 ${default_choice:-自签}): " >&2
-        read -r choice
-        choice=$(clean_input "$choice")
-
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice < i )); then
-            :
-        elif [[ -n "$default_choice" ]]; then
-            choice="$default_choice"
-        fi
-
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice < i )); then
-            for pair in "${usable[@]}"; do
-                if [[ "${pair%%|*}" == "$choice" ]]; then
-                    CERT_FILE="${pair#*|}"; CERT_FILE="${CERT_FILE%%|*}"
-                    KEY_FILE="${pair##*|}"
-                    CERT_DOMAIN=$(extract_cert_domain "$CERT_FILE")
-                    if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
-                    print_ok "使用证书: $CERT_DOMAIN (crt=$CERT_FILE key=$KEY_FILE)"
-                    return 0
-                fi
-            done
-        fi
-
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice == i )); then
-            printf "  证书 crt 路径: " >&2; read -r f
-            CERT_FILE=$(clean_input "$f")
-            printf "  证书 key 路径: " >&2; read -r f
-            KEY_FILE=$(clean_input "$f")
-            if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
-                cert_not_expired "$CERT_FILE" || { print_error "证书已过期"; return 1; }
-                CERT_DOMAIN=$(extract_cert_domain "$CERT_FILE")
-                if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
-                print_ok "使用手动证书: $CERT_DOMAIN (crt=$CERT_FILE)"
-                return 0
-            fi
-            print_error "证书路径无效, 退回自签"
-            generate_cert
-            return $?
-        fi
-        generate_cert
-        return $?
-    fi
-
-    print_warn "未扫描到任何可用证书"
-    generate_cert
-}
 
 # ================================
 # 证书指纹 (hex)
 # ================================
-calc_pin() {
-    local cert="$1"
-    CERT_PIN=""
-    [[ -s "$cert" ]] || return 0
-    CERT_PIN=$(openssl x509 -in "$cert" -outform der 2>/dev/null | sha256sum | awk '{print tolower($1)}')
-    [[ "$CERT_PIN" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]] && CERT_PIN=""
-}
 
 
 # ================================

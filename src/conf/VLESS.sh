@@ -219,24 +219,6 @@ safe_read_port() {
 # ================================
 # 自动生成自签证书（兜底用）
 # ================================
-generate_cert() {
-    local domain="$1"
-
-    CERT_FILE="$CERT_DIR/cert-$domain.crt"
-    KEY_FILE="$CERT_DIR/key-$domain.key"
-
-    [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]] && return
-
-    print_info "生成自签证书: $domain"
-
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$KEY_FILE" \
-        -out "$CERT_FILE" \
-        -days 365 \
-        -subj "/CN=$domain" >/dev/null 2>&1
-
-    print_ok "证书生成成功"
-}
 
 # ================================
 # smux 档位集中定义 (web/video/download)
@@ -982,95 +964,6 @@ gen_mtls_cert() {
 #   3) 自签证书 (兜底)
 # 输出: CERT_FILE / KEY_FILE / CERT_DOMAIN
 # ================================
-ask_cert() {
-    local yn domain
-
-    echo "  证书来源:" >&2
-    echo "  1) 已有证书 (cf-manager Origin CA / ssl.sh, 双路径检测)" >&2
-    echo "  2) 现在申请 (cf-manager Origin CA 优先, 失败退 ssl.sh)" >&2
-    echo "  3) 自签证书 (内测/无域名兜底)" >&2
-    printf "  选择 (默认1): " >&2
-    read -r yn
-    case "$(clean_input "$yn")" in
-        2)
-            # 先获取域名
-            printf "请输入要申请证书的域名: " >&2
-            read -r domain
-            domain=$(clean_input "$domain" | tr '[:upper:]' '[:lower:]')
-            [[ -z "$domain" ]] && { print_error "域名不能为空"; generate_cert "$M_NO_DOMAIN"; CERT_DOMAIN="$M_NO_DOMAIN"; return; }
-            # 优先 cf-manager 签 Origin CA (15年, 走CF回源正确选择); 失败退 ssl.sh
-            print_info "通过 cf-manager 申请 Origin CA 证书: $domain ..."
-            if cfmgr && "$CFMGR" cert issue "$domain" 2>/dev/null; then
-                local ocrt="/root/catmi/cloudflare/certs/$domain.crt"
-                local okey="/root/catmi/cloudflare/certs/$domain.key"
-                if [[ -f "$ocrt" && -f "$okey" ]]; then
-                    CERT_FILE="$ocrt"; KEY_FILE="$okey"; CERT_DOMAIN="$domain"
-                    print_ok "Origin CA 证书已就绪: $domain"
-                    return 0
-                fi
-            fi
-            print_warn "cf-manager 签 Origin CA 失败, 退回 ssl.sh (acme.sh)..."
-            fetch_script "ssl.sh" "$CFMGR_DIR/ssl.sh" && bash "$CFMGR_DIR/ssl.sh" || {
-                print_error "ssl.sh 运行失败, 退回自签"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-                return
-            }
-            # ssl.sh 产出 /root/catmi/<域名>.crt/.key; 让用户输入域名
-            printf "请输入刚申请的域名: " >&2
-            read -r domain
-            domain=$(clean_input "$domain" | tr '[:upper:]' '[:lower:]')
-            if [[ -f "/root/catmi/$domain.crt" && -f "/root/catmi/$domain.key" ]]; then
-                CERT_FILE="/root/catmi/$domain.crt"
-                KEY_FILE="/root/catmi/$domain.key"
-                CERT_DOMAIN="$domain"
-            else
-                print_error "未找到 /root/catmi/$domain.crt, 退回自签"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-            fi
-            ;;
-        3)
-            generate_cert "$M_NO_DOMAIN"
-            CERT_DOMAIN="$M_NO_DOMAIN"
-            ;;
-        *)
-            # 默认1: 已有证书 (双路径: cf-manager Origin CA 优先 + 原 /root/catmi)
-            shopt -s nullglob
-            local existing=()
-            local c
-            for c in "/root/catmi/cloudflare/certs"/*.crt "/root/catmi"/*.crt; do
-                [[ -f "$c" ]] && existing+=("$c")
-            done
-            if [[ ${#existing[@]} -gt 0 ]]; then
-                echo "  检测到已有证书:" >&2
-                local i=0 d
-                for c in "${existing[@]}"; do
-                    i=$((i+1))
-                    d=$(basename "$c" .crt)
-                    echo "    $i) $d" >&2
-                done
-                printf "  选择编号 (默认1): " >&2
-                read -r yn
-                yn=$(clean_input "$yn")
-                [[ "$yn" =~ ^[0-9]+$ && "$yn" -ge 1 && "$yn" -le ${#existing[@]} ]] || yn=1
-                local chosen="${existing[$((yn-1))]}"
-                CERT_FILE="$chosen"
-                KEY_FILE="${chosen%.crt}.key"
-                CERT_DOMAIN=$(basename "$chosen" .crt | sed 's/cert-//; s/\.crt//')
-                if [[ ! -f "$KEY_FILE" ]]; then
-                    print_error "缺少私钥 ${CERT_FILE%.crt}.key, 退回自签"
-                    generate_cert "$M_NO_DOMAIN"
-                    CERT_DOMAIN="$M_NO_DOMAIN"
-                fi
-            else
-                print_info "无已有证书, 使用自签"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-            fi
-            ;;
-    esac
-}
 
 # ================================
 # v2 修复: 从入站配置提取前端/接入域名

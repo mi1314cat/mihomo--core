@@ -266,24 +266,6 @@ render_client_opts() {
 # ================================
 # 自动生成证书
 # ================================
-generate_cert() {
-    local domain="$1"
-
-    CERT_FILE="$CERT_DIR/cert-$domain.crt"
-    KEY_FILE="$CERT_DIR/key-$domain.key"
-
-    [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]] && return
-
-    print_info "生成自签证书: $domain"
-
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$KEY_FILE" \
-        -out "$CERT_FILE" \
-        -days 365 \
-        -subj "/CN=$domain" >/dev/null 2>&1
-
-    print_ok "证书生成成功"
-}
 
 # ================================
 # smux 档位集中定义 (web/video/download)

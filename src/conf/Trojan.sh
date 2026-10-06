@@ -128,24 +128,6 @@ safe_read_port() {
 # ================================
 # 自动生成自签证书（兜底用）
 # ================================
-generate_cert() {
-    local domain="$1"
-
-    CERT_FILE="$CERT_DIR/cert-$domain.crt"
-    KEY_FILE="$CERT_DIR/key-$domain.key"
-
-    [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]] && return
-
-    print_info "生成自签证书: $domain"
-
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$KEY_FILE" \
-        -out "$CERT_FILE" \
-        -days 365 \
-        -subj "/CN=$domain" >/dev/null 2>&1
-
-    print_ok "证书生成成功"
-}
 
 # ================================
 # smux 档位集中定义 (web/video/download)
@@ -549,90 +531,6 @@ PY
 #   4) 自动优选域名 + 自签证书 (调用统一 domains.sh)
 # 输出: CERT_FILE / KEY_FILE / CERT_DOMAIN
 # ================================
-ask_cert() {
-    local yn domain
-
-    echo "  证书来源:" >&2
-    echo "  1) 已有证书 (ssl.sh 申请过, /root/catmi/ 下)" >&2
-    echo "  2) 现在申请 (调用 ssl.sh)" >&2
-    echo "  3) 自签证书 (内测/无域名兜底)" >&2
-    echo "  4) 自动优选域名 + 自签证书 (统一域名优选 domains.sh)" >&2
-    printf "  选择 (默认1): " >&2
-    read -r yn
-    case "$(clean_input "$yn")" in
-        2)
-            print_info "调用 ssl.sh 申请证书..."
-            fetch_script "ssl.sh" "$CFMGR_DIR/ssl.sh" && bash "$CFMGR_DIR/ssl.sh" || {
-                print_error "ssl.sh 运行失败, 退回自签"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-                return
-            }
-            # ssl.sh 产出 /root/catmi/<域名>.crt/.key; 让用户输入域名
-            printf "请输入刚申请的域名: " >&2
-            read -r domain
-            domain=$(clean_input "$domain" | tr '[:upper:]' '[:lower:]')
-            if [[ -f "/root/catmi/$domain.crt" && -f "/root/catmi/$domain.key" ]]; then
-                CERT_FILE="/root/catmi/$domain.crt"
-                KEY_FILE="/root/catmi/$domain.key"
-                CERT_DOMAIN="$domain"
-            else
-                print_error "未找到 /root/catmi/$domain.crt, 退回自签"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-            fi
-            ;;
-        3)
-            generate_cert "$M_NO_DOMAIN"
-            CERT_DOMAIN="$M_NO_DOMAIN"
-            ;;
-        4)
-            # 统一域名优选: 留空逻辑的自动分支, 与 Reality.sh 同一 domains.sh
-            print_info "调用统一域名优选 domains.sh..."
-            local auto_domain
-            if auto_domain=$(auto_website); then
-                generate_cert "$auto_domain"
-                CERT_DOMAIN="$auto_domain"
-            else
-                print_error "域名优选失败, 退回自签 cloudflare.com"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-            fi
-            ;;
-        *)
-            # 默认1: 已有证书
-            shopt -s nullglob
-            local existing=("/root/catmi"/*.crt)
-            if [[ ${#existing[@]} -gt 0 ]]; then
-                echo "  检测到已有证书:" >&2
-                local i=0
-                for c in "${existing[@]}"; do
-                    i=$((i+1))
-                    local d
-                    d=$(basename "$c" .crt)
-                    echo "    $i) $d" >&2
-                done
-                printf "  选择编号 (默认1): " >&2
-                read -r yn
-                yn=$(clean_input "$yn")
-                [[ "$yn" =~ ^[0-9]+$ && "$yn" -ge 1 && "$yn" -le ${#existing[@]} ]] || yn=1
-                local chosen="${existing[$((yn-1))]}"
-                CERT_FILE="$chosen"
-                KEY_FILE="${chosen%.crt}.key"
-                CERT_DOMAIN=$(basename "$chosen" .crt)
-                if [[ ! -f "$KEY_FILE" ]]; then
-                    print_error "缺少私钥 ${CERT_FILE%.crt}.key, 退回自签"
-                    generate_cert "$M_NO_DOMAIN"
-                    CERT_DOMAIN="$M_NO_DOMAIN"
-                fi
-            else
-                print_info "无已有证书, 使用自签"
-                generate_cert "$M_NO_DOMAIN"
-                CERT_DOMAIN="$M_NO_DOMAIN"
-            fi
-            ;;
-    esac
-}
 
 # ================================
 # 新增 Trojan 配置
