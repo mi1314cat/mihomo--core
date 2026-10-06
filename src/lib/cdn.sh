@@ -140,7 +140,16 @@ cdn_bind_by_domain() { # <域名>
     awk -F'\t' -v d="${1:-}" '$2 == d { print }' "$CDN_BIND_FILE"
 }
 
-cdn_bind_count() { cdn_bind_init; grep -c . "$CDN_BIND_FILE" 2>/dev/null || echo 0; }
+# 注意: **不能**写成 grep -c . file || echo 0 ——
+# grep -c 在无匹配时**同时**输出 "0" 并返回退出码 1, 于是 || 又追加一个 0,
+# 结果拿到的是 "0\n0", 之后 (( ... )) 直接报 syntax error。
+# 必须先捕获再兜底, 不能靠 || 拼接。
+cdn_bind_count() {
+    cdn_bind_init
+    local n
+    n=$(grep -c . "$CDN_BIND_FILE" 2>/dev/null) || true
+    printf '%s' "${n:-0}"
+}
 
 # =============================================================
 # 四、渲染 location 片段
@@ -381,12 +390,46 @@ cdn_node_unregister() { # <tag>
     IFS=$'\t' read -r _ dom site _ _ _ <<< "$line"
     print_info "该节点绑定了 CDN 回源 ($dom), 同步清理 Nginx..."
     cdn_bind_del "$tag"
-    left=$(cdn_bind_by_domain "$dom" | grep -c . 2>/dev/null || echo 0)
+    # 同上: 先捕获再兜底, 不能 grep -c ... || echo 0
+    left=$(cdn_bind_by_domain "$dom" | grep -c . 2>/dev/null) || true
+    left=${left:-0}
     if (( left > 0 )); then
         cdn_apply_domain "$dom" "$site"
     else
         cdn_remove_domain "$dom" "$site"
     fi
+}
+
+# =============================================================
+# 五之二、节点生命周期钩子
+#
+# 绑定键统一用**节点片段文件名去掉扩展名** (如 vless-01 / trojan-02)。
+# 原因: 创建流程知道 (PROTO + 序号), 删除流程也只知道这个 ——
+# 两边唯一都拿得到的稳定标识就是它。用显示用的节点名当键会失败,
+# 因为节点名改过之后就对不上了。
+# =============================================================
+cdn_bind_node() { # <管理协议> <序号> <域名> <站点文件> <传输> <路径> <端口>
+    cdn_bind_add "${1}-${2}" "$3" "$4" "$5" "$6" "$7"
+}
+
+# 从节点片段里读回它的传输与路径, 供删除时兜底 (片段是唯一真源)
+cdn_node_meta_from_fragment() { # <片段文件> -> stdout: 传输|路径
+    local f="${1:-}"
+    [[ -f "$f" ]] || { printf '||'; return 0; }
+    local tr path
+    if grep -q 'xhttp-config:' "$f"; then
+        tr="xhttp"
+        path=$(awk '/xhttp-config:/{f=1;next} f && $1=="path:"{print $2; exit}' "$f")
+    elif grep -qE '^[[:space:]]*ws-path:' "$f"; then
+        tr="ws"; path=$(awk '/^[[:space:]]*ws-path:/{print $2; exit}' "$f")
+    elif grep -qE '^[[:space:]]*grpc-service-name:' "$f"; then
+        tr="grpc"; path=$(awk '/^[[:space:]]*grpc-service-name:/{print $2; exit}' "$f")
+    elif grep -qE '^[[:space:]]*# h2-path:' "$f"; then
+        tr="h2"; path=$(awk '/^[[:space:]]*# h2-path:/{print $3; exit}' "$f")
+    else
+        tr="tcp"; path=""
+    fi
+    printf '%s|%s' "$tr" "$path"
 }
 
 # =============================================================

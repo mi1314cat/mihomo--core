@@ -408,6 +408,10 @@ delete_config() {
         return
     fi
 
+    # 删除节点时同步清理它的 Nginx 回源配置并 reload。
+    # 键用片段文件名 (vless-01 / trojan-02), 与创建时登记的一致;
+    # 没有 CDN 绑定的节点这里直接返回 0, 不会有副作用。
+    cdn_node_unregister "$(basename "$IN_FILE" .yaml)" 2>/dev/null || true
     rm -f "$IN_FILE" "$OUT_FILE" "$SHARE_FILE"
 
     # 删除对应 public-key

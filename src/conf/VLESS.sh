@@ -716,14 +716,39 @@ render_nginx_conf() {
     NGINX_FILE="$OUT_DIR/${PROTO}_nginx-$idx.conf"
     case "$VLESS_TRANSPORT" in
         xhttp)
+        # ★ xHTTP 与其它传输不同: 必须用 grpc_pass, **不能**用 proxy_pass。
+        #
+        #   原因: xHTTP 默认伪装成 gRPC —— 请求带 Content-Type: application/grpc
+        #   并对上行做 gRPC 分帧 (上游为此专门加过 PR, 目的就是穿透"会缓存
+        #   上行请求"的中间盒)。nginx 只有 grpc_pass 按 gRPC 语义转发;
+        #   用 proxy_pass 会因逐请求缓冲而卡死上行 —— 表现为"握手能过、
+        #   一传数据就断", 且日志里看不出原因。
+        #
+        #   代价 (Xray 作者原话): 「grpc_pass 反代 xhttp 时不支持 http/1.1,
+        #   要支持请用 proxy_pass」=> 本模板只对 HTTP/2 客户端有效。
+        #
+        #   另: 必须确认 Cloudflare 缓存规则**排除该 path**, 否则会被缓存。
         path="$XHTTP_PATH"
+        [[ "$path" != /* ]] && path="/$path"   # 路径要恰好一个前导斜杠
         cat > "$NGINX_FILE" <<EOF
 # ${PROTO}-$idx (XHTTP, 端口 $VLESS_PORT)
-# 放入 nginx conf.d 站点 server{} 块内即可 (回源走 TLS)
+# 放入 nginx conf.d 站点 server{} 块内即可。
+# 【必须是 grpc_pass】xhttp 默认伪装成 gRPC, 用 proxy_pass 会卡死上行。
+# 【依赖 server{}/http{} 层】client_max_body_size 0;
+#                          proxy_request_buffering off;
+#                          proxy_buffering off;
+#   少了它们会出现"握手能过、一传数据就断"或 413。
 location $path {
-    proxy_ssl_server_name on;
-    proxy_pass https://127.0.0.1:$VLESS_PORT;
-    proxy_http_version 1.1;
+    grpc_buffer_size 16k;
+    grpc_socket_keepalive on;
+    grpc_read_timeout 1h;
+    grpc_send_timeout 1h;
+    grpc_set_header Connection "";
+    grpc_set_header Host \$host;
+    grpc_set_header X-Real-IP \$remote_addr;
+    grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    grpc_set_header X-Forwarded-Proto \$scheme;
+    grpc_pass grpcs://127.0.0.1:$VLESS_PORT;
 }
 EOF
         ;;
@@ -856,6 +881,20 @@ nginx_insert_menu() {
 
     python3 "$apply" --domain "$CERT_DOMAIN" --file "$f" \
             --block "$frag" --nginx "$chk" 2>&1 | sed 's/^/    /' >&2
+    local rc=${PIPESTATUS[0]}
+    if (( rc != 0 )); then
+        print_error "写入失败 (退出码 $rc) —— nginx_apply.py 已自动回滚, 站点未被改动"
+        return $rc
+    fi
+
+    # 登记「节点 -> 域名/站点」绑定。
+    # 没有这一步, 删除节点时就找不到它当初写进了哪个站点、哪一段,
+    # 也就无法回删。键用片段文件名 (vless-01), 与 delete_config 一致。
+    local meta tr path
+    meta=$(cdn_node_meta_from_fragment "$IN_FILE" 2>/dev/null)
+    tr="${meta%%|*}"; path="${meta#*|}"
+    cdn_bind_node "$PROTO" "$INDEX" "$CERT_DOMAIN" "$f" "$tr" "$path" "${VLESS_PORT:-}"
+    print_ok "已登记 CDN 绑定 —— 删除该节点时会自动回删这段 Nginx 配置并 reload"
 }
 
 # 生成 WebSocket 升级所需的 map 块。
@@ -1215,6 +1254,10 @@ delete_config() {
     fi
 
     # 删除 VLESS 相关文件
+    # 删除节点时同步清理它的 Nginx 回源配置并 reload。
+    # 键用片段文件名 (vless-01 / trojan-02), 与创建时登记的一致;
+    # 没有 CDN 绑定的节点这里直接返回 0, 不会有副作用。
+    cdn_node_unregister "$(basename "$IN_FILE" .yaml)" 2>/dev/null || true
     rm -f "$IN_FILE" "$OUT_FILE" "$SHARE_FILE"
 
     # VLESS 无 Reality, 无 public-key 文件需要清理

@@ -431,6 +431,11 @@ delete_config() {
             old_cert=$(grep -m1 -oE '(certificate|ca):[[:space:]]*[^[:space:]#]+' \
                           "$CONF_DIR/${PROTO}-$num.yaml" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//')
         fi
+        # 删除节点时同步清理它的 Nginx 回源配置并 reload。
+        # 键用片段文件名 (tuicv5-01), 与创建时登记的一致;
+        # 没有 CDN 绑定的节点这里直接返回 0, 不会有副作用。
+        cdn_node_unregister "$(basename "$IN_FILE" .yaml)" 2>/dev/null || true
+
         rm -f "$CONF_DIR/${PROTO}-$num.yaml" \
               "$OUT_DIR/${PROTO}_client-$num.yaml" \
               "$OUT_DIR/${PROTO}_share-$num.txt"
