@@ -1174,7 +1174,6 @@ kernel_probe() {   # $1=文件  $2=解包目标
     esac
     chmod +x "$out" 2>/dev/null
     [[ -s "$out" ]] || return 1
-    # 真跑 —— 这是唯一可靠的判据
     # 真跑 —— 这是唯一可靠的判据。
     #
     # 必须**先整体捕获再匹配**, 不能写成 "$out" -v 2>/dev/null | grep -qi mihomo:
