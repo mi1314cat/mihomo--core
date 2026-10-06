@@ -1099,18 +1099,36 @@ svc_menu() {
 }
 
 check_menu() {
-    print_title "配置检查"
-    print_info "1) 内核检查 (mihomo -t)"; cfg_check
-    print_info "2) 严格字段校验"; cfg_check_strict
-    print_info "3) 服务状态"; systemctl status "$CLI_SERVICE" --no-pager | head -8
-    print_info "4) 手动上传内核 (下载不通时用)"
-    printf "请选择: "; local c; read -r c
-    case "$c" in
-        1) cfg_check ;;
-        2) cfg_check_strict ;;
-        3) systemctl status "$CLI_SERVICE" --no-pager | head -8 ;;
-        4) kernel_upload_menu ;;
-    esac
+    local c
+    while true; do
+        print_title "配置检查"
+        # 这里原来是 `print_info "1) …"; cfg_check` —— 检查被写成了**打印菜单
+        # 的一部分**, 于是"进入配置检查"这个动作本身就会立刻把内核检查和严格
+        # 校验各跑一遍, 用户还没选就已经跑完了; 选完第 1 项再跑第二遍。
+        # 表现为"菜单一显示, 检查就已经跑了两遍", 且第一遍的输出挤在菜单中间。
+        # 菜单只负责列出选项, 检查必须在 case 分支里 —— 选哪项跑哪项。
+        ui_menu 1 "内核检查 (mihomo -t)"
+        ui_hint "只验语法与结构, 不检测端口冲突/占用 —— 那要看服务状态"
+        ui_menu 2 "严格字段校验 (本项目 validate.py, 比内核更严)"
+        ui_menu 3 "服务状态"
+        ui_menu 4 "手动上传内核 (下载不通时用)"
+        ui_menu 0 "返回"
+        echo >&2
+        printf "  ${CYAN}请选择${RESET}: " >&2
+        read -r c || { printf '\n' >&2; print_info "非交互环境, 已退出"; return 0; }
+        c=$(clean_input "$c")
+        case "$c" in
+            1) cfg_check ;;
+            2) cfg_check_strict ;;
+            3) systemctl status "$CLI_SERVICE" --no-pager | head -8 ;;
+            4) kernel_upload_menu ;;
+            0) return 0 ;;
+            *) ui_invalid "$c"; continue ;;
+        esac
+        echo >&2
+        printf "  ${DIM}按回车继续...${RESET}" >&2
+        read -r _ || true
+    done
 }
 
 # ---------- 手动上传内核 ----------
