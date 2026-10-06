@@ -168,23 +168,49 @@ cfg_check_strict() {
     python3 "$CLI_LIB/validate.py" --conf "$CLI_CONF"
 }
 
+# 配置回滚。
+#
+# 这里原本两处都写 `[[ -f "$bak" ]] && cp -f "$bak" ...`, 而 $bak 是
+# mktemp 建的 —— **它一定存在**。所以"原配置不存在"时, 回滚会把那个
+# 0 字节的空文件覆盖上去, 比回滚前更糟:
+#   * 下次生成前若有分支判 `-f config.yaml`, 会误以为"已经有配置了"
+#   * 内核直接报 configuration file ... is empty
+# 实测就是这么来的: 全新客户端第一次生成 -> 内核校验失败 -> 回滚 ->
+# config.yaml 变成空文件, 之后每次 -t 都失败。
+#
+# 正确做法是记住"到底备份没备份过", 没备份过就**删掉**这次写坏的配置。
+_cfg_rollback() {   # <备份文件> <是否有备份: 0/1>
+    local bak="${1:-}" had="${2:-0}"
+    if [[ "$had" -eq 1 && -n "$bak" && -f "$bak" ]]; then
+        cp -f "$bak" "$CLI_CONF/config.yaml"
+        print_info "已恢复到上一个可用配置"
+    else
+        rm -f "$CLI_CONF/config.yaml"
+        print_warn "本次生成前没有可用配置, 已清除这次写坏的 config.yaml"
+    fi
+    [[ -n "$bak" ]] && rm -f "$bak"
+    return 0
+}
+
 # 写配置 → 严格校验 → 内核校验 → 才重启; 任一步失败则回滚
 apply_change() {
-    local bak; bak=$(mktemp)
-    [[ -f "$CLI_CONF/config.yaml" ]] && cp -f "$CLI_CONF/config.yaml" "$bak"
+    # 只有真的存在旧配置时才建备份文件 —— 否则 mktemp 会留下一个空文件,
+    # 让回滚误以为"有东西可恢复"。
+    local bak="" had_bak=0
+    if [[ -f "$CLI_CONF/config.yaml" ]]; then
+        bak=$(mktemp) && cp -f "$CLI_CONF/config.yaml" "$bak" && had_bak=1
+    fi
 
-    if ! gen_config; then rm -f "$bak"; return 1; fi
+    if ! gen_config; then _cfg_rollback "$bak" "$had_bak"; return 1; fi
     if ! cfg_check_strict >/tmp/cfgstrict.log 2>&1; then
         cat /tmp/cfgstrict.log >&2
         print_error "严格字段校验未通过, 已回滚"
-        [[ -f "$bak" ]] && cp -f "$bak" "$CLI_CONF/config.yaml"
-        rm -f "$bak"; return 1
+        _cfg_rollback "$bak" "$had_bak"; return 1
     fi
     if ! "$CLI_BIN" -t -d "$CLI_CONF" >/tmp/cfgcheck.log 2>&1; then
         tail -5 /tmp/cfgcheck.log >&2
         print_error "内核配置检查未通过, 已回滚"
-        [[ -f "$bak" ]] && cp -f "$bak" "$CLI_CONF/config.yaml"
-        rm -f "$bak"; return 1
+        _cfg_rollback "$bak" "$had_bak"; return 1
     fi
 
     if svc_active; then
@@ -314,6 +340,30 @@ else:
     print("[WARN] 缺少 geoip 数据, 已跳过 GEOIP 规则", file=sys.stderr)
 rules.append("MATCH,PROXY")
 
+# DNS 策略也必须按"手上有没有 geosite"来定 —— 这里原先写死了
+#     geosite:cn,private / geosite:category-ads-all
+#
+# 上面 rules 那边很小心的判了 geosite_ok 并跳过 GEOSITE 规则, 注释还写着
+# "保证配置永远能加载"; 但**真正会触发下载 GeoSite.dat 的恰恰是这里**:
+# nameserver-policy 的 geosite: 键会让内核去加载 geosite 数据。
+#
+# 实测 (全新客户端, 机器访问不了 GitHub):
+#     [WARN] 缺少 geosite 数据, 已跳过 GEOSITE 规则      <- rules 判对了
+#     level=error msg="Can't find GeoSite.dat, start download"
+#     level=error msg="can't download GeoSite.dat: context deadline exceeded"
+#     configuration file .../config.yaml test failed      <- 配置还是加载不了
+# 然后触发回滚, 首次安装直接失败。
+#
+# 没有 geosite 时用域名后缀兜底: +.cn 覆盖国内域名, 不依赖任何 geo 库。
+ns_policy = {}
+if geosite_ok:
+    ns_policy["geosite:cn,private"] = ["https://dns.alidns.com/dns-query"]
+    # 广告在 DNS 层直接拒, 不让它离开本机。
+    # 路由层也有一份, 双层消费 (与 SB 的做法一致)。
+    ns_policy["geosite:category-ads-all"] = ["rcode://success"]
+else:
+    ns_policy["+.cn"] = ["https://dns.alidns.com/dns-query"]
+
 cfg = {
     "mixed-port": int(p_mixed),
     "allow-lan": lan,
@@ -385,12 +435,7 @@ cfg = {
         # 不设时默认为 false —— 这意味着 DNS 出站**不受路由规则影响**,
         # 写 rules: MATCH,PROXY 对 DNS 毫无作用, 加密 DNS 实际是直连出去的。
         "respect-rules": True,
-        "nameserver-policy": {
-            "geosite:cn,private": ["https://dns.alidns.com/dns-query"],
-            # 广告在 DNS 层直接拒, 不让它离开本机。
-            # 路由层也有一份, 双层消费 (与 SB 的做法一致)。
-            "geosite:category-ads-all": ["rcode://success"],
-        },
+        "nameserver-policy": ns_policy,
     },
     "sniffer": {
         "enable": True, "override-destination": True,
