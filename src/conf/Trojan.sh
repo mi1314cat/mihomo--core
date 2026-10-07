@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 拼分享链接时给 IPv6 套方括号 (env.sh 的 m_uri_host 局部别名)
+_uri_h() { m_uri_host "$1"; }
+
 # ================================
 # 彩色定义
 # ================================
@@ -196,10 +199,10 @@ render_share_link() {
     local tag
     if [[ "$TROJAN_MODE" = "reality" ]]; then
         tag="$(m_node_tag Trojan "$idx" reality)"
-        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=reality&sni=$REALITY_DEST&$transport_uri&fp=$CLIENT_FINGERPRINT&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#$tag"
+        echo "trojan://$PASSWORD@$(_uri_h "$LINK_IP"):$TROJAN_PORT?security=reality&sni=$REALITY_DEST&$transport_uri&fp=$CLIENT_FINGERPRINT&pbk=$REALITY_PUBLIC_KEY&sid=$REALITY_SHORT_ID#$tag"
     else
         tag="$(m_node_tag Trojan "$idx" tls)"
-        echo "trojan://$PASSWORD@$LINK_IP:$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&$transport_uri&fp=$CLIENT_FINGERPRINT#$tag"
+        echo "trojan://$PASSWORD@$(_uri_h "$LINK_IP"):$TROJAN_PORT?security=tls&sni=$CERT_DOMAIN&$transport_uri&fp=$CLIENT_FINGERPRINT#$tag"
     fi
 }
 

@@ -111,13 +111,10 @@ _local_addr() {
 }
 
 # IPv6 字面量必须写成 [addr], 否则 http://2a09::1:9443/ 解析不出来
+# 委托给 env.sh 的 m_uri_host —— 分享链接与服务地址用的是同一套规则,
+# 两份实现迟早漂移 (这次就差点漂了: 这里只管服务地址, 节点链接全裸着)。
 _share_host() {
-    local h="${1:-}"
-    [[ -n "$h" ]] || return 0
-    case "$h" in
-        *:*) printf '[%s]' "$h" ;;
-        *)   printf '%s' "$h" ;;
-    esac
+    m_uri_host "${1:-}"
 }
 
 _share_status() {   # 输出 中文状态

@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# 拼分享链接时给 IPv6 套方括号 (env.sh 的 m_uri_host 局部别名)
+_uri_h() { m_uri_host "$1"; }
 # TUICv5 管理脚本（独立子配置 + 客户端 + 订阅）
 # 子配置:   conf/config.d/tuicv5-XX.yaml
 # 客户端:   out/tuicv5_client-XX.yaml
@@ -351,7 +354,7 @@ $(render_tuic_proxy_opts)
       - h3
 EOF
 
-    echo "tuic://$uuid:$pass@$PUBLIC_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$index" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$(_uri_h "$PUBLIC_IP"):$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$index" > "$SHARE_FILE"
 
     print_ok "已创建子配置: $IN_FILE"
     print_ok "客户端文件: $OUT_FILE"
@@ -505,7 +508,7 @@ $(render_tuic_proxy_opts)
       - h3
 EOF
 
-    SHARE_LINK="tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$num"
+    SHARE_LINK="tuic://$uuid:$pass@$(_uri_h "$SERVER_IP"):$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$num"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     print_ok "客户端文件已重建：$num"
@@ -559,7 +562,7 @@ $(render_tuic_proxy_opts)
       - h3
 EOF
 
-    echo "tuic://$uuid:$pass@$SERVER_IP:$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$num" > "$SHARE_FILE"
+    echo "tuic://$uuid:$pass@$(_uri_h "$SERVER_IP"):$port?sni=$domain&alpn=h3&insecure=1&allowInsecure=1&congestion_control=$CC_PROFILE#TUICv5-$num" > "$SHARE_FILE"
 }
 
 # ================================

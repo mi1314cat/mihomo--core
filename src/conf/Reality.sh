@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 拼分享链接时给 IPv6 套方括号 (env.sh 的 m_uri_host 局部别名)
+_uri_h() { m_uri_host "$1"; }
+
 # ================================
 # 彩色定义
 # ================================
@@ -429,7 +432,7 @@ EOF
     # 写 Reality 分享链接
     # 同样用自检过的 $LINK_IP, 不用 install_info.env 里的 $link_ip —— 后者可能是
     # WARP/代理出口地址, 分享出去对方必然连不上。
-echo "vless://$UUID@$LINK_IP:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=$CLIENT_FP&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
+echo "vless://$UUID@$(_uri_h "$LINK_IP"):$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=$CLIENT_FP&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
 
     print_ok "Reality 配置生成成功"
     echo -e "编号: $index" >&2
@@ -547,7 +550,7 @@ $SMUX_BLOCK
 $(render_pkt_block)
 EOF
 
-    SHARE_LINK="vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$CLIENT_FP&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num"
+    SHARE_LINK="vless://$uuid@$(_uri_h "$SERVER_IP"):$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$CLIENT_FP&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num"
 
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
@@ -608,7 +611,7 @@ $SMUX_BLOCK
 $(render_pkt_block)
 EOF
 
-    echo "vless://$uuid@$SERVER_IP:$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$CLIENT_FP&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num" > "$SHARE_FILE"
+    echo "vless://$uuid@$(_uri_h "$SERVER_IP"):$port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sni&fp=$CLIENT_FP&pbk=$public_key&sid=$short_id&type=tcp#Reality-$num" > "$SHARE_FILE"
 }
 
 # ================================

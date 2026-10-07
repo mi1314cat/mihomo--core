@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 拼分享链接时给 IPv6 套方括号 (env.sh 的 m_uri_host 局部别名)
+_uri_h() { m_uri_host "$1"; }
+
 # ================================
 # 彩色定义
 # ================================
@@ -521,7 +524,7 @@ $SMUX_BLOCK
 EOF
 
     # 10. 写入分享链接
-echo "anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$index" > "$SHARE_FILE"
+echo "anytls://$PASSWORD@$(_uri_h "$LINK_IP"):$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$index" > "$SHARE_FILE"
 
     # 11. 输出信息
     print_ok "AnyTLS 配置生成成功"
@@ -674,7 +677,7 @@ $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key:
 $SMUX_BLOCK
 EOF
 
-    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
+    SHARE_LINK="anytls://$PASSWORD@$(_uri_h "$LINK_IP"):$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     print_ok "客户端文件已重建：$num2"
@@ -714,7 +717,7 @@ export_subscription() {
         SERVER_IP=$(m_server_ip)
         [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
 
-        SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
+        SHARE_LINK="anytls://$PASSWORD@$(_uri_h "$LINK_IP"):$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
 
 cat >> "$SUB_FILE" <<EOF
 
@@ -794,7 +797,7 @@ $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key:
 $SMUX_BLOCK
 EOF
 
-    SHARE_LINK="anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
+    SHARE_LINK="anytls://$PASSWORD@$(_uri_h "$LINK_IP"):$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT_FP#AnyTLS-$num2"
     echo "$SHARE_LINK" > "$SHARE_FILE"
 
     

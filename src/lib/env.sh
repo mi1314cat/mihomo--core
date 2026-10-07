@@ -154,6 +154,26 @@ m_load_env() {
 # =============================================================
 M_NO_DOMAIN="self-signed.invalid"
 
+# URI 里的主机字面量 —— IPv6 必须加方括号。
+#
+# vless://uuid@2001:db8::1:443 里的冒号和端口的冒号混在一起, 客户端根本解析
+# 不出主机地址, 结果就是导入失败或连不上。RFC 3986 规定 IPv6 字面量写成
+# [addr]。
+#
+# ⚠ 只在**拼分享链接**时套这个 —— 客户端 YAML 里的 server: 要用裸地址,
+#   mihomo 不接受 [2001:db8::1] 这种写法。所以变量本身保持裸值, 在拼串的
+#   那一刻套壳; 早先有人想把 LINK_IP 整个变成带括号的值, 结果 YAML 的
+#   server: 也跟着带了括号, 节点直接连不上。
+m_uri_host() {
+    local h="${1:-}"
+    [[ -n "$h" ]] || return 0
+    case "$h" in
+        \[*\]) printf '%s' "$h" ;;   # 已经套过壳的别套两遍
+        *:*)   printf '[%s]' "$h" ;;
+        *)     printf '%s' "$h" ;;
+    esac
+}
+
 m_client_host() {
     local cert_domain="${1:-}"
     if [[ -n "$cert_domain" && "$cert_domain" != "$M_NO_DOMAIN" && "$cert_domain" != "cloudflare.com" ]]; then

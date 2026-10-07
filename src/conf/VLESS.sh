@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 拼分享链接时给 IPv6 套方括号 (env.sh 的 m_uri_host 局部别名)
+_uri_h() { m_uri_host "$1"; }
+
 # ================================
 # VLESS 内核服务端生成脚本 (WS / XHTTP / gRPC / HTTP2 / 裸TCP 五选一 + TLS)
 # 基于 Trojan.sh 框架:
@@ -372,11 +375,11 @@ render_share_link() {
         #   (server 填 CDN 域名); 直连档位用自己分配的端口。
     local tag="${NODE_TAG:-$(m_node_tag VLESS "$INDEX" tls)}"
     case "$VLESS_TRANSPORT" in
-        xhttp) SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#$tag" ;;
-        grpc)  SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#$tag" ;;
-        h2)    SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#$tag" ;;
-        tcp)   SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#$tag" ;;
-        *)     SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#$tag" ;;
+        xhttp) SHARE_LINK="vless://$UUID@$(_uri_h "$CLIENT_HOST"):$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#$tag" ;;
+        grpc)  SHARE_LINK="vless://$UUID@$(_uri_h "$CLIENT_HOST"):$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#$tag" ;;
+        h2)    SHARE_LINK="vless://$UUID@$(_uri_h "$CLIENT_HOST"):$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#$tag" ;;
+        tcp)   SHARE_LINK="vless://$UUID@$(_uri_h "$CLIENT_HOST"):$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#$tag" ;;
+        *)     SHARE_LINK="vless://$UUID@$(_uri_h "$CLIENT_HOST"):$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#$tag" ;;
     esac
 }
 

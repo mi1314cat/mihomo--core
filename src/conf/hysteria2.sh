@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# 拼分享链接时给 IPv6 套方括号 (env.sh 的 m_uri_host 局部别名)
+_uri_h() { m_uri_host "$1"; }
 # Hysteria2 管理脚本（M 内核 / mihomo, 合并主配置模式, 删除同步）
 # 说明：
 # - 子配置保存在 conf/config.d/hysteria2-XX.yaml
@@ -471,7 +474,7 @@ hy2_link() {
     else
         obfs_q="&obfs=none"
     fi
-    echo "hysteria2://$pw@$ip:$port?$q$obfs_q#HY2-$num"
+    echo "hysteria2://$pw@$(_uri_h "$ip"):$port?$q$obfs_q#HY2-$num"
 }
 
 # ================================
