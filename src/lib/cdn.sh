@@ -161,6 +161,56 @@ cdn_bind_add() { # <tag> <域名> <站点文件> <传输> <路径> <端口>
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tag" "$dom" "$site" "$tr" "$path" "$port" >> "$CDN_BIND_FILE"
 }
 
+# 剔除**孤儿绑定** —— tag 在绑定表里, 但 conf/config.d/<tag>.yaml 已不存在。
+#
+# ★ 为什么必须有 (2026-10-07 新增)
+#
+#   绑定表原本只增不减: `all.sh --force` 重建时节点可能从 vless-01 挪到
+#   vless-03, 但 vless-01 那一行还留在 cdn_bindings.tsv 里。于是 nginx 里留下
+#   一条 `location <旧路径>` → `grpc_pass grpc://127.0.0.1:<旧端口>`, 而那个
+#   端口**已经没有节点在监听**。
+#
+#   当下无害 (回源直接失败)。但端口号会被后续节点复用 —— 一旦复用, 这条残留
+#   location 就会把流量转给**另一个节点**, 且没有任何报错。这正是用户担心的
+#   "会不会删错"的一个真实变体。
+#
+#   实测: 全量重建后绑定表里 vless-01 (端口 20000) 与 vless-03 (端口 20011)
+#   并存, 而 20000 已无监听。
+#
+#   判据用**片段文件是否存在**, 不用"端口是否在监听" —— 端口可能被别的协议
+#   正常占用, 那样反而会误判成"还活着"。
+#
+#   纯 bash 实现: 每个绑定 fork 一次 `test -f`, 绑定数是几十量级, 开销可忽略;
+#   但为了避免 N 次 fork, 先把目录列出来再比对。
+cdn_bind_prune_orphan() { # [片段目录] -> 打印被剔除的 tag (每行一个)
+    cdn_bind_init
+    local dir="${1:-$CONF_DIR}"
+    [[ -d "$dir" && -s "$CDN_BIND_FILE" ]] || return 0
+    local -a have=() tag
+    while IFS= read -r f; do have+=("$(basename "$f" .yaml)"); done < <(
+        find "$dir" -maxdepth 1 -name '*.yaml' -type f 2>/dev/null)
+    (( ${#have[@]} > 0 )) || return 0
+    # 打成 "tag\n" 的查找串, 用 grep -qxF 精确整行匹配 (避免 vless-1 命中 vless-11)
+    local needle; needle=$(printf '%s\n' "${have[@]}")
+    local tmp; tmp=$(mktemp)
+    local -a gone=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        tag="${line%%$'\t'*}"
+        if ! printf '%s\n' "$needle" | grep -qxF -- "$tag"; then
+            gone+=("$tag")
+        else
+            printf '%s\n' "$line" >> "$tmp"
+        fi
+    done < "$CDN_BIND_FILE"
+    if (( ${#gone[@]} > 0 )); then
+        mv "$tmp" "$CDN_BIND_FILE"
+        printf '%s\n' "${gone[@]}"
+    fi
+    rm -f "$tmp"
+    return 0
+}
+
 cdn_bind_del() { # <tag>
     cdn_bind_init
     local tag="${1:-}" tmp

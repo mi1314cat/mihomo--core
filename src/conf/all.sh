@@ -1945,6 +1945,16 @@ _all_cdn_wire() {
     printf "     ${DIM}CDN 回源站点: %s${RESET}\n" "$site" >&2
 
     cdn_bind_init
+    # 先剔除孤儿绑定 (片段已被 --force 重建冲掉的旧 tag)。
+    # 不做这一步的话, nginx 里会留下指向已废弃端口的 location, 而那个端口
+    # 日后被别的节点复用时就会把流量转错节点 —— 见 cdn_bind_prune_orphan 注释。
+    local pruned
+    pruned=$(cdn_bind_prune_orphan "$CONF_DIR")
+    if [[ -n "$pruned" ]]; then
+        printf "     ${DIM}清理孤儿绑定 (片段已不存在): %s${RESET}\n" \
+            "$(printf '%s' "$pruned" | tr '\n' ' ')" >&2
+    fi
+
     for f in "$CONF_DIR"/*.yaml; do
         [[ -f "$f" ]] || continue
         grep -qiE '^#.*(CDN|Cloudflare)' "$f" 2>/dev/null || continue

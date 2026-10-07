@@ -1,8 +1,8 @@
 # mihomo--core 项目验收状态
 
 > 验收日期：2026-10-07
-> 验收环境：RN = `<RN_IP>`（Debian 13 / x86_64，远端服务端）
-> 　　　　　CC = `<CC_IP>`（Armbian / aarch64，本地客户端）
+> 验收环境：<SERVER_ALIAS> = `<RN_IP>`（Debian 13 / x86_64，远端服务端）
+> 　　　　　<CLIENT_ALIAS> = `<CC_IP>`（<CLIENT_OS> / aarch64，本地客户端）
 > 内核版本：Mihomo Meta **v1.19.32**（两端一致）
 > 提交：`598a0fa`（本次验收修的 1 个真 bug 已在本地仓库提交）
 
@@ -10,7 +10,7 @@
 
 | 标记 | 含义 |
 |---|---|
-| ✅ DONE | 已实现，且**双端实测通过**（RN 起服务 → CC 拉订阅 → 真实代理请求成功） |
+| ✅ DONE | 已实现，且**双端实测通过**（<SERVER_ALIAS> 起服务 → <CLIENT_ALIAS> 拉订阅 → 真实代理请求成功） |
 | 🟡 PARTIAL | 代码存在，但只完成一部分，或仅单端可验证 |
 | 🔴 TODO | 确实没做 |
 | ⚠️ BLOCKED | 因 mihomo 内核或外部环境等客观原因无法完成 |
@@ -21,19 +21,19 @@
 
 「能生成配置」不等于「能用」。本次验收用了一条**不可伪造的证据链**：
 
-1. **CC 自己没有外网**。CC 直连 `api.ipify.org` 三次全部为空 —— 这排除了「客户端本地直连」这种假阳性。
-2. **RN 的出口 IP 是 `<RN_EGRESS_IP>`**（经 WARP 换过的地址，与 RN 公网 IP `<RN_IP>` 不同）。
-3. 因此在 CC 上**只要拿到 `<RN_EGRESS_IP>`，就必然是流量走了 CC → RN 节点 → RN 出口 → 互联网**，没有第二种解释。
-4. 逐节点测试：把 CC 的 `PROXY` 选择组切到该节点，再经 `127.0.0.1:7890` 发真实 HTTPS 请求比对出口 IP。
+1. **<CLIENT_ALIAS> 自己没有外网**。<CLIENT_ALIAS> 直连 `api.ipify.org` 三次全部为空 —— 这排除了「客户端本地直连」这种假阳性。
+2. **<SERVER_ALIAS> 的出口 IP 是 `<RN_EGRESS_IP>`**（经 WARP 换过的地址，与 <SERVER_ALIAS> 公网 IP `<RN_IP>` 不同）。
+3. 因此在 <CLIENT_ALIAS> 上**只要拿到 `<RN_EGRESS_IP>`，就必然是流量走了 <CLIENT_ALIAS> → <SERVER_ALIAS> 节点 → <SERVER_ALIAS> 出口 → 互联网**，没有第二种解释。
+4. 逐节点测试：把 <CLIENT_ALIAS> 的 `PROXY` 选择组切到该节点，再经 `127.0.0.1:7890` 发真实 HTTPS 请求比对出口 IP。
 5. 延迟用项目自带的正确接口（`/group/<组>/delay`）。注意 `/proxies/<节点>/delay` 对 provider 节点返回 404，项目代码里已有注释记录该坑，不是节点故障。
 
 ---
 
 ## 二、协议完成表
 
-### 2.1 覆盖矩阵（RN 实跑 `all.sh --quick --force`，19/19 生成成功）
+### 2.1 覆盖矩阵（<SERVER_ALIAS> 实跑 `all.sh --quick --force`，19/19 生成成功）
 
-| 协议 | 传输 × 安全 | RN 生成 | RN 监听 | CC 拉取 | CC 实连 | 状态 |
+| 协议 | 传输 × 安全 | <SERVER_ALIAS> 生成 | <SERVER_ALIAS> 监听 | <CLIENT_ALIAS> 拉取 | <CLIENT_ALIAS> 实连 | 状态 |
 |---|---|---|---|---|---|---|
 | VLESS | Reality (TCP/Vision) | ✅ | ✅ | ✅ | ✅ 212ms | ✅ DONE |
 | VLESS | Reality + gRPC | ✅ | ✅ | ✅ | ✅ 203ms | ✅ DONE |
@@ -71,7 +71,7 @@
 
 ### 2.3 未覆盖但内核支持（本轮未做，非故障）
 
-- gRPC + CDN、h2 + CDN 档位：代码支持（`CDN_TRANSPORTS` 含 `grpc`/`h2`），但 RN 上没有 gRPC 节点的 CDN 绑定可测。
+- gRPC + CDN、h2 + CDN 档位：代码支持（`CDN_TRANSPORTS` 含 `grpc`/`h2`），但 <SERVER_ALIAS> 上没有 gRPC 节点的 CDN 绑定可测。
 - mTLS / ECH / smux 档位：代码存在，未逐项做双端实测。
 
 ---
@@ -80,7 +80,7 @@
 
 | 功能 | 状态 | 验证方式 |
 |---|---|---|
-| 一键安装（服务端/客户端） | ✅ DONE | RN/CC 均已安装运行 |
+| 一键安装（服务端/客户端） | ✅ DONE | <SERVER_ALIAS>/<CLIENT_ALIAS> 均已安装运行 |
 | 卸载（三档粒度 + 作用域校验） | ✅ DONE | 代码核验：unit 归属校验、1/2/3 三档 |
 | 内核安装/更新/版本管理 | ✅ DONE | v1.19.32 在两端运行 |
 | 服务管理（启停重启/自启/状态） | ✅ DONE | systemd active + enabled |
@@ -94,13 +94,13 @@
 | 分享拉取次数上限 | ✅ DONE | `max_uses=2` → 第 3 次起 **HTTP 410** |
 | 分享禁用/吊销 | ✅ DONE | `enabled=false` → **HTTP 410**；删节点按协议前缀吊销 |
 | 分享 Token 重置 | ✅ DONE | `share_server.py` 支持 |
-| 远程配置拉取（拉外部订阅） | ✅ DONE | 拉取 RN 自身订阅，19 个有效节点；裸链接被正确拒绝 |
+| 远程配置拉取（拉外部订阅） | ✅ DONE | 拉取 <SERVER_ALIAS> 自身订阅，19 个有效节点；裸链接被正确拒绝 |
 | 客户端配置加载（分享/订阅/本地文件） | ✅ DONE | provider yaml 落盘 + reload 生效 |
 | 节点测速 | ✅ DONE | 18/19 返回 178–231ms |
 | 节点切换 | ✅ DONE | PUT 返回 204，切换后出口 IP 正确变化 |
 | SOCKS 代理 | ✅ DONE | `--socks5-hostname` 实测通过 |
 | HTTP 代理 | ✅ DONE | `-x http://` 实测通过 |
-| LAN 使用 | ✅ DONE | <LAN_CLIENT_IP> → CC:7890 → RN 出口，成功 |
+| LAN 使用 | ✅ DONE | <LAN_CLIENT_IP> → CC:7890 → <SERVER_ALIAS> 出口，成功 |
 | DNS | ✅ DONE | UDP 1053 应答 49 字节，解析成功 |
 | 日志 | ✅ DONE | 可见 `[TCP] <客户端IP> --> www.gstatic.com:80` 真实转发记录 |
 | 配置检查（严格字段校验） | ✅ DONE | 服务端/客户端均「严格校验通过」 |
@@ -126,7 +126,7 @@
 
 代码侧（`src/lib/cdn.sh` 836 行 + `src/conf/nginx_apply.py`）已完整实现：
 
-- [x] Nginx 部署方式探测（**正确识别 RN 的 Docker nginx**，`--probe` 输出 docker 模式与宿主路径 `/home/web/conf.d`）
+- [x] Nginx 部署方式探测（**正确识别 <SERVER_ALIAS> 的 Docker nginx**，`--probe` 输出 docker 模式与宿主路径 `/home/web/conf.d`）
 - [x] 按域名定位已有 `server{}` 块，找不到就拒绝（不新建同 server_name 的块）
 - [x] upstream / server / location 分层渲染
 - [x] **WebSocket Upgrade / Connection**（ws/httpupgrade 用 `proxy_http_version 1.1` + `Upgrade` + `Connection`）
@@ -140,10 +140,10 @@
 
 **本次实际执行的验收**：
 
-1. 发现 RN 有 `<CDN_DOMAIN>` 有效证书（2026-12-14 到期），但 **nginx 里没有该域名的回源 location**，CDN 节点必然连不上。
+1. 发现 <SERVER_ALIAS> 有 `<CDN_DOMAIN>` 有效证书（2026-12-14 到期），但 **nginx 里没有该域名的回源 location**，CDN 节点必然连不上。
 2. 调用项目自带 `cdn_apply_domain` 写入 → 正确插入 `location /xhc-4878fa1e { grpc_pass grpcs://127.0.0.1:20010; }`。
 3. 容器内 `nginx -t` 通过，`docker exec nginx nginx -s reload` 成功。
-4. CC 侧 CDN 节点测得出口 `<RN_EGRESS_IP>` —— **Cloudflare → nginx → mihomo 链路打通**。
+4. <CLIENT_ALIAS> 侧 CDN 节点测得出口 `<RN_EGRESS_IP>` —— **Cloudflare → nginx → mihomo 链路打通**。
 
 ---
 
@@ -173,15 +173,15 @@
 
 ---
 
-## 六、RN → CC 双端验证
+## 六、<SERVER_ALIAS> → <CLIENT_ALIAS> 双端验证
 
 **状态：✅ 通过**
 
 | 验证维度 | 结果 |
 |---|---|
-| CC 拉取 RN 远程配置 | ✅ `http://<RN_IP>:9443/share/f8eb…` HTTP 200 |
-| CC 订阅自动记录 | ✅ `subscriptions.json` 含 kind/url/时间 |
-| CC provider 加载 | ✅ 19 节点 |
+| <CLIENT_ALIAS> 拉取 <SERVER_ALIAS> 远程配置 | ✅ `http://<RN_IP>:9443/share/f8eb…` HTTP 200 |
+| <CLIENT_ALIAS> 订阅自动记录 | ✅ `subscriptions.json` 含 kind/url/时间 |
+| <CLIENT_ALIAS> provider 加载 | ✅ 19 节点 |
 | 客户端配置检查 | ✅ 严格校验通过 |
 | **全节点真实代理请求** | ✅ **19/19 通过** |
 | SOCKS5 / HTTP 双协议 | ✅ 均为 `<RN_EGRESS_IP>` |
@@ -196,7 +196,7 @@
 ### ✅ 已修复：证书域名被当成文件名（真 bug）
 
 - **位置**：`src/conf/all.sh` `find_cert()` 的 `domain_of()`
-- **现象**：证书域名完全由**文件名**推导，从不打开证书。RN 的 `conf/certs/` 装的是 `fullchain.pem` + `privkey.pem`，两者配不上 → 走「第一张+第一把」兜底 → 域名报成 **`fullchain`**。
+- **现象**：证书域名完全由**文件名**推导，从不打开证书。<SERVER_ALIAS> 的 `conf/certs/` 装的是 `fullchain.pem` + `privkey.pem`，两者配不上 → 走「第一张+第一把」兜底 → 域名报成 **`fullchain`**。
 - **后果**：
   - CDN 档位客户端产物写成 `server: fullchain` / `servername: fullchain` —— 根本不是域名，**节点 100% 连不上**；
   - 同时污染 6 个协议（trojan-tls / vless-ws / xhttp-tls / hysteria2 / tuicv5 / anytls）的 `sni` 字段，共 7 个产物文件；
@@ -217,15 +217,15 @@
 
 ## 八、第二轮：5 个问题的修复结果
 
-上一轮列的 5 个问题**全部已修复**，并逐项在 RN 上实测。本轮还额外查出 3 个更严重的问题（见第九节）。
+上一轮列的 5 个问题**全部已修复**，并逐项在 <SERVER_ALIAS> 上实测。本轮还额外查出 3 个更严重的问题（见第九节）。
 
 | # | 上轮问题 | 状态 | 修复方式 | 验证证据 |
 |---|---|---|---|---|
-| 1 | CDN 站点不存在时引导不足 | ✅ 已修 | `nginx_apply.py` 找不到 `server{}` 时，**列出本机所有实际 `server_name`** 让用户选，而不是只说"没找到" | RN 上用不存在的域名跑一次，错误里列出了真实站点名 |
-| 2 | `client_max_body_size` / `proxy_request_buffering` 需手工补 | ✅ 已修 | `nginx_apply.py` 自动注入**缺失**的 server 级指令；**已有同名指令不动**（用户的 `client_max_body_size 1000m` 原样保留）；`--remove` 会一并摘除注入块 | RN 上注入 1 条 `proxy_request_buffering off`，用户的 `1000m` 未被动，`docker exec nginx nginx -t` 通过 |
+| 1 | CDN 站点不存在时引导不足 | ✅ 已修 | `nginx_apply.py` 找不到 `server{}` 时，**列出本机所有实际 `server_name`** 让用户选，而不是只说"没找到" | <SERVER_ALIAS> 上用不存在的域名跑一次，错误里列出了真实站点名 |
+| 2 | `client_max_body_size` / `proxy_request_buffering` 需手工补 | ✅ 已修 | `nginx_apply.py` 自动注入**缺失**的 server 级指令；**已有同名指令不动**（用户的 `client_max_body_size 1000m` 原样保留）；`--remove` 会一并摘除注入块 | <SERVER_ALIAS> 上注入 1 条 `proxy_request_buffering off`，用户的 `1000m` 未被动，`docker exec nginx nginx -t` 通过 |
 | 3 | 批量模式不自动挂 CDN | ✅ 已修 | `all.sh` 新增 `CDN_DOMAIN`（无人值守可用）+ 交互提问；`--quick` 无域名时**明确警告**该节点需手工挂；生成后调 `_all_cdn_wire` 复用交互式的同一套 `cdn.sh` 函数 | 语法与接线检查通过；`CDN_DOMAIN` 分支与"未设域名"的警告分支均已覆盖 |
-| 4 | 陈旧产物 / 序号漂移 | ✅ 已修（且比原描述严重） | 见第九节问题 A | RN 实测：造 GHOST 节点 → 修复前订阅含 20 个、GHOST 被发出去；修复后 19 个、GHOST 被剔除 |
-| 5 | 服务端出站 / 规则集 / 端口转发缺失 | ✅ 已修 | 新增 `src/lib/server_extra.sh`，服务端菜单 18 项聚合入口 | 三项**全部在 RN 上真实跑通**，见下表 |
+| 4 | 陈旧产物 / 序号漂移 | ✅ 已修（且比原描述严重） | 见第九节问题 A | <SERVER_ALIAS> 实测：造 GHOST 节点 → 修复前订阅含 20 个、GHOST 被发出去；修复后 19 个、GHOST 被剔除 |
+| 5 | 服务端出站 / 规则集 / 端口转发缺失 | ✅ 已修 | 新增 `src/lib/server_extra.sh`，服务端菜单 18 项聚合入口 | 三项**全部在 <SERVER_ALIAS> 上真实跑通**，见下表 |
 
 ### 5-1：新增三项功能的实测结果
 
@@ -254,7 +254,7 @@
 ### A. 陈旧产物会被当成活节点发给用户（🔴 已修，严重）
 
 - **现象**：`out/` 是累积目录，`--force` 重建或删节点时旧的 `*_client-*.yaml` 不会删。而 `build_sub.py` 是 `glob out/*_client-*.yaml` 收集的 —— **已删除的节点会继续出现在订阅里**，客户端表现为"订阅里有这个节点但怎么都连不上"。
-- **实测**：在 RN 造一个 `GHOST-DEAD-NODE` 产物后重建订阅，`GHOST` 确实混进了 proxies（共 20 个）。修复后为 19 个，`[清理] 剔除了 1 个陈旧产物`。
+- **实测**：在 <SERVER_ALIAS> 造一个 `GHOST-DEAD-NODE` 产物后重建订阅，`GHOST` 确实混进了 proxies（共 20 个）。修复后为 19 个，`[清理] 剔除了 1 个陈旧产物`。
 - **修法**：`build_sub.py` 新增 `--conf-dir`，按 `conf/config.d/.managed.json`（`merge.py` 维护的"当前在跑的 listener"名单）过滤；`share_server.py` 与 `share.sh` 的 systemd 单元一并传递 `CONF_DIR`。
 - **注意**：名单读不到时**不过滤** —— 宁可多发也不能把整份订阅变空。
 
@@ -281,8 +281,8 @@
 | `docs/private/` 是否进过任何提交 | ✅ **从未出现在任何提交中**（`.gitignore` 已挡） |
 | `tools/scrub-private.py`（含真实出口/域名/SSH 端口） | ✅ 从未提交 |
 | git 历史里的**真实** GitHub PAT | ✅ 无（`github_pat_` 的命中是 scrub 工具里用于**脱敏的正则定义**，非令牌本身） |
-| 历史里的 RN 公网 IP / CC 内网 IP / 域名 / SSH 端口 | ✅ 全部无 |
-| 历史里的 CC 出口 IP（WARP） | ✅ 无 |
+| 历史里的 <SERVER_ALIAS> 公网 IP / <CLIENT_ALIAS> 内网 IP / 域名 / SSH 端口 | ✅ 全部无 |
+| 历史里的 <CLIENT_ALIAS> 出口 IP（WARP） | ✅ 无 |
 | 当前工作树里的真实 IP / 域名 | ✅ 已脱敏（本文件内全部替换为 `<RN_IP>` / `<CDN_DOMAIN>` 等占位符） |
 
 仓库对外**只保留脚本功能说明**（`README.md` + `docs/PROTOCOL-OPTIONS-SPEC.md`），内部验收过程文档留在 `docs/private/` 且不入库。
@@ -299,7 +299,7 @@
 
 **CDN：DONE　Nginx：DONE**
 
-**RN：通过　CC：通过　RN → CC：通过**
+**RN：通过　CC：通过　<SERVER_ALIAS> → CC：通过**
 
 **可以作为生产项目继续使用。**
 
