@@ -1039,7 +1039,10 @@ m_addr_is_local() {
 
 # 隧道/虚拟接口名 —— 这些接口上的地址是代理出口或隧道地址, 不能给客户端连。
 # 与 SB 的 SB_TUNNEL_IFACE_RE 同源, 按本机实测补了 awg / he-ipv6 / docker / br-*。
-M_TUNNEL_IFACE_RE='^(warp|wg[0-9]*|awg[0-9]*|tun[0-9]*|tap[0-9]*|utun[0-9]*|tailscale|ts[0-9]*|ppp[0-9]*|zt[0-9]*|meta|he-ipv6.*|sit[0-9]*|docker[0-9]*|br-[0-9a-f]+|veth.*|virbr[0-9]*)$'
+# ⚠ he-ipv6 与 he-ipv6-tun 要分清: 前者是用户**主动配的**真实 IPv6 (HE 隧道
+#   服务商给的公网地址, 对外可路由), 必须保留; 后者是隧道内层口, 不可对外。
+#   写成 `he-ipv6.*` 会把 HE 的真实地址一起排掉, 于是明明有 IPv6 却判成「无」。
+M_TUNNEL_IFACE_RE='^(warp|wg[0-9]*|awg[0-9]*|tun[0-9]*|tap[0-9]*|utun[0-9]*|tailscale|ts[0-9]*|ppp[0-9]*|zt[0-9]*|meta|he-ipv6-tun|sit[0-9]*|docker[0-9]*|br-[0-9a-f]+|veth.*|virbr[0-9]*)$'
 
 # 不可路由 / 保留 / 会被内核自己占用的地址
 #

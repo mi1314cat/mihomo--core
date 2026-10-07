@@ -1154,7 +1154,6 @@ client_menu() {
         ui_menu 13 "下载通道 (订阅/内核/UI 走不走代理)"
         ui_menu 14 "局域网配置分发 (URL 拉取)"
         ui_menu 15 "安装 / 内核管理 (版本/更新/脚本)"
-        ui_menu 16 "分享订阅 (把我的节点发给别人)"
         ui_menu 17 "卸载客户端"
         ui_menu 18 "DNS 管理 (fake-ip / 防泄露 / 解析策略)"
         ui_menu 19 "切换到服务端面板 (装/进另一端)"
@@ -1180,7 +1179,6 @@ client_menu() {
             13) dl_route_menu ;;
             14) lan_dispatch_menu ;;
             15) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
-            16) cli_share_menu ;;
             17|d|D) cli_uninstall ;;
             18) client_dns_menu ;;
             19) switch_side "$CLI_ROOT" ;;
@@ -1202,8 +1200,7 @@ client_menu() {
 # =============================================================
 cli_uninstall() {
     print_title "卸载 Mihomo 客户端"
-    # 分享服务名与 cli_share_menu 里 export 的保持一致, 不能各处各写一份
-    # (之前这里硬编码, 改另一处就会漏)
+    # 分享服务名与 install 时注册的保持一致, 不能各处各写一份
     local svc="$CLI_SERVICE" shsvc="mihomo-client-share"
     # 作用域校验: 安装目录被改到别处时 (CLI_ROOT 可被环境变量覆盖),
     # 这两个服务名可能属于**别的** mihomo 实例, 删 unit 就是误删。
@@ -1310,66 +1307,6 @@ EOF
         print_warn "端口 $PORT_MIXED 仍在监听 —— 本机可能还有别的 mihomo 实例在使用它"
     fi
     return 0
-}
-
-# =============================================================
-# 分享订阅
-#
-# 把本机已经导入的节点 (proxy-providers) 生成带 token 的分享链接,
-# 发给别人后对方可直接作为 proxy-provider 消费。
-#
-# 与服务端 share 的差别:
-#   服务端节点来自 out/*_client-*.yaml
-#   客户端节点来自 conf/providers/*.yaml  —— 所以要传 SHARE_PROVIDERS_DIR
-#
-# 注意 SRV_ROOT 必须显式指向 CLI_ROOT。share.sh 的默认值是 /root/catmi/mihomo,
-# 而客户端机器上那个路径可能存在但是**别的项目**的目录, 不指过去会发布错配置。
-# =============================================================
-cli_share_menu() {
-    print_title "分享订阅"
-
-    if [[ ! -d "$CLI_PROVIDERS" ]]; then
-        print_error "没有 provider 目录: $CLI_PROVIDERS"
-        print_info "请先通过「添加节点」导入订阅或分享链接"
-        return 1
-    fi
-
-    local n
-    n=$(ls -1 "$CLI_PROVIDERS"/*.yaml 2>/dev/null | wc -l)
-    if [[ "$n" -eq 0 ]]; then
-        print_error "provider 目录为空, 没有可分享的节点"
-        return 1
-    fi
-    print_info "本机有 $n 份 provider, 可分别生成分享链接"
-
-    export SRV_ROOT="$CLI_ROOT"
-    export SRV_OUT="$CLI_ROOT/out"
-    export SRV_CONF="$CLI_CONF"
-    export SRV_SERVICE="$CLI_SERVICE"
-    export SRV_ENV="$CLI_ROOT/install_info.env"
-    export SHARE_DIR="$CLI_ROOT/share"
-    # 客户端用独立的服务名和端口, 避免与服务器端混淆或撞端口
-    export SHARE_SERVICE="mihomo-client-share"
-    export SHARE_PORT="${CLI_SHARE_PORT:-9444}"
-    export SHARE_PROVIDERS_DIR="$CLI_PROVIDERS"
-
-    # share 模块按需加载。
-    # 注意: 这里必须用带命名空间的名字 (cli_share_menu) 调本函数。
-    # share.sh 自己就定义了 share_menu, 若同名, declare -F 会因为"本函数已存在"
-    # 而恒为真 → source 永远不执行 → 末尾裸调用 share_menu 调到自己 → 无限递归。
-    if ! declare -F share_menu >/dev/null 2>&1; then
-        local _here share_sh
-        _here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
-        share_sh="$_here/share/share.sh"
-        if [[ ! -f "$share_sh" ]]; then
-            print_error "缺少 share 模块: $share_sh"
-            print_info "请重新运行安装脚本补齐文件"
-            return 1
-        fi
-        # shellcheck source=/dev/null
-        source "$share_sh" || { print_error "share 模块加载失败"; return 1; }
-    fi
-    share_menu
 }
 
 svc_menu() {
