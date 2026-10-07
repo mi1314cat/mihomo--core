@@ -718,16 +718,113 @@ print(len(d.get('proxies') or []))" "$f" 2>/dev/null || echo "?")
     [[ $found -eq 0 ]] && print_info "还没有任何节点, 请先「添加节点」"
 }
 
+# 列出所有"订阅/组" (一个 provider 文件 = 一组节点)
+_sub_groups() {
+    local f
+    for f in "$CLI_PROVIDERS"/*.yaml; do
+        [[ -f "$f" ]] || continue
+        local n c
+        n=$(basename "$f" .yaml)
+        c=$(python3 -c '
+import yaml,sys
+try: print(len(yaml.safe_load(open(sys.argv[1])).get("proxies") or []))
+except Exception: print(0)' "$f" 2>/dev/null)
+        printf '%s|%s\n' "$n" "${c:-0}"
+    done
+}
+
+# 整组删除 / 重命名 —— 编号选择, 不用手打名字。
+# 原先 node_delete 让用户手输组名, 而组名多半是订阅 token 或 URL 末段
+# (f8eb3715… / sub_mixed_yaml), 谁记得住? 输错一个字就是"节点不存在"。
 node_delete() {
     ensure_dirs
-    node_list
-    printf '\n请输入要删除的节点名 [回车取消]: '
-    local n; read -r n
-    [[ -n "$n" ]] || { print_info "已取消"; return; }
-    [[ -f "$CLI_PROVIDERS/$n.yaml" ]] || { print_error "节点不存在: $n"; return 1; }
+    print_title "删除节点 / 整组"
+    local -a gn=() gc=()
+    local line
+    while IFS='|' read -r a b; do gn+=("$a"); gc+=("$b"); done < <(_sub_groups)
+    if (( ${#gn[@]} == 0 )); then print_info "还没有任何节点组"; return 0; fi
+    print_title "选择要删除的组 (整个组一起删)"
+    local i
+    for (( i=0; i<${#gn[@]}; i++ )); do
+        printf '    %b%2d)%b %-40s %b(%s 个节点)%b\n' \
+            "${CYAN:-}" "$((i+1))" "${RESET:-}" "${gn[$i]}" "${DIM:-}" "${gc[$i]}" "${RESET:-}" >&2
+    done
+    printf '  %b%s%b\n' "${DIM:-}" "(删一个组 = 删掉它带进来的全部节点)" "${RESET:-}" >&2
+    local c; printf '  请选择 [回车取消]: ' >&2
+    read -r c || return 0
+    c=$(clean_input "$c")
+    [[ -n "$c" ]] || { print_info "已取消"; return 0; }
+    [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= ${#gn[@]} )) \
+        || { print_error "请输入 1-${#gn[@]} 之间的编号"; return 1; }
+    local n="${gn[$((c-1))]}"
+    # 二次确认: 这是**不可撤销**的整组删除, 而且会连带删掉订阅登记,
+    # 下次更新订阅得重新填一遍 URL。
+    printf '  确认删除 %b%s%b 及它的 %s 个节点? 输入 yes 确认: ' \
+        "${YELLOW:-}" "$n" "${RESET:-}" "${gc[$((c-1))]}" >&2
+    local ok; read -r ok || return 0
+    [[ "$ok" == "yes" ]] || { print_info "已取消"; return 0; }
     rm -f "$CLI_PROVIDERS/$n.yaml" "$CLI_NODES/$n.txt"
     subs_del "$n"
-    print_ok "已删除 $n"
+    print_ok "已删除整组 $n"
+    apply_change
+}
+
+node_rename() {
+    ensure_dirs
+    print_title "重命名节点组"
+    local -a gn=()
+    local line
+    while IFS='|' read -r a b; do gn+=("$a"); done < <(_sub_groups)
+    if (( ${#gn[@]} == 0 )); then print_info "还没有任何节点组"; return 0; fi
+    local i
+    for (( i=0; i<${#gn[@]}; i++ )); do
+        printf '    %b%2d)%b %s\n' "${CYAN:-}" "$((i+1))" "${RESET:-}" "${gn[$i]}" >&2
+    done
+    local c; printf '  选择要改名的组: ' >&2
+    read -r c || return 0
+    c=$(clean_input "$c")
+    [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= ${#gn[@]} )) \
+        || { print_error "请输入有效编号"; return 1; }
+    local old="${gn[$((c-1))]}"
+    printf '  新名字 (会同时作为组名, 字母数字短横线): ' >&2
+    local nn; read -r nn || return 0
+    nn=$(clean_input "$nn")
+    # 必须校验: 这个名字会变成 mihomo 的 proxy-group 名, 也是文件名
+    # 拦的是**文件系统危险字符**, 不是非 ASCII。
+    # 这个名字会当文件名用 ($CLI_PROVIDERS/$nn.yaml), 所以 / \ : * ? " < > |
+    # 和空格必须挡住; 但中文是这台机器上最自然的命名方式 ("香港" / "备用线路"),
+    # 一律拒绝等于把功能废掉一半。
+    # ⚠ 不要用 [[ =~ ^[...一-龥...]$ ]] 来校验中文: 方括号里的多字节范围
+    #   依赖 UTF-8 locale, 在没设 UTF-8 locale 的机器上整个字符类直接
+    #   失效 —— 结果连纯 ASCII 的 "RN-US" 都被拒, 报错还写着"不能含空格",
+    #   与实际原因毫无关系。改成用 grep 挑危险字符, 按字节处理, 与 locale 无关。
+    if printf '%s' "$nn" | grep -q '[/\\:*?"<>|[:space:]]'; then
+        print_error "名字里不能含 / \\ : * ? \" < > | 或空格"
+        return 1
+    fi
+    [[ "$nn" == "." || "$nn" == ".." ]] \
+        && { print_error "名字不能是 . 或 .."; return 1; }
+    [[ "$nn" == "$old" ]] && { print_info "名字没变"; return 0; }
+    [[ -f "$CLI_PROVIDERS/$nn.yaml" ]] && { print_error "已经有同名组了: $nn"; return 1; }
+    mv "$CLI_PROVIDERS/$old.yaml" "$CLI_PROVIDERS/$nn.yaml"
+    [[ -f "$CLI_NODES/$old.txt" ]] && mv "$CLI_NODES/$old.txt" "$CLI_NODES/$nn.txt"
+    # 订阅登记表里记着来源 URL, 改组名不能让这条记录丢掉 ——
+    # 否则下次「更新订阅」就找不到它, 等于把这条订阅弄丢了
+    # ⚠ 只有当旧名字**确实**在订阅登记表里才改它。
+    #   本地文件 / 分享链接导入的组没有登记记录, subs_get 返回空串;
+    #   原先不判空直接 json.loads("") 就把 Python traceback 打在面板上 ——
+    #   而重命名其实已经成功了, 用户看到的是"报错 + 成功"混在一起。
+    local rec; rec=$(subs_get "$old")
+    if [[ -n "$rec" ]]; then
+        subs_put "$(python3 -c '
+import json,sys,datetime
+rec=json.loads(sys.argv[1])
+rec["prefix"]=sys.argv[2]
+rec["imported_at"]=datetime.datetime.now().isoformat(timespec="seconds")
+print(json.dumps(rec,ensure_ascii=False))' "$rec" "$nn")"
+        subs_del "$old"
+    fi
+    print_ok "已把 $old 改名为 $nn"
     apply_change
 }
 
@@ -996,7 +1093,8 @@ client_menu() {
         ui_menu 3  "添加简易 HTTP/SOCKS 节点 (接其它内核)"
         ui_menu 4  "查看节点"
         ui_menu 5  "更新订阅节点"
-        ui_menu 6  "删除节点"
+        ui_menu 6  "删除节点 / 整组"
+        ui_menu 20 "重命名节点组"
         ui_menu 7  "域名分流 (域名 -> 节点/组)"
         ui_rule
         ui_menu 8  "启动 / 停止 / 重启服务"
@@ -1023,6 +1121,7 @@ client_menu() {
             4)  node_list ;;
             5)  node_update ;;
             6)  node_delete ;;
+            20) node_rename ;;
             7)  rules_menu ;;
             8)  svc_menu ;;
             9)  check_menu ;;
