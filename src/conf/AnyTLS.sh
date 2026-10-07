@@ -199,7 +199,7 @@ ask_padding() {
 #   ⚠ 未知值只 log.Warnln 并**静默降级成原生 TLS** (utls.go:56-59) —— 必须从枚举里选
 #   ⚠ 不暴露 deprecated 的 5 个 (chrome_psk 等, utls.go:94-99 注释已标 deprecated)
 #   ⚠ 'none'/空 = 关闭 uTLS 用原生 Go TLS (:43-45) —— 抗识别最差, 不进菜单
-CLIENT_FP="chrome"
+CLIENT_FP="$(m_fp_get)"   # 服务端「客户端产物设置」里的指纹
 
 ask_fp() {
     echo "  TLS 客户端指纹 client-fingerprint (抗 JA3/JA4 识别):" >&2
@@ -221,7 +221,7 @@ ask_fp() {
         5) CLIENT_FP="ios" ;;
         6) CLIENT_FP="android" ;;
         7) CLIENT_FP="random" ;;
-        *) CLIENT_FP="chrome" ;;
+        *) CLIENT_FP="$(m_fp_get)" ;;   # 回车 = 用服务端「客户端产物设置」里的
     esac
     return 0
 }

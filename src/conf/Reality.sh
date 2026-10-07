@@ -136,7 +136,7 @@ smux_profile() {
 #     (transport/vmess/tls.go:130-132) —— `mihomo -t` 抓不到, 只有真连才炸。
 #   取值表 component/tls/utls.go:78-101 (init() 动态追加 randomized, :103-111)
 #   ⚠ 未知值只 log.Warnln 后**静默降级成原生 TLS** (utls.go:56-59) —— 必须从枚举里选
-CLIENT_FP="chrome"
+CLIENT_FP="$(m_fp_get)"   # 服务端「客户端产物设置」里的指纹
 
 # ---------- ② xudp / packet-addr 二选一 ----------
 #   字段: adapter/outbound/vless.go:68 (packet-addr) / :69 (xudp)
@@ -174,7 +174,7 @@ ask_client_fp() {
         5) CLIENT_FP="ios" ;;
         6) CLIENT_FP="android" ;;
         7) CLIENT_FP="random" ;;
-        *) CLIENT_FP="chrome" ;;
+        *) CLIENT_FP="$(m_fp_get)" ;;   # 回车 = 用服务端「客户端产物设置」里的
     esac
 }
 

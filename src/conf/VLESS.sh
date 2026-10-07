@@ -46,7 +46,7 @@ PUB_DIR="$OUT_DIR/pub"
 # ================================
 VLESS_TRANSPORT="ws"
 XHTTP_LEVEL="std"
-CLIENT_FP="chrome"
+CLIENT_FP="$(m_fp_get)"   # 服务端「客户端产物设置」里的指纹
 GRPC_SERVICE=""
 H2_PATH=""
 XHTTP_PATH=""

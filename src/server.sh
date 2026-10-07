@@ -1006,6 +1006,128 @@ install_share() {
 # 为什么聚合而不是各占主菜单一个位置: 主菜单已经有 17 项, 再拆三个是 20 项,
 # 而这三项的使用频率都远低于「加节点」。合成一个子菜单, 加节点仍一步到位。
 # =============================================================
+# ================================================================
+# 客户端产物设置 (指纹 / 连接地址) —— 生成节点时就写进去
+#
+# 放在服务端做, 因为**只有服务端知道自己的 IPv4 和 IPv6**。客户端拿到的订阅里
+# 只有一个地址, 它无从切换; 产物生成时写对, 客户端拿到的就已经是对���那个。
+# ================================================================
+# ================================================================
+# 导出汇总: 全部节点分享链接 + 订阅短链, 拼成一个文件方便复制
+#
+# 放在服务端: 只有这里同时有 out/ 下的全部节点产物和 share/ 的订阅链接。
+# ================================================================
+export_all_nodes() {
+    print_title "导出全部 (节点链接 + 订阅短链)"
+    local dir="$SRV_OUT"
+    mkdir -p "$dir"
+    local stamp file; stamp=$(date +%Y%m%d-%H%M%S)
+    file="$dir/all-nodes-$stamp.txt"
+    {
+        echo "# mihomo--core 节点汇总"
+        echo "# 生成时间: $(date '+%F %T')"
+        echo
+    } > "$file"
+
+    local total=0 links
+    # 1. 订阅短链 (给别的客户端直接拉)
+    local sh
+    sh=$(ls "$dir"/share_tag-*.txt 2>/dev/null)
+    if [[ -n "$sh" ]]; then
+        echo "## 订阅地址" >> "$file"; echo >> "$file"
+        while read -r sh; do
+            [[ -f "$sh" ]] || continue
+            printf '# %s: ' "$(basename "$sh" .txt | sed 's/^share_tag-//')" >> "$file"
+            cat "$sh" >> "$file"; echo >> "$file"
+        done <<<"$sh"
+        total=$((total+1))
+    fi
+
+    # 2. 各协议节点的分享链接
+    local proto f n=0
+    for proto in reality vless vmess trojan hysteria2 tuicv5 anytls ss snell; do
+        links=$(ls "$dir"/${proto}_share-*.txt 2>/dev/null | sort)
+        [[ -n "$links" ]] || continue
+        echo "## $proto" >> "$file"; echo >> "$file"
+        while read -r f; do
+            [[ -f "$f" ]] || continue
+            cat "$f" >> "$file"; echo >> "$file"; n=$((n+1))
+        done <<<"$links"
+    done
+    [[ $n -gt 0 ]] && total=$((total+1))
+    [[ $total -eq 0 ]] && { print_warn "out/ 下还没有节点产物, 先建几个节点"; return 1; }
+
+    print_ok "已导出: $file"
+    echo "  段落 $total  节点链接 $n" >&2
+    echo >&2
+    printf '显示内容? [Y/n]: ' >&2
+    local a; read -r a
+    case "$(clean_input "${a:-y}")" in n|N) return 0 ;; esac
+    echo >&2; cat "$file"
+    printf '\n按回车继续...' >&2; read -r
+}
+
+client_artifact_menu() {
+    while true; do
+        print_title "客户端产物设置 (生成节点时写入)"
+        echo >&2
+        ui_kv_ascii "当前指纹"   "$(m_fp_get)"
+        ui_kv_ascii "当前地址族" "$(m_addr_family_label)"
+        ui_kv_ascii "本机 IPv4"  "$(m_addr4_real 2>/dev/null || echo '(无)')"
+        ui_kv_ascii "本机 IPv6"  "$(m_addr6_real  2>/dev/null || echo '(无)')"
+        m_warp_active && print_warn "检测到 WARP/隧道接口 —— 其上的地址已排除, 不会被写进产物"
+        echo >&2
+        print_info "改动只影响之后新生成的节点; 已有节点需重新生成"
+        echo >&2
+        ui_menu 1 "改指纹"
+        ui_menu 2 "改连接地址族"
+        ui_menu 3 "导出全部节点与订阅链接"
+        ui_menu 0 "返回"
+        printf "请选择: " >&2
+        local c; read -r c || return 0
+        c=$(clean_input "${c:-}")
+        case "$c" in
+            1) _ca_pick_fp ;;
+            2) _ca_pick_family ;;
+            3) export_all_nodes ;;
+            0) return 0 ;;
+            *) ui_invalid "$c" ;;
+        esac
+    done
+}
+
+_ca_pick_fp() {
+    print_title "TLS 客户端指纹 (写进客户端产物)"
+    local i=1 k cur; cur=$(m_fp_get)
+    for k in "${M_UTLS_FINGERPRINTS[@]}"; do
+        printf '  %s%2d%s) %-12s %s\n' "${CYAN}" "$i" "${RESET}" "$k" \
+            "$( [[ "$k" == "$cur" ]] && echo "← 当前" )" >&2
+        i=$((i+1))
+    done
+    printf '\n请选择 [默认 1]: ' >&2
+    local n; read -r n; n=$(clean_input "${n:-1}")
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#M_UTLS_FINGERPRINTS[@]} )) || n=1
+    local pick="${M_UTLS_FINGERPRINTS[$((n-1))]}"
+    m_fp_set "$pick" || { print_error "非法指纹: $pick"; return 1; }
+    print_ok "指纹已设为 $pick (新生成的节点生效)"
+}
+
+_ca_pick_family() {
+    print_title "客户端产物里的连接地址"
+    echo >&2
+    ui_kv_ascii "IPv4" "$(m_addr4_real 2>/dev/null || echo '(本机无真实 IPv4)')"
+    ui_kv_ascii "IPv6" "$(m_addr6_real  2>/dev/null || echo '(本机无真实 IPv6, 隧道地址已排除)')"
+    echo >&2
+    printf "  %s1%s) IPv4\n  %s2%s) IPv6\n" "${CYAN}" "${RESET}" "${CYAN}" "${RESET}" >&2
+    printf '请选择 [默认 1]: ' >&2
+    local n; read -r n; n=$(clean_input "${n:-1}")
+    case "$n" in 2) m_addr_family_set v6 ;; *) m_addr_family_set v4 ;; esac
+    if [[ "$(m_addr_family_get)" == "v6" ]] && [[ -z "$(m_addr6_real 2>/dev/null)" ]]; then
+        print_warn "本机没有可用的真实 IPv6, 新节点仍会用 IPv4 地址"
+    fi
+    print_ok "连接地址已设为 $(m_addr_family_label) (新生成的节点生效)"
+}
+
 extra_menu() {
     while true; do
         print_title "出站 / 规则集 / 端口转发"
@@ -1059,6 +1181,7 @@ main_menu() {
         ui_menu 17 "切换到客户端面板 (装/进另一端)"
         ui_menu 18 "出站 / 规则集 / 端口转发"
         ui_menu 19 "SOCKS 入站 (自己 / 内网用)"
+        ui_menu 20 "客户端产物设置 (指纹 / IP 地址)"
         ui_menu  0 "退出"
         echo >&2
         ui_rule
@@ -1093,6 +1216,7 @@ main_menu() {
             17) switch_side "$SRV_ROOT" ;;
             18) extra_menu ;;
             19) socks_menu ;;
+        20) client_artifact_menu ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

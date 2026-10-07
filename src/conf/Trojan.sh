@@ -235,7 +235,7 @@ ask_client_fingerprint() {
         5) CLIENT_FINGERPRINT="ios" ;;
         6) CLIENT_FINGERPRINT="android" ;;
         7) CLIENT_FINGERPRINT="random" ;;
-        *) CLIENT_FINGERPRINT="chrome" ;;
+        *) CLIENT_FINGERPRINT="$(m_fp_get)" ;;
     esac
 }
 

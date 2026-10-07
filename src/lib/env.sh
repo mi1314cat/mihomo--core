@@ -562,78 +562,6 @@ REALITY_DESTS_BAD=("oracle.com")
 #       .addr-map 里存 "<服务端v4> <服务端v6>"
 #   用户选 IPv6 而映射里没有对应记录时, 菜单里问一次并存下来。
 #   订阅更新会覆盖文件, 所以每次更新后都要再改写一次。
-m_addr_map_file() { printf '%s' "${CLI_ROOT:-${SRV_ROOT:-/root/catmi/mihomo}}/.addr-map"; }
-
-m_addr_map_get() { # <服务端v4> → 服务端v6 (无则空)
-    local f; f=$(m_addr_map_file)
-    [[ -f "$f" ]] || return 1
-    awk -v k="$1" '$1==k{print $2; exit}' "$f" 2>/dev/null
-}
-
-m_addr_map_put() { # <服务端v4> <服务端v6>
-    local f; f=$(m_addr_map_file)
-    mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
-    { [[ -f "$f" ]] && grep -v "^$1[[:space:]]" "$f"
-      printf '%s %s\n' "$1" "$2"; } > "$f.tmp" 2>/dev/null || return 1
-    mv -f "$f.tmp" "$f"
-}
-
-# 从订阅里认出服务端当前用的地址 (各节点 server 字段的众数)
-m_server_hosts_in() { # <provider.yaml>
-    [[ -f "${1:-}" ]] || return 1
-    python3 - "$1" <<'PY2'
-import sys, yaml, collections
-d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-if not isinstance(d, dict):
-    sys.exit(0)
-c = collections.Counter()
-for p in (d.get("proxies") or []):
-    if isinstance(p, dict) and p.get("server"):
-        c[str(p["server"])] += 1
-for h, _ in c.most_common():
-    print(h)
-PY2
-}
-
-m_rewrite_provider() { # <provider.yaml>
-    local f="${1:-}"
-    [[ -f "$f" ]] || return 1
-    local fp fam
-    fp=$(m_fp_get)
-    fam=$(m_addr_family_get)
-    local map4="" map6=""
-    if [[ "$fam" == "v6" ]]; then
-        # 订阅里的地址就是服务端 v4, 换取它对应的 v6
-        map4=$(m_server_hosts_in "$f" | head -1)
-        map6=$(m_addr_map_get "$map4")
-        [[ -n "$map6" ]] || return 2      # 2 = 需要用户补映射
-    fi
-    M_REWRITE_FP="$fp" M_REWRITE_MAP4="$map4" M_REWRITE_MAP6="$map6" \
-    python3 - "$f" <<'PY'
-import os, sys, yaml
-path = sys.argv[1]
-fp   = os.environ.get("M_REWRITE_FP", "")
-map4 = os.environ.get("M_REWRITE_MAP4", "")
-map6 = os.environ.get("M_REWRITE_MAP6", "")
-d = yaml.safe_load(open(path, encoding="utf-8"))
-if not isinstance(d, dict):
-    sys.exit(0)
-ps = d.get("proxies") or []
-n_fp = n_ad = 0
-for p in ps:
-    if not isinstance(p, dict):
-        continue
-    if fp and "client-fingerprint" in p and p["client-fingerprint"] != fp:
-        p["client-fingerprint"] = fp; n_fp += 1
-    if map4 and map6 and p.get("server") == map4:
-        p["server"] = map6; n_ad += 1
-if n_fp or n_ad:
-    with open(path, "w", encoding="utf-8") as fh:
-        yaml.safe_dump(d, fh, allow_unicode=True, sort_keys=False, width=4096)
-    print(f"  {os.path.basename(path)}: 指纹 {n_fp} 个, 地址 {n_ad} 个 → {map6}")
-PY
-}
-
 # 拉取文本到 stdout (只读, 不落盘不执行)。
 # 与 fetch_script 的区别: 后者是为了执行才落盘, 这里只需解析文本。
 fetch_text() { # <url>
@@ -690,12 +618,15 @@ m_auto_website() {   # <尝试次数-默认 3>  → stdout: 一个域名; 失败
 M_UTLS_FINGERPRINTS=(chrome firefox edge safari 360 qq ios android random randomized)
 M_DEFAULT_FP="chrome"
 
-m_fp_state_file() { printf '%s' "${CLI_ROOT:-${SRV_ROOT:-/root/catmi/mihomo}}/.fp"; }
+m_fp_state_file() { printf '%s' "${SRV_ROOT:-/root/catmi/mihomo}/.fp"; }
 m_fp_get() {
     local v=""; [[ -f "$(m_fp_state_file)" ]] && v=$(head -1 "$(m_fp_state_file)" 2>/dev/null | tr -d '[:space:]')
     local k; for k in "${M_UTLS_FINGERPRINTS[@]}"; do [[ "$v" == "$k" ]] && { printf '%s' "$k"; return 0; }; done
     printf '%s' "$M_DEFAULT_FP"
 }
+# 建节点时各协议用它作为指纹默认值 (走推荐档时不单独问指纹)
+m_fp_default() { printf '%s' "$M_DEFAULT_FP"; }
+
 m_fp_set() {
     local k; for k in "${M_UTLS_FINGERPRINTS[@]}"; do
         [[ "$1" == "$k" ]] && { printf '%s\n' "$k" > "$(m_fp_state_file)"; return 0; }
@@ -744,8 +675,9 @@ m_addr_family_get() {
     [[ "$v" == "v6" ]] && { printf 'v6'; return 0; }
     printf 'v4'
 }
-m_addr_state_file() { printf '%s' "${CLI_ROOT:-${SRV_ROOT:-/root/catmi/mihomo}}/.addr-family"; }
+m_addr_state_file() { printf '%s' "${SRV_ROOT:-/root/catmi/mihomo}/.addr-family"; }
 m_addr_family_set() { printf '%s\n' "$1" > "$(m_addr_state_file)"; }
+m_addr_family_label() { [[ "$(m_addr_family_get)" == "v6" ]] && printf 'IPv6' || printf 'IPv4'; }
 
 # 当前地址族对应的地址。选了 v6 但本机没有真实 v6 时**如实告知并回退**,
 # 不能悄悄给一个连不上的地址。
@@ -1168,6 +1100,18 @@ m_local_addr() {
 # 同一个项目两套 IP 探测逻辑, 这次把它们统一。
 m_server_ip() {
     [[ -n "${1:-}" ]] && { printf '%s' "$1"; return 0; }
+
+    # 用户选了 IPv6 且本机**确实有**真实 v6 时就用它。
+    # 只有服务端能这么做 —— 客户端只知道订阅里那一个地址, 不知道服务端另一个
+    # 是什么。所以在服务端选一次, 生成的客户端产物里就已经是对的那个地址。
+    #
+    # ⚠ m_addr6_real 只读网卡并排除隧道接口, 所以选了 WARP 的机器不会拿到
+    #   WARP 地址。本机没有真实 v6 时如实回退 v4, 不给连不上的地址。
+    if [[ "$(m_addr_family_get)" == "v6" ]]; then
+        local _a6; _a6=$(m_addr6_real 2>/dev/null) || _a6=""
+        if [[ -n "$_a6" ]]; then printf '%s' "$_a6"; return 0; fi
+        print_warn "已选择 IPv6 但本机没有可用的真实 IPv6 (隧道地址已排除), 仍用 IPv4"
+    fi
 
     # ---- 1. 内存里已加载的 ----
     if [[ -n "${PUBLIC_IP:-}" ]] && \
