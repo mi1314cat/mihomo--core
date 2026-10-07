@@ -331,10 +331,11 @@ except Exception: print("")' 2>/dev/null)
     done
 
     python3 - "$CLI_CONF/config.yaml" "$spec" "$PORT_MIXED" "$PORT_CTRL" \
-             "$BIND_ADDR" "$CLI_CONF/ui" "$secret" "${GEO_AUTO_UPDATE:-0}" <<'PYGEN'
+             "$BIND_ADDR" "$CLI_CONF/ui" "$secret" "${GEO_AUTO_UPDATE:-0}" \
+             "$CLI_SUBS" <<'PYGEN'
 import sys, os, yaml
 
-out, spec, p_mixed, p_ctrl, bind, ui, secret, AUTO_GEO_UPDATE = sys.argv[1:9]
+out, spec, p_mixed, p_ctrl, bind, ui, secret, AUTO_GEO_UPDATE, SUBS_FILE = sys.argv[1:10]
 
 SEP = "\x1f"
 providers, names = {}, []
@@ -360,18 +361,62 @@ for line in spec.splitlines():
                              "interval": 300, "timeout": 5000}
     providers[name] = entry
 
+# ---- 策略组结构 ----
+#
+# 一条订阅一个组, 最外层的 PROXY (面板里的"手动选择") **只放组**, 组里才是节点。
+#
+# 原来 PROXY 写的是 `use: names`, 内核会把每个 provider 的节点全部摊平进
+# PROXY —— 30 个节点就得点 30 层才找得到自己要的那个, 而且和"自动选择"
+# 混在一起。SB 的做法是 PROXY 只放组 (client.sh: "PROXY 只放组, 组里才是那条
+# 订阅的节点"), 嵌套 selector 内核 check 通过。
+#
+# 一条订阅都没登记时 (节点全是手动加的简易 HTTP/SOCKS) 保持平铺 —— 这时本来
+# 就没有"订阅"这个概念可分组, 硬套一层反而多绕。
+def _sub_names():
+    # 读 subscriptions.json 拿可读组名。不能用 subs_get —— 那是 shell 函数,
+    # 在这段 python 里根本不存在, 异常被吞掉后组名会静默回退成哈希前缀
+    # (面板里显示成一串 45fe6c20..., 看不出是哪条订阅)。
+    if not SUBS_FILE or not os.path.exists(SUBS_FILE):
+        return {}
+    try:
+        d = json.load(open(SUBS_FILE, encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    return {s.get("prefix"): (s.get("name") or "").strip()
+            for s in (d.get("subscriptions") or []) if isinstance(s, dict)}
+
+def _grp_name(prefix, used):
+    # 组名要可读且唯一: 同名会让内核拒绝启动 (组名撞节点名同理)
+    label = _sub_names().get(prefix, "")
+    if not label:
+        label = prefix
+    base = label
+    i = 2
+    while label in used:
+        label = "%s-%d" % (base, i); i += 1
+    used.add(label)
+    return label
+
 if not names:
     names = []
     groups = [{"name": "PROXY", "type": "select", "proxies": ["DIRECT"]}]
 else:
-    groups = [
-        {"name": "PROXY", "type": "select", "use": names},
+    import os, json
+    used = set()
+    node_groups = []
+    for n in names:
+        g = _grp_name(n, used)
+        node_groups.append({"name": g, "type": "select", "use": [n]})
+    # 顶层只放组名 (不是 use:), 于是 PROXY 里看到的是几个组而不是几十个节点
+    top = [g["name"] for g in node_groups]
+    groups = node_groups + [
         {"name": "AUTO", "type": "url-test", "use": names,
          "url": "http://www.gstatic.com/generate_204", "interval": 300,
          "tolerance": 50, "max-failed-times": 3},
+        {"name": "PROXY", "type": "select", "proxies": ["AUTO"] + top},
     ]
-    for n in names:
-        groups.append({"name": n, "type": "select", "use": [n]})
 
 # 回环判定要认全: 127.0.0.1 / ::1 / localhost 都是"只有本机"
 lan = bind not in ("127.0.0.1", "::1", "localhost")
@@ -726,10 +771,22 @@ node_add() {
         printf "请选择 [1]: "
         local a; read -r a
         [[ "$a" == "2" ]] || kind="http-auto"
+        # 组名取来源标识: 分享链接的 host、本地文件名, 或按序号兜底。
+        # 原来只存哈希前缀, 面板里那个组就显示成一串 45fe6c20..., 完全看不出
+        # 是哪条订阅 —— 分组再漂亮, 名字是乱码也没法用。
         subs_put "$(python3 -c '
-import json,sys,datetime
-print(json.dumps({"prefix":sys.argv[1],"url":sys.argv[2],"kind":sys.argv[3],
- "imported_at":datetime.datetime.now().isoformat(timespec="seconds")}))' "$name" "$src" "$kind")"
+import json,sys,datetime,urllib.parse,os
+prefix,url,kind=sys.argv[1],sys.argv[2],sys.argv[3]
+label=""
+if kind=="local" and url:
+    label=os.path.basename(url)
+else:
+    h=urllib.parse.urlparse(url).hostname
+    if h: label=h
+if not label or label==prefix: label="订阅-"+prefix[:6]
+print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
+ "imported_at":datetime.datetime.now().isoformat(timespec="seconds")},
+ ensure_ascii=False))' "$name" "$src" "$kind")"
         if [[ "$kind" == "http-auto" ]]; then
             print_ok "已设为自动更新, 需重新生成配置后生效"
         fi
