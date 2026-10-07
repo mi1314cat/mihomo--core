@@ -475,7 +475,7 @@ ensure_reality() {
 # 所以这里**按文件内容**判断, 不靠文件名。
 find_cert() {
     python3 - "$CERTS_DIR" <<'PYCERT' 2>/dev/null
-import glob, os, re, sys
+import glob, os, re, subprocess, sys
 
 d = sys.argv[1]
 files = sorted(glob.glob(os.path.join(d, "*.crt")) +
@@ -493,7 +493,10 @@ certs  = [f for f in files if "BEGIN CERTIFICATE" in head(f)]
 keys   = [f for f in files if "PRIVATE KEY" in head(f)]
 others = [f for f in files if f not in certs and f not in keys]
 
-def domain_of(p):
+DOMAIN_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$")
+
+def name_of(p):
+    """文件名去壳 —— 只用来**配对** cert/key, 不作为域名。"""
     b = os.path.basename(p)
     b = re.sub(r"^cert-\d+-cert-", "", b)
     b = re.sub(r"^cert-", "", b)
@@ -502,14 +505,43 @@ def domain_of(p):
     b = re.sub(r"\.(crt|pem|key)$", "", b)
     return b.lower()
 
-# 按域名精确配对
+def cert_real_domain(p):
+    """真域名 —— 打开证书读 SAN / CN。这是唯一可信的来源。"""
+    for args in (["openssl", "x509", "-in", p, "-noout", "-ext", "subjectAltName"],
+                 ["openssl", "x509", "-in", p, "-noout", "-subject"]):
+        try:
+            out = subprocess.run(args, capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        m = (re.search(r"DNS:([^,\s]+)", out) if "subjectAltName" in args[-1]
+             else re.search(r"CN\s*=\s*([^,\n]+)", out))
+        if m:
+            dom = m.group(1).strip().strip('"').lower()
+            # ★ 必须是真域名。CN 写成 "common name" / "localhost" 的自签证书
+            #   会把这两个词原样吐出来, 写进客户端就成了伪 SNI。
+            if DOMAIN_RE.match(dom):
+                return dom
+    return None
+
+def domain_of(p):
+    """配对仍用文件名 (证书/私钥本来就同名), 但**报出来的域名必须是真域名**。
+
+    旧实现直接 return 文件名, 于是 conf/certs 里是 fullchain.pem + privkey.pem
+    这种通用命名时: 两者配不上 -> 走"第一张+第一把"兜底 -> 域名报成 "fullchain"。
+    于是 CDN 客户端产物写成 `server: fullchain` (根本不是一个域名, 连不上),
+    而合并/严格校验/内核三道关全绿, 面板照样显示"成功 19"。
+    实测被污染的还有 6 个协议的客户端 sni 字段。
+    """
+    return cert_real_domain(p) or name_of(p)
+
+# 按文件名配对 (不能用域名: 私钥没有 SAN, 两边算不出同一个值)
 by_dom = {}
 for k in keys:
-    by_dom.setdefault(domain_of(k), k)
+    by_dom.setdefault(name_of(k), k)
 for c in certs:
-    dom = domain_of(c)
-    if dom in by_dom:
-        print(f"{c}\t{by_dom[dom]}\t{dom}")
+    nm = name_of(c)
+    if nm in by_dom:
+        print(f"{c}\t{by_dom[nm]}\t{domain_of(c)}")
         raise SystemExit
 
 # 配不上就退回: 第一张证书 + 第一把私钥 (内核会校验是否匹配)
@@ -1564,6 +1596,17 @@ else
     fi
     if [[ -n "$pair" ]]; then
         IFS=$'\t' read -r CRT KEY SNI <<<"$pair"
+        # ★ 证书域名必须是**真域名**。find_cert 已经会读 SAN/CN 了, 但证书本身
+        #   可能是 CN 乱写的自签 (localhost / common name), 或者 openssl 完全
+        #   读不出来 —— 这时 SNI 会是空串或一个不像域名的残值。
+        #   空 SNI 会被下面的 TLS 档位拦住, 但**不像域名**的残值会一路写进
+        #   客户端产物 (server: / sni:), 症状是节点永远连不上而面板全绿。
+        #   这里一次性堵死: 不像域名就当作"没有可用域名"。
+        if ! [[ "$SNI" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$ ]]; then
+            printf "     ${YELLOW}—${RESET} 证书 %s 里没有可用的域名 (CN/SAN 不像域名), CDN 档位将跳过\n" \
+                   "$(basename "${CRT:-未知}")" >&2
+            SNI=""
+        fi
     fi
     [[ -n "$CRT" && -f "$CRT" && -n "$KEY" && -f "$KEY" ]] || { CRT=""; KEY=""; SNI=""; }
 
