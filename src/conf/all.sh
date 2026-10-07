@@ -685,6 +685,13 @@ gen() {
     # $3=源站片段 $4=客户端产物, 再往后才是调用方传的自定义参数。
     if "$bodyfn" "$idx" "$port" "$in_file" "$out_file" \
         ${bodyargs[@]+"${bodyargs[@]}"} 2>"$logf"; then
+        # CDN 档位若没配回源域名, 生成的节点**连不上** (Cloudflare 找不到
+        # 源站)。但结果表标"成功"、提示又在一百多行之前, 用户完全看不出来
+        # 这批节点是废的。这里如实标成"待回源", 让它在表里就露出来。
+        if [[ "$label" == CDN:* && -z "$CDN_DOMAIN" ]]; then
+            record "$label" "$port" "待回源" "未设 CDN_DOMAIN, 需服务端面板 → CDN 回源 挂一次"
+            return
+        fi
         record "$label" "$port" "成功" ""
     else
         why=$(tail -2 "$logf" | awk 'NF && !seen[$0]++' | tr '\n' ' ' | cut -c1-100)
@@ -2067,6 +2074,7 @@ for r in "${RESULTS[@]}"; do
     IFS='|' read -r p port st note <<<"$r"
     case "$st" in
         成功) stc="${GREEN}${st}${RESET}"; n_ok=$((n_ok+1)) ;;
+        待回源) stc="${YELLOW}${st}${RESET}"; n_skip=$((n_skip+1)) ;;
         预览) stc="${CYAN}${st}${RESET}"; n_prev=$((n_prev+1)) ;;
         失败) stc="${RED}${st}${RESET}"; local_fail=$((local_fail+1)) ;;
         *)    stc="${YELLOW}${st}${RESET}"; n_skip=$((n_skip+1)) ;;

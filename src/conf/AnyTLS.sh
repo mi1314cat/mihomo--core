@@ -69,7 +69,13 @@ get_next_index() {
 # ================================
 # 随机端口
 # ================================
-random_port() { shuf -i 10000-60000 -n 1; }
+# ★ 端口区间必须与 all.sh 的 PORT_CURSOR 起点 (20000) 和界面口径一致。
+#   原来这里是 10000-60000, 而 all.sh 从 20000 起顺延, 统计口径又是
+#   20000-29999 —— 三者各说各话。后果: 手工建的节点约 60% 落在 30000 以上,
+#   状态栏「运行中的协议端口」**少报甚至报 0** (实测 4 个真实 socket 显示 1),
+#   用户会以为节点没起来。update_config 的"占用端口"列表也用同一个过滤器,
+#   同样漏 (31 个节点只列 23 个)。
+random_port() { shuf -i 20000-29999 -n 1; }
 
 safe_read_port() {
     # 六份重复实现已收敛到 env.sh 的 m_safe_read_port:
@@ -362,7 +368,7 @@ read_features() {
 # 渲染 smux 客户端配置块（按档位）；输出到变量 SMUX_BLOCK
 render_smux() {
     SMUX_BLOCK=""
-    [[ -z "$SMUX_PROFILE" ]] && return
+    _smux_on "${SMUX_PROFILE-}" || return
     local mc ms mn
     read -r mc mn ms <<< "$(smux_profile "$SMUX_PROFILE")"
     SMUX_BLOCK="    smux:
@@ -424,9 +430,33 @@ add_config() {
     }
     [[ -n "$ANYTLS_PORT" ]] || { print_error "端口为空, 已取消创建"; return 1; }
 
-    # 4. 自动生成域名（证书）
-    DOMAIN="cloudflare.com"
-    generate_cert "$DOMAIN"
+    # 4. 证书
+    #
+    # ⚠ 原来这里是**无条件** `DOMAIN="cloudflare.com"; generate_cert`, 既不
+    #   问也不看别的。后果是 AnyTLS 的三个预设里, ②真证书 和 ③真证书+padding
+    #   完全是死选项: 预置表第 5 段被 preset_apply 解析进 M_PRESET_CERT,
+    #   但**全项目没有任何一处读它** —— 选哪一档都会生成 cloudflare.com 自签。
+    #   本机明明有 certbot/nginx 证书也用不上, 客户端只能钉扎。
+    #   别的 5 个协议都有 ask_cert, 这里补上, 并让预设能预答。
+    case "${M_PRESET_CERT:-}" in
+        selfsign|"")
+            if [[ -n "${M_PRESET_CERT:-}" ]]; then
+                print_info "证书 (来自推荐配置): 自签 + 钉扎"
+                DOMAIN="cloudflare.com"; generate_cert "$DOMAIN"
+            else
+                ask_cert
+            fi
+            ;;
+        *)
+            # 用户要的是 CA 可信证书: 先问路径, 没给再退回自签
+            print_info "推荐配置要求 CA 可信证书 (客户端无需 insecure/钉扎)"
+            ask_cert
+            # ask_cert 里选了"生成自签"的话这里要如实告知, 不能假装是真证书
+            if [[ "${CERT_TRUSTED:-false}" != "true" ]]; then
+                print_warn "未选用 CA 可信证书, 已退回自签 —— 客户端需要钉扎"
+            fi
+            ;;
+    esac
 
     # 5. 自动编号
     index=$(get_next_index)
@@ -461,7 +491,7 @@ add_config() {
     ask_padding
 
     # 8. 写入入站配置（Mihomo AnyTLS）
-NODE_TAG="$(m_node_tag AnyTLS "$index" tls)"
+NODE_TAG="$(m_node_tag AnyTLS "$index" tls)${M_PRESET_TAG_SUFFIX:-}"
 cat > "$IN_FILE" <<EOF
 # mtls: $MTLS_ENABLED
 # smux: ${SMUX_PROFILE:-false}
@@ -481,7 +511,7 @@ $PADDING_BLOCK
 EOF
 
     # 9. 写入客户端配置（Clash Meta）
-NODE_TAG="$(m_node_tag AnyTLS "$index" tls)"
+NODE_TAG="$(m_node_tag AnyTLS "$index" tls)${M_PRESET_TAG_SUFFIX:-}"
 cat > "$OUT_FILE" <<EOF
 proxies:
   - name: $NODE_TAG
@@ -513,7 +543,7 @@ echo "anytls://$PASSWORD@$LINK_IP:$ANYTLS_PORT?sni=$DOMAIN&insecure=1&fp=$CLIENT
     echo -e "指纹: $CLIENT_FP | 空闲会话: ${IDLE_CHECK}s/${IDLE_TIMEOUT}s" >&2
     [[ -n "$PADDING_BLOCK" ]] && echo -e "padding-scheme: 已显式写入 (仅服务端 listener 生效, 客户端由服务端帧下发)" >&2
     $MTLS_ENABLED && echo -e "mTLS: 已启用 (客户端证书: $CERT_DIR/mtls-$PROTO-$index/)" >&2
-    [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
+    _smux_on "${SMUX_PROFILE-}" && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
     echo -e "入站配置: $IN_FILE" >&2
     echo -e "客户端配置: $OUT_FILE" >&2
     echo -e "分享链接: $SHARE_FILE" >&2
@@ -699,7 +729,7 @@ export_subscription() {
 cat >> "$SUB_FILE" <<EOF
 
 # ============================
-# AnyTLS-$num2$($MTLS_ENABLED && echo " (mTLS)")$([[ -n "$SMUX_PROFILE" ]] && echo " ($SMUX_PROFILE smux)")
+# AnyTLS-$num2$($MTLS_ENABLED && echo " (mTLS)")$(_smux_on "${SMUX_PROFILE-}" && echo " ($SMUX_PROFILE smux)")
 # ============================
   - name: $NODE_TAG
     type: anytls
@@ -814,5 +844,16 @@ main_menu() {
         read || break
     done
 }
-
+# 直接跑本脚本 = 管理面板 (查看/新增/删除)。
+# 从服务端面板「添加节点」进来时, 目标是**新增一个**, 不该再让人选一次
+# 「2) 新增配置」—— 那层二级菜单在"一路回车"的批量场景下会把所有回车
+# 吃成「无效选项:」, 最后节点数仍是 0, 而界面没有任何异常提示。
+case "${1:-}" in
+    add|"")
+        if [[ "${1:-}" == "add" ]]; then
+            add_config; m_sync_reload
+            exit 0
+        fi
+        ;;
+esac
 main_menu

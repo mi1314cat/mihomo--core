@@ -208,7 +208,13 @@ get_next_index() {
 # ================================
 # 随机端口
 # ================================
-random_port() { shuf -i 10000-60000 -n 1; }
+# ★ 端口区间必须与 all.sh 的 PORT_CURSOR 起点 (20000) 和界面口径一致。
+#   原来这里是 10000-60000, 而 all.sh 从 20000 起顺延, 统计口径又是
+#   20000-29999 —— 三者各说各话。后果: 手工建的节点约 60% 落在 30000 以上,
+#   状态栏「运行中的协议端口」**少报甚至报 0** (实测 4 个真实 socket 显示 1),
+#   用户会以为节点没起来。update_config 的"占用端口"列表也用同一个过滤器,
+#   同样漏 (31 个节点只列 23 个)。
+random_port() { shuf -i 20000-29999 -n 1; }
 
 # 随机 8-16 位路径段 (字母+数字, 抗识别; 大小写混合)
 random_path() {
@@ -705,7 +711,7 @@ read_features() {
 # brutal-opts 与服务端 mux-option.brutal 成对 (singmux.go:32-39 / listener/inbound/mux.go:10-13)
 render_smux() {
     SMUX_BLOCK=""
-    [[ -z "$SMUX_PROFILE" ]] && return
+    _smux_on "${SMUX_PROFILE-}" || return
     local mc ms mn
     read -r mc mn ms <<< "$(smux_profile "$SMUX_PROFILE")"
     SMUX_BLOCK="    smux:
@@ -728,7 +734,7 @@ render_smux() {
 # 没有它, 客户端 smux 档位就只是客户端一侧自说自话
 render_mux_option() {
     MUX_OPTION_BLOCK=""
-    [[ -z "$SMUX_PROFILE" ]] && return
+    _smux_on "${SMUX_PROFILE-}" || return
     MUX_OPTION_BLOCK="    mux-option:
       padding: true"
     if $BRUTAL_ENABLED; then
@@ -1246,7 +1252,7 @@ add_config() {
     echo -e "域名: $CERT_DOMAIN" >&2
     $MTLS_ENABLED && echo -e "mTLS: 已启用 (客户端证书: $CERT_DIR/mtls-$PROTO-$index/)" >&2
     $ECH_ENABLED && echo -e "ECH: 已启用 (Cloudflare: ${CF_ECH_READY:-未确认})" >&2 || true
-    [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档${BRUTAL_ENABLED:+, brutal $BRUTAL_UP/$BRUTAL_DOWN})" >&2
+    _smux_on "${SMUX_PROFILE-}" && echo -e "smux: 已启用 ($SMUX_PROFILE 档$(_smux_on "${BRUTAL_ENABLED-}" && echo ", brutal $BRUTAL_UP/$BRUTAL_DOWN"))" >&2
     echo -e "入站配置: $IN_FILE" >&2
     echo -e "客户端配置: $OUT_FILE" >&2
     echo -e "分享链接: $SHARE_FILE" >&2
@@ -1531,5 +1537,16 @@ main_menu() {
         read || break
     done
 }
-
+# 直接跑本脚本 = 管理面板 (查看/新增/删除)。
+# 从服务端面板「添加节点」进来时, 目标是**新增一个**, 不该再让人选一次
+# 「2) 新增配置」—— 那层二级菜单在"一路回车"的批量场景下会把所有回车
+# 吃成「无效选项:」, 最后节点数仍是 0, 而界面没有任何异常提示。
+case "${1:-}" in
+    add|"")
+        if [[ "${1:-}" == "add" ]]; then
+            add_config; m_sync_reload
+            exit 0
+        fi
+        ;;
+esac
 main_menu

@@ -96,15 +96,26 @@ fetch_script() {
     for base in "$OCS_RAW" "$OCS_PROXY"; do
         rm -f "$tmp"
         if curl -fsSL --max-time 30 "$base/$path" -o "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
-            # 极简健全性检查: 不是 shell 脚本就别执行
-            if head -c 2 "$tmp" | grep -q '#!'; then
+            # 健全性检查: 必须是可解析的 shell 脚本才执行。
+            #
+            # ⚠ 原来判的是 `head -c 2 | grep -q '#!'`, 即要求**头两个字节**
+            #   正好是 "#!"。而实测那份 domains.sh 的第 1 字节是**换行**,
+            #   第 2 字节才是 "s" —— 于是它被判成"不像可执行脚本"而丢弃,
+            #   Reality/Trojan 的域名优选**从来没成功过**, 全部静默退化成
+            #   硬编码的 www.microsoft.com。curl 明明 200、7837 字节、语法正确。
+            #
+            #   正确的判据是"能不能被 bash 解析", 顺便用 grep 看一眼内容里
+            #   有没有 shebang, 覆盖"文件头是注释但确实是脚本"的情况。
+            if grep -qm1 '^#!' "$tmp" || bash -n "$tmp" 2>/dev/null; then
                 mv -f "$tmp" "$dest"
                 chmod +x "$dest" 2>/dev/null
                 return 0
             fi
-            print_warn "下载内容不像可执行脚本, 已丢弃: $path"
+            print_warn "下载内容不是可执行的 shell 脚本, 已丢弃: $path"
             rm -f "$tmp"
-            return 1
+            # ⚠ 这里原本是 return 1 —— 直接跳出镜像循环, **备用源根本没试**。
+            #   一个镜像出问题就等于整体失败。改成 continue 试下一个源。
+            continue
         fi
     done
     rm -f "$tmp"
@@ -1042,6 +1053,24 @@ m_sync_reload() {
 #   cdn.sh    依赖 cert.sh (用 CERT_DOMAIN) 和 ui.sh, 所以必须排最后
 # =============================================================
 _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
+
+# smux 档位是否真的开着。
+#
+# ⚠ 预设表里 "off" 是一个**合法档位名** (preset.sh 的 mux 列), 表示"不要
+#   smux"。但各处判据写的是 `[[ -z "$SMUX_PROFILE" ]]` / `[[ -n ... ]]`
+#   —— 只判空不判值, 而 "off" 非空, 于是:
+#     摘要打 "smux: 已启用 (off 档, brutal 200/500 Mbps)"
+#     客户端 yaml 真的写了 smux.enabled: true
+#     服务端片段只有 mux-option.padding, 没有 smux 块
+#     片段头注释还写着 "# smux: off"
+#   三处互相打架, 而用户是**一路回车**选中这一档的, 没有任何一次主动输入。
+#   统一收口到这一个函数, 不要再各自判空。
+_smux_on() {
+    local v="${1-}"
+    [[ -n "$v" && "$v" != "off" && "$v" != "none" && "$v" != "false" ]]
+}
+
+
 # shellcheck source=/dev/null
 [[ -f "$_m_libdir/preset.sh" ]] && source "$_m_libdir/preset.sh"
 # shellcheck source=/dev/null

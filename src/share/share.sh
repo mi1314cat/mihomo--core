@@ -221,7 +221,19 @@ share_create() {
     printf '\n分享服务对外地址: \033[1m%s\033[0m\n' "$addr"
     printf '若不对 (例如探测到了代理出口 IP), 请直接输入正确地址; 回车表示使用上面的:\n请输入: '
     local a2; read -r a2
-    [[ -n "$a2" ]] && addr="$a2"
+    a2=$(clean_input "${a2:-}")
+    # 校验: 输错一个字符就会生成一条**永远打不开**的链接, 而界面照样显示
+    # 「已生成分享链接」, 用户要等到客户端拉取失败才发现。
+    if [[ -n "$a2" ]]; then
+        local a2c="${a2#http://}"; a2c="${a2c#https://}"; a2c="${a2c%%/*}"
+        # 主机名或 IP。纯数字且看着像端口号的 (输成 "0"/"9443") 会被这条挡掉
+        if [[ "$a2c" =~ ^[A-Za-z0-9.:_-]+$ ]] \
+           && ! [[ "$a2c" =~ ^[0-9]{1,5}$ ]]; then
+            addr="$a2"
+        else
+            print_error "地址不合法, 已忽略, 继续用上面探测到的: $addr"
+        fi
+    fi
 
     mkdir -p "$SHARES"
     python3 - "$SHARES/$token.json" "$token" "$TAG" "$mu" "$expires" <<'PY'

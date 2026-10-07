@@ -258,6 +258,54 @@ PY
 }
 
 run_gate "档位 id 一致"   ids_consistent
+# 预置表不能宣传**对应协议脚本产不出来**的东西。
+#
+# 实测翻车: VLESS 预置表里有 4 档挂着 REALITY, 而 src/conf/VLESS.sh 里
+# 一个 reality 字都没有 (REALITY 是独立的 Reality.sh)。用户一路回车选中
+# "① 隐匿优先 · REALITY", 面板照打"已套用预置", 实际产出纯 TLS 节点,
+# 没有一句"已降级"。预置表借用隔壁脚本的能力 = 骗用户。
+preset_scope() {
+    python3 - <<'PY'
+import re, sys, os
+pre = open("src/lib/preset.sh", encoding="utf-8").read()
+rows = re.findall(r'"([a-z0-9-]+\|[^"]*\|[^"]*)"', pre)
+# 协议 -> 脚本路径
+SCRIPT = {"vless": "src/conf/VLESS.sh", "vmess": None,
+          "trojan": "src/conf/Trojan.sh", "anytls": "src/conf/AnyTLS.sh",
+          "hysteria2": "src/conf/hysteria2.sh", "tuic": "src/conf/TUIC.sh",
+          "ss": None, "snell": None}
+bad = []
+for r in rows:
+    cols = r.split("|")
+    if len(cols) < 7:
+        continue
+    # 行结构: 协议|id|显示名|传输|mux|flow|证书|说明|标签|extra
+    #        0    1   2      3    4    5    6
+    proto, cert = cols[0], cols[6].strip()
+    path = SCRIPT.get(proto)
+    if not path or not os.path.exists(path):
+        continue
+    # ⚠ 必须**去掉注释**再判断。脚本注释里出现 "REALITY" 是正常的
+    #   (说明为什么这里不做 REALITY), 直接全文 grep 会把注释当成实现,
+    #   关卡就永远不报警 —— 那样这道关卡等于没有。
+    src = open(path, encoding="utf-8").read()
+    code = "\n".join(re.sub(r"#.*$", "", ln) for ln in src.splitlines())
+    # 判据看**实际产出 REALITY 的东西**: 写进配置的 reality-opts,
+    # 或调用生成密钥的函数。只看变量名会被一堆同名局部变量带偏。
+    implements_reality = ("reality-opts" in code
+                          or "gen_reality_keys" in code
+                          or "generate_reality" in code)
+    if cert == "reality" and not implements_reality:
+        bad.append("%s: 预置标 REALITY 但 %s 里没有 reality 实现" % (proto, path))
+if bad:
+    for b in sorted(set(bad)):
+        print("❌ " + b)
+    print("   预置表只能描述该脚本**真的能产出**的形态; 借隔壁脚本的能力等于骗用户。")
+    sys.exit(1)
+PY
+}
+
+run_gate "预置不越权"   preset_scope
 
 run_gate "幽灵函数"     phantom_scan
 

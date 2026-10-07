@@ -313,7 +313,11 @@ core_menu() {   # <安装根目录> <服务名>
     while true; do
         print_title "安装 / 内核管理"
         ui_kv_ascii "内核" "$(core_current_version "$root/mihomo")"
-        ui_kv_ascii "服务" "$(systemctl is-active "$svc" 2>/dev/null || echo inactive)"
+        # systemctl 未运行时退出码非 0, stdout 已经打了 "inactive";
+        # 再 || echo inactive 就是**同一行打印两遍**, 界面上一条
+        # "服务 : inactive" 下面孤零零多一个 inactive。
+        local _svcstate; _svcstate=$(systemctl is-active "$svc" 2>/dev/null) || _svcstate="inactive"
+        ui_kv_ascii "服务" "$_svcstate"
         echo >&2
         ui_menu 1 "初始化基础配置"
         ui_menu 2 "安装 / 重装内核"

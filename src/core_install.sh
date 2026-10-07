@@ -835,8 +835,12 @@ printf '\n  安装目录: %s\n  配置目录: %s\n  节点目录: %s/conf/config
 # 这里原来写的是 `bash <(curl -fsSL <仓库地址>/install.sh)` —— 一个从没被
 # 填上的占位符, 用户照着敲只会得到一条无效命令。改成指本机面板: 不依赖网络、
 # 不依赖仓库地址, 而且一定指向"这个目录下真正存在的那个面板"。
+# 按**这次装的是哪一端**决定, 不是"目录里恰好存在哪个文件"。
+# 原判据是「client.sh 存在就用 client.sh」, 而服务端目录里两个面板都在,
+# 于是服务端装完提示的是客户端面板命令 —— 用户敲进去进的是另一端的界面。
 _panel="server.sh"
-[[ -f "$INSTALL_DIR/src/client.sh" ]] && _panel="client.sh"
+[[ "${ROLE:-server}" == "client" || "${CLI_ROLE:-}" == "1" ]] && _panel="client.sh"
+[[ -f "$INSTALL_DIR/src/server.sh" ]] || _panel="client.sh"
 printf '  管理面板: bash %s/src/%s\n\n' "$INSTALL_DIR" "$_panel"
 
 # ---------- geo 数据库 (放在最后) ----------

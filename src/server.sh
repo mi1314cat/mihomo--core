@@ -76,8 +76,8 @@ status_block() {
     p=$( { ss -tlnp 2>/dev/null; ss -ulnp 2>/dev/null; } \
         | grep "(\"$nm\"," \
         | awk '{print $4}' | sed -n 's/.*:\([0-9]\{1,5\}\)$/\1/p' \
-        | awk '$1 >= 20000 && $1 <= 29999' | sort -un | wc -l | tr -d ' ' )
-    printf "  运行中的协议端口: %s (TCP+UDP, 20000-29999)\n" >&2 "${p:-0}"
+        | awk -v lo=$PROTO_PORT_LO -v hi=$PROTO_PORT_HI '$1 >= lo && $1 <= hi' | sort -un | wc -l | tr -d ' ' )
+    printf "  运行中的协议端口: %s (TCP+UDP, %d-%d)\n" >&2 "${p:-0}" "$PROTO_PORT_LO" "$PROTO_PORT_HI"
 }
 
 node_count() {
@@ -117,6 +117,11 @@ for x in l:
 # =============================================================
 # 添加 / 管理节点 —— 委托给各协议脚本
 # =============================================================
+# 协议节点端口区间。三处口径必须一致: 各协议脚本的 random_port、
+# all.sh 的 PORT_CURSOR 起点、状态栏的统计过滤。任何一个单独改都会
+# 让「运行中的协议端口」少报。
+PROTO_PORT_LO=20000
+PROTO_PORT_HI=29999
 PROTO_SCRIPTS=(Reality.sh VLESS.sh Trojan.sh hysteria2.sh TUIC.sh AnyTLS.sh)
 PROTO_LABELS=("Reality (VLESS+Reality)" "VLESS" "Trojan" "Hysteria2" "TUIC v5" "AnyTLS")
 # 每项的**变体与限制**, 内联在菜单里。
@@ -233,7 +238,10 @@ add_node() {
     [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= n_single )) || { ui_invalid "$c"; return 1; }
     local script="$HERE/conf/${PROTO_SCRIPTS[$((c-1))]}"
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
-    BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
+    # 传 add 子命令: 直接进新增向导, 不先进协议脚本自己的管理面板。
+    # 少了它, 「添加节点 → 2) VLESS」会先显示"查看/新增/删除配置", 得再选一次 2;
+    # 一路回车时那些回车全被二级菜单吃掉成「无效选项:」, 结果节点数仍是 0。
+    BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script" add
     fw_after_node_change
 }
 

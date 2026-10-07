@@ -42,11 +42,16 @@ M_PRESETS=(
   #   否则客户端发来的 HTTP/2 帧会被当成 VLESS 头 -> 必然握手失败。
   #   实测 vless+h2 恒为 0/5, 而对照 vless+grpc 5/5 (二者同为 HTTP/2)。
   #   VLESS.sh 会在用户选 h2 时自动改道到 grpc。
-  "vless|tcp-vision|① 隐匿优先 · REALITY|tcp|off|xtls-rprx-vision|reality|裸TCP + XTLS Vision; 抗 DPI 最强; 不用证书|REALITY|"
-  "vless|grpc-video|② gRPC 伪装 · REALITY|grpc|video||reality|gRPC 套一层正常 HTTP/2; 观感最像普通应用|REALITY|"
-  "vless|grpc-dl|③ gRPC 高并发 · REALITY|grpc|download||reality|多路复用扛并发; 适合大量小请求|REALITY|"
-  "vless|xhttp-reality|⑤ xHTTP · REALITY (M 独有)|xhttp|video||reality|xHTTP 伪装成普通 HTTP 接口调用; 仅 M 内核支持|REALITY+xHTTP|"
-  "vless|xhttp-tls|⑥ xHTTP · 真证书 (M 独有)|xhttp|video||真证书|xHTTP 走 TLS; 可直连也可过 CDN|真证书+xHTTP|"
+  # ⚠ 这几行原来挂着 REALITY, 但 **src/conf/VLESS.sh 里一个 reality 字都没有**
+  #   (REALITY 由独立的 Reality.sh 实现)。用户一路回车选中
+  #   「① 隐匿优先 · REALITY」, 面板却打"已套用预置 / 节点名后缀: REALITY",
+  #   实际产出纯 TLS (mVLESS01-TLS、真证书、无 reality-opts),
+  #   **一句"已降级"都没有**。预置表借用隔壁脚本的能力 = 骗用户。
+  #   tools/check_all.sh 的「预置不越权」关卡盯着这件事。
+  "vless|tcp-vision|① 裸TCP + Vision · 真证书|tcp|off|xtls-rprx-vision|真证书|裸TCP + XTLS Vision; 抗 DPI 最强的一档|TCP+Vision|"
+  "vless|grpc-video|② gRPC 伪装 · 真证书|grpc|video||真证书|gRPC 套一层正常 HTTP/2; 观感最像普通应用|gRPC|"
+  "vless|grpc-dl|③ gRPC 高并发 · 真证书|grpc|download||真证书|多路复用扛并发; 适合大量小请求|gRPC+高并发|"
+  "vless|xhttp-tls|⑤ xHTTP · 真证书 (M 独有)|xhttp|video||真证书|xHTTP 伪装成普通 HTTP 接口调用; 仅 M 内核支持|真证书+xHTTP|"
   "vless|ws-cdn|⑦ CDN 网页党 · 真证书|ws|web||真证书|走 Cloudflare 回源; 网页浏览档, 最省资源|CDN|cdn"
   "vless|grpc-cdn|⑧ CDN · gRPC 档|grpc|video||真证书|Cloudflare 回源; gRPC 走 HTTP/2|CDN+gRPC|cdn"
   "vless|xhttp-cdn|⑨ CDN · xHTTP 档 (M 独有)|xhttp|video||真证书|xHTTP 过 Cloudflare; 需把该 path 排除缓存|CDN+xHTTP|cdn"
@@ -142,7 +147,7 @@ preset_id() { # <协议> <第几行>
 preset_reset() {
     M_PRESET_TR=""; M_PRESET_MUX=""; M_PRESET_FLOW=""; M_PRESET_CERT=""
     M_PRESET_TAG=""; M_PRESET_ECH=0; M_PRESET_PAD=0; M_PRESET_CDN=0
-    M_PRESET_NAME=""; M_PRESET_ID=""; M_PRESET_DESC=""
+    M_PRESET_NAME=""; M_PRESET_ID=""; M_PRESET_DESC=""; M_PRESET_TAG_SUFFIX=""
     M_PRESET_APPLIED=0
 }
 
@@ -173,6 +178,15 @@ preset_apply() { # <协议> <第几行>
 
     [[ "$extra" == *ech* ]] && M_PRESET_ECH=1
     [[ "$extra" == *pad* ]] && M_PRESET_PAD=1
+    # 节点名后缀: 三个 AnyTLS 预置在证书形态上完全不同 (自签 / 真证书 /
+    # 真证书+padding), 而节点名只区分 TLS 形态 —— 在列表里长得一模一样,
+    # 用户根本看不出自己建的是哪一档。名字必须能区分开。
+    M_PRESET_TAG_SUFFIX=""
+    case "${M_PRESET_TAG:-}" in
+        *pad*) M_PRESET_TAG_SUFFIX="-PAD" ;;
+        真证书) M_PRESET_TAG_SUFFIX="-REAL" ;;
+        自签)   M_PRESET_TAG_SUFFIX="-PIN" ;;
+    esac
     [[ "$extra" == *cdn* ]] && M_PRESET_CDN=1
     M_PRESET_APPLIED=1
     return 0

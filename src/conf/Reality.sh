@@ -56,7 +56,13 @@ safe_read_port() {
     m_safe_read_port "$1"
 }
 
-random_port() { shuf -i 10000-60000 -n 1; }
+# ★ 端口区间必须与 all.sh 的 PORT_CURSOR 起点 (20000) 和界面口径一致。
+#   原来这里是 10000-60000, 而 all.sh 从 20000 起顺延, 统计口径又是
+#   20000-29999 —— 三者各说各话。后果: 手工建的节点约 60% 落在 30000 以上,
+#   状态栏「运行中的协议端口」**少报甚至报 0** (实测 4 个真实 socket 显示 1),
+#   用户会以为节点没起来。update_config 的"占用端口"列表也用同一个过滤器,
+#   同样漏 (31 个节点只列 23 个)。
+random_port() { shuf -i 20000-29999 -n 1; }
 
 # ================================
 # 编号系统
@@ -270,7 +276,7 @@ read_features() {
 # 渲染 smux 客户端配置块（按档位）；输出到变量 SMUX_BLOCK
 render_smux() {
     SMUX_BLOCK=""
-    [[ -z "$SMUX_PROFILE" ]] && return
+    _smux_on "${SMUX_PROFILE-}" || return
     local mc ms mn
     read -r mc mn ms <<< "$(smux_profile "$SMUX_PROFILE")"
     SMUX_BLOCK="    smux:
@@ -409,7 +415,7 @@ echo "vless://$UUID@$LINK_IP:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision
     echo -e "端口: $REALITY_PORT" >&2
     echo -e "UUID: $UUID" >&2
     echo -e "SNI: $dest_server" >&2
-    [[ -n "$SMUX_PROFILE" ]] && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
+    _smux_on "${SMUX_PROFILE-}" && echo -e "smux: 已启用 ($SMUX_PROFILE 档)" >&2
     $XUDP_ENABLED && echo -e "xudp: 已启用" >&2
     echo -e "入站配置: $IN_FILE" >&2
     echo -e "客户端配置: $OUT_FILE" >&2
@@ -671,5 +677,16 @@ main_menu() {
         read || break
     done
 }
-
+# 直接跑本脚本 = 管理面板 (查看/新增/删除)。
+# 从服务端面板「添加节点」进来时, 目标是**新增一个**, 不该再让人选一次
+# 「2) 新增配置」—— 那层二级菜单在"一路回车"的批量场景下会把所有回车
+# 吃成「无效选项:」, 最后节点数仍是 0, 而界面没有任何异常提示。
+case "${1:-}" in
+    add|"")
+        if [[ "${1:-}" == "add" ]]; then
+            add_config; m_sync_reload
+            exit 0
+        fi
+        ;;
+esac
 main_menu
