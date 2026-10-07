@@ -541,12 +541,23 @@ m_safe_read_port() {
 #    经 mixed-port 打 generate_204。每项跑两次排除偶发。
 #    实测环境:  节点。
 #
-#    实测**不可用**的三个 (全部两次都失败, 且普通 TLS 握手正常):
-#        www.bing.com        REALITY authentication failed   ← 曾是默认兜底值!
-#        oracle.com          REALITY authentication failed
-#        one.one.one.one     REALITY authentication failed
 #    教训: 兜底值绝不能拍脑袋写。老代码兜底用的正是 bing, 于是"不手动选
 #    dest"的用户 100% 拿到一个连不上、却显示成功的 REALITY 节点。
+#
+# 2026-10-07 重新实测 (真实内核握手 x3, 判据 = 代理请求返回 204):
+#    下面 12 个**全部 3/3 通过**, 因此整份名单换成了这批大厂域名:
+#      microsoft / apple / cloudflare / google / swdist.apple / samsung
+#      amd / intel / lenovo / sony / nvidia / tesla
+#    顺带重测了上一版记为"坏"的三个:
+#      www.bing.com      → 本轮 3/3 **通过**
+#      one.one.one.one   → 本轮 3/3 **通过**
+#      oracle.com        → 本轮仍然失败
+#    也就是说当年那三个"必失败"的结论**并不稳定**: bing / 1.1.1.1 在当时
+#    的网络条件下失败, 现在却稳定可用。这恰恰说明**静态名单不可信** ——
+#    所以上面这批也不能当真理, 只是"此刻实测能用"的快照。
+#    M_REALITY_PROBE_FORCE=1 可随时强制重测; 用户自己的 domains.sh 域名池
+#    才是第一来源, 这份名单只在取不到时兜底。
+REALITY_DESTS_BAD=("oracle.com")
 # =============================================================
 # 统一域名优选 (从 One-click-script 的 domains.sh 现场取)
 #
@@ -625,16 +636,13 @@ m_auto_website() {   # <尝试次数-默认 3>  → stdout: 一个域名; 失败
 
 REALITY_DESTS=(
     "www.microsoft.com"  "www.apple.com"      "www.cloudflare.com"
-    "swdist.apple.com"   "www.lovelive-anime.jp" "dl.google.com"
-    "www.nvidia.com"     "www.tesla.com"
+    "dl.google.com"      "swdist.apple.com"   "www.samsung.com"
+    "www.amd.com"        "www.intel.com"      "www.lenovo.com"
+    "www.sony.com"       "www.nvidia.com"     "www.tesla.com"
 )
 
 # 实测坏名单: 仅用于提示, 不放进候选池。保留是为了在用户手动输入这些域名时
 # 能给出针对性警告 —— 直接说"这个域名实测不可用", 比让用户自己排查强得多。
-REALITY_DESTS_BAD=(
-    "www.bing.com"       "oracle.com"         "one.one.one.one"
-)
-
 # =============================================================
 # REALITY dest 实测探针 (防呆的核心)
 #
@@ -658,6 +666,13 @@ M_DEST_CACHE="${M_DEST_CACHE:-$SRV_ROOT/reality_dest_cache.tsv}"
 m_reality_dest_cache_seed() {
     [[ -f "$M_DEST_CACHE" ]] && return 0
     mkdir -p "$(dirname "$M_DEST_CACHE")" 2>/dev/null || return 0
+    # ⚠ 种子写的是 REALITY_DESTS 里各域名**在 2026-10-07 实测握手通过**,
+    #   但那只是"此刻能用"的快照 —— 站点会下线/换 CDN/改 ALPN。所以:
+    #   * 用户自己维护的 domains.sh 域名池才是第一来源 (每次现取 + 现测)
+    #   * 这份名单只是取不到时的兜底
+    #   * M_REALITY_PROBE_FORCE=1 可强制重测, 不信种子
+    # 早先这里把 bing / 1.1.1.1 硬写成 bad, 而本轮实测它们 3/3 都通过 ——
+    # 静态判定被现实证伪过一次, 所以只对"本轮确实测过"的域名下结论。
     { local d
       for d in "${REALITY_DESTS[@]}"; do printf '%s\tok\n' "$d"; done
       for d in "${REALITY_DESTS_BAD[@]}"; do printf '%s\tbad\n' "$d"; done
