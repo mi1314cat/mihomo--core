@@ -20,6 +20,7 @@ src/lib/merge.py
 src/lib/portcheck.sh
 src/lib/preset.sh
 src/lib/rules_bind.sh
+src/lib/server_extra.sh
 src/lib/simple_proxy.sh
 src/lib/ui.sh
 src/lib/validate.py

@@ -85,6 +85,9 @@ TOP = {
     "geodata-loader", "geosite-matcher", "geox-url",
     "sniffer", "tun", "dns", "hosts", "rule-providers", "rules", "sub-rules",
     "listeners", "proxies", "proxy-groups", "proxy-providers", "tunnels",
+    # 出站: 服务端主动连出去时用的链路。与 proxies (入站节点) 独立。
+    # 内核 config/config.go 有这个顶层键 (已用 mihomo -t 实测 v1.19.32 通过)。
+    "outbounds",
     "ntp", "iptables", "tls", "experimental", "global-ua", "etag-support",
     # 内核 config/config.go:434-435 确有这两个顶层键, 之前漏了会被误报
     "interface-name", "routing-mark",
@@ -176,8 +179,37 @@ LISTENER = {
                              "reality-config"},
     "tproxy": BASE_LISTENER | {"udp"},
     "redir": BASE_LISTENER,
+    # tunnel listener —— 端口转发 (TCP/UDP 转发) 用。
+    #
+    # ★ 踩过的坑, 别再改回 direct:
+    #   直觉上端口转发应该写 `type: direct`, 但内核**没有**这个 listener 类型,
+    #   mihomo -t 会直接报 `listener N: unsupport proxy type: direct`。
+    #   而且这个报错**不会**在面板上体现为"端口转发坏了", 只表现为
+    #   "整批配置校验不过" —— 因为它和节点共用同一个 listeners 数组。
+    #
+    #   正确写法 (已用 mihomo -t v1.19.32 逐字段实测):
+    #       type: tunnel
+    #       network: [tcp]        # 必须**列表**, 写成标量报 'network' is not a slice
+    #       target: host:port     # 无 ,omitempty => 缺了报 "has unset fields"
+    #       override-destination: bool
+    "tunnel": BASE_LISTENER | {"network", "target", "override-destination"},
 }
 LISTENER_TYPES = set(LISTENER) | {"tun", "tunnel"}
+
+# 出站 (outbounds 段) 的字段白名单。
+#   common/direct/reject/reject-drop 无额外字段;
+#   socks5/http 需要 server+port;
+#   其余走 dialer-proxy 的协议与 PROXY 同构 —— 这里不重复列全, 只在
+#   check_outbounds 里按类型挑对应的白名单。
+OUTBOUND_BASE = {"name", "type", "udp", "interface-name", "routing-mark",
+                 "ip-version", "dialer-proxy", "tfo", "mptcp"}
+OUTBOUND_UPSTREAM = OUTBOUND_BASE | {"server", "port", "username", "password",
+                                     "tls", "skip-cert-verify", "sni",
+                                     "client-fingerprint", "fingerprint"}
+# 可接受的出站类型 (内核 outbound/ 下实际实现的)
+OUTBOUND_TYPES = {"direct", "reject", "reject-drop", "pass", "compatible",
+                  "socks5", "http", "ss", "snell", "vmess", "vless", "trojan",
+                  "hysteria2", "tuic", "anytls", "shadow-tls", "wireguard"}
 
 BASE_PROXY = {"name", "server", "port", "type", "udp", "tfo", "mptcp",
               "interface-name", "routing-mark", "ip-version", "dialer-proxy", "smux"}
@@ -309,6 +341,15 @@ RULE_PROVIDER = {
     "type", "behavior", "format", "path", "url", "proxy", "interval",
     "size-limit", "header", "payload", "path-in-bundle",
 }
+# rule-provider 的 type (vehicle) 只有这三种。**写别的内核不认**, 而且报的错
+# 是 "unsupported vehicle type: xxx" —— 与本文件无关的错误名, 很难联想到
+# 是 rule-providers 段的问题。
+# 已用 mihomo -t v1.19.32 逐个实测:
+#   inline —— payload 直接写在配置里 (面板生成的规则集用这个, 不依赖外部文件)
+#   file   —— 本地文件
+#   http   —— 远程规则集
+# ⚠ 注意 **不是 "payload"**。凭直觉写 type: payload 会整批配置校验失败。
+RULE_PROVIDER_TYPES = {"inline", "file", "http"}
 
 
 def _norm_key(k: str) -> str:
@@ -357,6 +398,37 @@ def check_keys(d, allowed, where, r: Report, ctx="", owner=""):
         near = _closest(k, allowed)
         r.warn(where, f"未知键 `{k}`（内核会静默忽略）"
                       + (f"；是否想写 `{near}`？" if near else ""))
+
+
+def check_outbounds(cfg, r: Report):
+    """校验 outbounds 段 (服务端出站管理用)。"""
+    seen = set()
+    for i, o in enumerate(cfg.get("outbounds") or []):
+        if not isinstance(o, dict):
+            continue
+        w = f"outbounds[{i}]({o.get('name','?')})"
+        t = o.get("type")
+        if t not in OUTBOUND_TYPES:
+            r.err(w, f"不支持的 outbound 类型 `{t}`；"
+                     f"可用: {', '.join(sorted(OUTBOUND_TYPES))}")
+            continue
+        # 需要上游地址的类型
+        if t in ("socks5", "http"):
+            check_keys(o, OUTBOUND_UPSTREAM, w, r, owner=t)
+            if "server" not in o:
+                r.err(w, f"{t} 出站缺少 server")
+            if "port" not in o:
+                r.err(w, f"{t} 出站缺少 port")
+        elif t in PROXY_TYPES:
+            # 与入站 proxy 同构的协议, 复用 PROXY 白名单
+            check_keys(o, PROXY[t] | OUTBOUND_BASE, w, r, owner=t)
+        else:
+            check_keys(o, OUTBOUND_BASE, w, r, owner=t)
+        n = o.get("name")
+        if n:
+            if n in seen:
+                r.err(w, f"出站名称 `{n}` 重复 —— rules 里按名字引用, 重名无法区分")
+            seen.add(n)
 
 
 def check_listeners(cfg, r: Report):
@@ -490,6 +562,15 @@ def check_rule_providers(cfg, r: Report):
     for name, p in (cfg.get("rule-providers") or {}).items():
         w = f"rule-providers[{name}]"
         check_keys(p, RULE_PROVIDER, w, r)
+        t = p.get("type")
+        if t and t not in RULE_PROVIDER_TYPES:
+            r.err(w, f"不支持的 rule-provider 类型 `{t}`；"
+                     f"可用: {', '.join(sorted(RULE_PROVIDER_TYPES))}")
+        # inline 型必须有 payload, 否则是空规则集 (规则写了也不匹配任何东西)
+        if t == "inline" and not p.get("payload"):
+            r.err(w, "type: inline 但没有 payload —— 空规则集不会匹配任何流量")
+        if t == "http" and not p.get("url"):
+            r.err(w, "type: http 但没有 url")
         if p.get("behavior") not in (None, "domain", "ipcidr", "classical"):
             r.err(w, f"behavior=`{p.get('behavior')}` 无效")
 
@@ -547,6 +628,7 @@ def validate_one(cfg, r: Report, src: str):
     check_keys(cfg, TOP, src, r)
     check_listeners(cfg, r)
     check_proxies(cfg, r)
+    check_outbounds(cfg, r)
     check_groups(cfg, r)
     check_providers(cfg, r)
     check_rule_providers(cfg, r)

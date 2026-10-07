@@ -986,6 +986,33 @@ install_share() {
 # =============================================================
 # 主菜单
 # =============================================================
+# =============================================================
+# 出站 / 规则集 / 端口转发 —— 三个子功能聚合入口
+#
+# 为什么聚合而不是各占主菜单一个位置: 主菜单已经有 17 项, 再拆三个是 20 项,
+# 而这三项的使用频率都远低于「加节点」。合成一个子菜单, 加节点仍一步到位。
+# =============================================================
+extra_menu() {
+    while true; do
+        print_title "出站 / 规则集 / 端口转发"
+        ui_menu 1 "出站管理 (direct/reject/socks5/http)"
+        ui_menu 2 "规则集管理 (按域名/IP 分流)"
+        ui_menu 3 "端口转发 (把本机端口送到目标地址)"
+        ui_rule
+        ui_menu 0 "返回"
+        echo >&2
+        printf "  ${CYAN}请选择${RESET}: " >&2
+        local c; c=$(clean_input "$(read -r)") || return 0
+        case "$c" in
+            1) outbound_menu ;;
+            2) ruleset_menu ;;
+            3) pfwd_menu ;;
+            0|q|Q) return 0 ;;
+            *) ui_invalid "$c" ;;
+        esac
+    done
+}
+
 main_menu() {
     local c
     while true; do
@@ -1004,6 +1031,7 @@ main_menu() {
         ui_menu  4 "防火墙 (放行/孤儿清理/SSH 保护)"
         ui_menu  5 "CDN 回源 (Nginx 自动插入/证书/残留检查)"
         ui_menu  6 "DNS 管理 (解析/加密/防泄露)"
+        ui_menu  18 "出站 / 规则集 / 端口转发"
         ui_rule
         ui_menu  7 "生成分享链接 (单节点/全部)"
         ui_menu  8 "拉取节点 (从订阅导入)"
@@ -1016,6 +1044,7 @@ main_menu() {
         ui_menu 15 "系统信息 (端口/IP/资源)"
         ui_menu 16 "卸载服务端"
         ui_menu 17 "切换到客户端面板 (装/进另一端)"
+        ui_menu 18 "出站 / 规则集 / 端口转发"
         ui_menu  0 "退出"
         echo >&2
         ui_rule
@@ -1048,6 +1077,7 @@ main_menu() {
             15) sys_info ;;
             16) uninstall_service ;;
             17) switch_side "$SRV_ROOT" ;;
+            18) extra_menu ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

@@ -40,6 +40,11 @@ import contextlib
 
 SHARE_DIR = os.environ.get("SHARE_DIR", "/root/catmi/mihomo/share")
 OUT_DIR = os.environ.get("OUT_DIR", "/root/catmi/mihomo/out")
+# 服务端 conf 目录 —— 用来按 .managed.json 过滤掉陈旧产物 (2026-10-07)。
+# out/ 是累积目录, 删掉的节点留下的旧 *_client-*.yaml 还在, 而 build_sub.py
+# 是 glob out/*_client-*.yaml 收集的 —— 不过滤就会把已删节点继续发给用户。
+# 客户端侧 (providers) 没有这个目录, 留空即可, build_sub.py 会跳过过滤。
+CONF_DIR = os.environ.get("CONF_DIR", "/root/catmi/mihomo/conf")
 # 客户端侧节点来自 proxy-providers (服务端侧是空目录, 见 build_sub.py --providers-dir)
 PROVIDERS_DIR = os.environ.get("PROVIDERS_DIR", "")
 PORT = int(os.environ.get("SHARE_PORT", "9443"))
@@ -163,6 +168,8 @@ def build_payload(tag: str) -> bytes | None:
         cmd = [sys.executable, BUILD_SUB, "--out-dir", OUT_DIR, "--tag", tag]
         if PROVIDERS_DIR:
             cmd += ["--providers-dir", PROVIDERS_DIR]
+        elif CONF_DIR and os.path.isdir(os.path.join(CONF_DIR, "config.d")):
+            cmd += ["--conf-dir", CONF_DIR]
         out = subprocess.run(cmd, capture_output=True, timeout=20, check=False)
     except subprocess.TimeoutExpired:
         return None

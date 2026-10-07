@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import sys
@@ -122,12 +123,32 @@ def collect(out_dir: str) -> dict[str, list[dict]]:
     return buckets
 
 
+def live_node_names(frag_dir: str) -> set[str] | None:
+    """读 conf/config.d/.managed.json —— 当前**真实在跑**的 listener 名单。
+
+    .managed.json 由 merge.py 维护, 是「哪些节点还活着」的唯一真源: 节点被
+    删掉时它的名字会从这份名单里消失, 而 out/ 里的客户端产物**不会**跟着删。
+    """
+    p = os.path.join(frag_dir, ".managed.json")
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            names = json.load(fh)
+        if isinstance(names, list):
+            return {str(x) for x in names if isinstance(x, (str, int))}
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--import-dir", default="", help="外部拉取的订阅目录 (合并为 imported)")
     ap.add_argument("--providers-dir", default="",
                     help="客户端 proxy-providers 目录 (每个 *.yaml 单独成一个 tag)")
+    ap.add_argument("--conf-dir", default="",
+                    help="服务端 conf 目录 (含 config.d/.managed.json)。"
+                         "给了就按当前在跑的 listener 名单过滤掉陈旧产物")
     ap.add_argument("--tag", default="all", help="all 或某个协议前缀 (reality/trojan/...)")
     ap.add_argument("-o", "--output", default="")
     ap.add_argument("--list", action="store_true", help="只列出可用 tag (给人看的表格)")
@@ -136,6 +157,36 @@ def main() -> int:
     args = ap.parse_args()
 
     buckets = collect(args.out_dir)
+
+    # ★ 过滤陈旧产物 (2026-10-07 新增)
+    #
+    # out/ 是**累积目录**: --force 重建 / 删节点时旧的 *_client-*.yaml 不会
+    # 被删 (它们可能已被用户复制走)。而 collect() 是 glob out/*_client-*.yaml
+    # —— 于是已删除的节点会以陈旧产物的形式**继续出现在订阅里发给用户**,
+    # 客户端表现为「订阅里有这个节点但怎么都连不上」。
+    #
+    # 实测: 造一个 GHOST 节点后重建订阅, 它确实混进了 20 个 proxies 里。
+    #
+    # 判据: conf/config.d/.managed.json 是 merge.py 维护的「当前在跑的
+    # listener」名单, 与节点是否存活一一对应; 名单里没有的就是陈旧的。
+    #
+    # 没传 --conf-dir / 名单读不到时**不过滤** —— 宁可多发也不能把整份订阅
+    # 变空 (那是更严重的故障)。
+    if args.conf_dir:
+        alive = live_node_names(os.path.join(args.conf_dir, "config.d"))
+        if alive:
+            dropped = 0
+            for proto, items in list(buckets.items()):
+                keep = [it for it in items if it.get("name") in alive]
+                dropped += len(items) - len(keep)
+                if keep:
+                    buckets[proto] = keep
+                else:
+                    del buckets[proto]
+            if dropped:
+                print(f"[清理] 剔除了 {dropped} 个陈旧产物 (节点已删除, "
+                      f"但 out/ 里旧文件还在)", file=sys.stderr)
+
     if args.import_dir and os.path.isdir(args.import_dir):
         collect_dir(args.import_dir, "imported", buckets)
     if args.providers_dir and os.path.isdir(args.providers_dir):

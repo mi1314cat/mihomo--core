@@ -162,7 +162,9 @@ share_create() {
         tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" \
                --providers-dir "$SHARE_PROVIDERS_DIR" --list-tags 2>/dev/null)
     else
-        tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" --list-tags 2>/dev/null)
+        # 带 --conf-dir: 按 .managed.json 过滤陈旧产物, 列表与实际生成的订阅一致
+        tags=$(python3 "$BUILD_SUB" --out-dir "$SRV_OUT" \
+               --conf-dir "$SRV_CONF" --list-tags 2>/dev/null)
     fi
     for tagname in $tags; do
         printf "  %d) 仅 %s\n" "$i" "$tagname"; i=$((i+1))
@@ -522,6 +524,7 @@ Type=simple
 Environment=SHARE_DIR=$SHARE_DIR
 Environment=SHARE_PORT=$SHARE_PORT
 Environment=OUT_DIR=$SRV_OUT
+Environment=CONF_DIR=$SRV_CONF
 Environment=BUILD_SUB=$BUILD_SUB
 Environment=MIHOMO_SERVICE=$SRV_SERVICE
 Environment=PROVIDERS_DIR=$SHARE_PROVIDERS_DIR

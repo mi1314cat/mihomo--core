@@ -249,8 +249,57 @@ def existing_span(lines, domain):
     return None
 
 
+def existing_dirs_span(lines, domain):
+    """找出本工具上次**自动补入的 server{} 指令段**, 没有则返回 None。"""
+    start = None
+    for i, ln in enumerate(lines):
+        m = TAG_RE.search(ln)
+        if not m:
+            continue
+        kind, dom = m.group(1), m.group(2)
+        if dom != domain:
+            continue
+        if kind == "===":
+            start = i
+        elif kind == "<<<" and start is not None:
+            return start, i
+    return None
+
+
 def newline_style(raw):
     return "\r\n" if b"\r\n" in raw[:4096] else "\n"
+
+
+# ★ CDN 回源必须在 server{} 层生效、而**不能**写在 location{} 里的三个指令。
+#
+#   client_max_body_size 0      默认 1m。xhttp/ws 上行远超 1m -> nginx 直接 413,
+#                               客户端表现为「握手成功、一传数据就断」, 极易误判成
+#                               节点坏了或证书有问题。
+#   proxy_request_buffering off 默认 on。xhttp 是流式上行, 被 nginx 整个缓冲住
+#                               不转发 -> 连接建立但永远不通 (xhttp 过 nginx 最经典的坑)。
+#   proxy_buffering off         默认 on。响应侧同理, 长连接流式被攒批, 延迟飙升。
+#
+# 以前这三条只**打印警告**, 让用户自己手工加 —— 于是「面板显示 CDN 已配好、
+# 节点就是不 통」成为最高频的反馈。location 里写它们无效, 只能进 server{}。
+# 现在自动补进目标 server{}, 并同样包在标记里以便回收。
+SERVER_DIRS = (
+    ("client_max_body_size", "client_max_body_size 0;", "0"),
+    ("proxy_request_buffering", "proxy_request_buffering off;", "off"),
+    ("proxy_buffering", "proxy_buffering off;", "off"),
+)
+
+
+def server_missing_dirs(lines, start, end):
+    """目标 server{} 块内缺哪几个必需指令 (返回指令正文列表)。"""
+    blk = "\n".join(lines[start:end])
+    miss = []
+    for _, stmt, val in SERVER_DIRS:
+        name = stmt.split()[0]
+        # 块内已出现同名指令 (不管值是什么) 就算有 —— 不能覆盖用户的显式设置
+        if re.search(rf"^[ \t]*{re.escape(name)}[ \t]+[^;]+;", blk, re.M):
+            continue
+        miss.append(stmt)
+    return miss
 
 
 def do_apply(args):
@@ -266,14 +315,27 @@ def do_apply(args):
     text = raw.decode("utf-8-sig" if had_bom else "utf-8", errors="replace")
     lines = text.splitlines()
 
+    # 0) 先看本次要删的是不是「上次插入的 location 段」或「上次插入的指令段」。
+    #    --remove 时两段都要摘, 否则补进去的 server{} 指令会变成孤儿留在站点里。
+    old_span = existing_span(lines, domain)
+    old_dirs = existing_dirs_span(lines, domain)
+
     # 1) 先摘掉上次插入的整段 (幂等的基础)
-    span = existing_span(lines, domain)
+    span = old_span
     if span:
         del lines[span[0]:span[1] + 1]
         # 摘完可能留下连续空行, 收一收
         while span[0] < len(lines) and not lines[span[0]].strip():
             del lines[span[0]]
         print(f"[信息] 已移除上次插入的 {domain} 片段 ({span[1]-span[0]+1} 行)")
+
+    if old_dirs:
+        s2, e2 = old_dirs
+        del lines[s2:e2 + 1]
+        while s2 < len(lines) and not lines[s2].strip():
+            del lines[s2]
+        print(f"[信息] 已移除上次自动补入的 server 级指令 ({e2-s2+1} 行)")
+        old_dirs = None
 
     # 2) --remove 到此为止
     if args.remove:
@@ -293,8 +355,17 @@ def do_apply(args):
               file=sys.stderr)
         print("       拒绝新建 server 块 —— 你的站点已 listen 443, "
               "新建同名块会导致 nginx 起不来。", file=sys.stderr)
-        print("       请确认域名拼写, 或手工把片段贴进对应的 server{} 内。",
-              file=sys.stderr)
+        print(f"       请确认域名拼写, 或手工把片段贴进对应的 server{{}} 内。", file=sys.stderr)
+        print(f"       提示: 先看本机已有站点 —— {args.file} 所在目录里, "
+              f"哪些文件的 server_name 是你的域名。", file=sys.stderr)
+        for cand, _, _ in config_roots():
+            try:
+                names = [server_name_of(f) for f in sorted(glob.glob(os.path.join(cand, "*.conf")))]
+            except OSError:
+                continue
+            hit = [n for n in names if n and n != "_"]
+            if hit:
+                print(f"       本机 {cand} 下有: {', '.join(hit)}", file=sys.stderr)
         return 3
 
     block = "\n".join(lines[start:end])
@@ -326,6 +397,30 @@ def do_apply(args):
     #   nginx: [emerg] "location" directive is not allowed here
     # 靠的正是插入后 nginx -t + 回滚把它兜住的, 但不该靠这个。
     lines[end - 1:end - 1] = out
+
+    # ---- ② 自动补 server{} 层的三个必需指令 (2026-10-07 新增) ----
+    #
+    # 补在 location 段**之前**, 同样用标记包起来; --remove / 下次重渲染时
+    # 会连同 location 段一起摘掉, 不留孤儿。位置在 server{} 块的开头,
+    # 便于人工一眼看到「这几行是面板加的」。
+    #
+    # 不覆盖已有同名指令: 用户自己写了 client_max_body_size 100m 就尊重它,
+    # 绝不擅自改 —— 面板只负责补「完全没有」的。
+    miss = server_missing_dirs(lines, start, end + len(out) - 1)
+    if miss:
+        dpad = "    "
+        dout = [
+            f"{dpad}# === {MARK} BEGIN {domain} (server 指令) ===",
+            f"{dpad}# 由 mihomo--core 面板自动补入 —— CDN 回源必需, 删除会让 xhttp 413/不通",
+            f"{dpad}# 位置必须是 server{{}} 或 http{{}} 层, 写在 location 里无效",
+        ]
+        dout += [f"{dpad}{s}" for s in miss]
+        dout.append(f"{dpad}# === {MARK} END {domain} (server 指令) ===")
+        # 插到 server 块开头的 '{' 之后 (start+1)
+        lines[start + 1:start + 1] = dout
+        print(f"[信息] 已自动补入 {len(miss)} 条 server 级指令: "
+              f"{', '.join(s.split()[0] for s in miss)}")
+
     return commit(args, path, lines, nl, had_bom, remove_only=False)
 
 

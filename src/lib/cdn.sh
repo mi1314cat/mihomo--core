@@ -123,9 +123,40 @@ cdn_bind_init() {
     [[ -f "$CDN_BIND_FILE" ]] || : > "$CDN_BIND_FILE"
 }
 
+# ★ 登记前先把**畸形绑定挡在外面**。
+#
+# 为什么要挡: 渲染出来的 location 里有 `grpc_pass grpcs://127.0.0.1:$port` 和
+# `location $path` —— 端口空就渲染成 `grpcs://127.0.0.1:;`, 路径空就渲染成
+# `location /<端口>`, 两者都是**语法错误**。实测这类垃圾进入渲染后:
+#   * nginx -t 直接 emerg;
+#   * 靠 commit() 的回滚把站点还原, 才没造成破坏;
+#   * 但用户看到的是「3 个节点只配进去 1 个」, 而且**另外两个是被这个垃圾
+#     连累的** —— 片段是整段写的, 一个坏行让整段都进不去。
+#
+# 也就是说: 回滚只保住了站点, 没保住另外两个好节点。必须在**入表**这一步
+# 就拒掉, 不能指望 nginx -t 兜底。
+cdn_bind_validate() { # <tag> <域名> <站点> <传输> <路径> <端口>
+    local tag="$1" dom="$2" tr="$4" path="$5" port="$6"
+    [[ -n "$tag" ]] || { print_error "绑定缺少 tag"; return 1; }
+    [[ "$tag" != *$'\t'* && "$tag" != *$'\n'* ]] || {
+        print_error "tag 不能含制表符或换行 (会破坏 TSV 登记表): $tag"; return 1; }
+    [[ -n "$dom" ]] || { print_error "[$tag] 绑定缺少回源域名"; return 1; }
+    [[ "$dom" != *[[:space:]]* ]] || { print_error "[$tag] 域名不能含空白: $dom"; return 1; }
+    cdn_supported_transport "$tr" || {
+        print_error "[$tag] 传输 '$tr' 不能走 CDN (只有 $CDN_TRANSPORTS 可以)"; return 1; }
+    # 端口必须是纯数字 —— 渲染时直接拼进 grpc_pass/proxy_pass
+    if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || (( port < 1 || port > 65535 )); then
+        print_error "[$tag] 端口不合法: '$port' (必须是 1-65535 的数字)"; return 1; fi
+    # 路径: grpc 的 service_name 不带斜杠, xhttp/ws 的 path 带斜杠, 两种都要收
+    if [[ -z "$path" || "$path" == *$'\t'* || "$path" == *$'\n'* ]]; then
+        print_error "[$tag] 回源路径为空或含非法字符 —— 渲染出来会让 nginx -t 报语法错误"; return 1; fi
+    return 0
+}
+
 cdn_bind_add() { # <tag> <域名> <站点文件> <传输> <路径> <端口>
     cdn_bind_init
     local tag="$1" dom="$2" site="$3" tr="$4" path="$5" port="$6"
+    cdn_bind_validate "$tag" "$dom" "$site" "$tr" "$path" "$port" || return 1
     cdn_bind_del "$tag" >/dev/null 2>&1
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tag" "$dom" "$site" "$tr" "$path" "$port" >> "$CDN_BIND_FILE"
 }
@@ -293,6 +324,14 @@ cdn_render_fragment() { # <域名> <输出去向: 文件路径>
         while IFS=$'\t' read -r tag _dom _site tr path port; do
             [[ -n "$tag" ]] || continue
             [[ "$_dom" == "$dom" ]] || continue
+            # ★ 再挡一次: 绑定表是纯文本, 可能被手工编辑过 (或旧版本写进去的
+            #   畸形行)。渲染前必须复检, 否则一行垃圾会让**整段**进不去 ——
+            #   片段是整体写入的, 坏一个等于这一批好节点全部配不上。
+            if ! cdn_bind_validate "$tag" "$_dom" "$_site" "$tr" "$path" "$port"; then
+                printf '# [跳过] 绑定畸形 (%s) —— 渲染出来会让 nginx 语法错误, 连带本段其它节点一起配不进去\n\n' \
+                    "$tag"
+                continue
+            fi
             # 去重: 归一化后的 location 路径
             local loc="$path"; [[ "$loc" != /* ]] && loc="/$loc"
             dup=0

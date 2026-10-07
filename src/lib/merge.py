@@ -88,6 +88,115 @@ def collect_listeners(conf_dir: str):
     return found
 
 
+# 除 listeners 之外, 还有哪些**顶层键**也应该由 config.d 片段提供。
+#
+# ★ 为什么需要这张表 (2026-10-07 新增)
+#
+#   merge.py 此前**只**收 `listeners`, 于是片段里写的其它顶层键被静默丢弃:
+#       outbounds:      -> 丢弃 (服务端出站管理形同虚设)
+#       rule-providers: -> 丢弃 (规则集形同虚设)
+#       rules:          -> 丢弃 (规则集的 RULE-SET 规则进不来)
+#
+#   症状极其隐蔽: 片段文件确实写出来了, 严格校验也过了 (校验器读的是**合并后**
+#   的 config.yaml, 而那些键根本没进去, 自然"没错"), mihomo -t 也过,
+#   面板显示一切正常 —— 只有用户在 rules 里引用了那个 rule-provider 时才会
+#   发现"规则没生效"。而且没有任何一条报错指向真正的原因。
+#
+#   这与内核文档里记的"未知键静默忽略"是同一类陷阱, 只是发生在我们自己的
+#   合并层。
+#
+#   语义与 listeners 一致: 同名条目后者覆盖前者, 片段删除后自动剔除。
+FRAG_TOP_KEYS = ("outbounds", "rule-providers", "rules")
+
+
+def collect_top_keys(conf_dir: str):
+    """收集片段里的顶层键, 返回 {键名: {条目名: 条目}}。
+
+    - outbounds / rule-providers 是 {名字: {...}} 映射
+    - rules 是列表, 但每条都以 "RULE-SET,<tag>," 开头, 用 <tag> 当键去重
+      (同名 tag 的规则后者覆盖前者, 不会出现两条 RULE-SET 同时命中)。
+    """
+    found: dict[str, dict] = {k: {} for k in FRAG_TOP_KEYS}
+    for p in sorted(glob.glob(os.path.join(conf_dir, "config.d", "*.yaml"))):
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                d = yaml.safe_load(fh) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(d, dict):
+            continue
+        for key in FRAG_TOP_KEYS:
+            val = d.get(key)
+            if val is None:
+                continue
+            if key == "rules":
+                # 规则是**字符串列表**, 以 RULE-SET,<tag>, 里的 <tag> 当键去重
+                if not isinstance(val, list):
+                    continue
+                for r in val:
+                    if not isinstance(r, str):
+                        continue
+                    parts = r.split(",")
+                    tag = parts[1] if len(parts) > 1 and parts[0] == "RULE-SET" else r
+                    found[key][tag] = r
+            elif key == "outbounds":
+                # ★ outbounds 在内核里是**列表** (与 proxies 同构), 不是映射。
+                #   按名字去重: 同名后者覆盖前者, 不会出现两条同名出站
+                #   (rules 里按名字引用, 重名无法区分)。
+                if not isinstance(val, list):
+                    continue
+                for o in val:
+                    if isinstance(o, dict) and o.get("name"):
+                        found[key][o["name"]] = o
+            elif isinstance(val, dict):
+                # rule-providers 是 {名字: {...}} 映射
+                for name, item in val.items():
+                    if isinstance(item, dict):
+                        found[key][name] = item
+    return found
+
+
+def merge_top_keys(cfg: dict, incoming: dict) -> int:
+    """把 incoming 合进 cfg 的对应顶层键, 返回新增/变更的条目数。
+
+    **只增不删**: 片段删除时对应条目应该消失, 但 config.yaml 里手工写的
+    同名条目不能被误删 —— 与 listeners 的 .managed.json 台账同源的取舍,
+    这里保守处理: 手工条目一律保留, 片段条目按名字覆盖。
+    """
+    changed = 0
+    for key in FRAG_TOP_KEYS:
+        got = incoming.get(key) or {}
+        if not got:
+            continue
+        if key in ("rules", "outbounds"):
+            # outbounds 是**列表** (与 proxies 同构), 按 name 去重;
+            # rules 是字符串列表, 按 RULE-SET 的 tag 去重。
+            cur = [r for r in (cfg.get(key) or []) if isinstance(r, (str, dict))]
+            def _key_of(r):
+                if isinstance(r, dict):
+                    return r.get("name") or ""
+                parts = r.split(",")
+                return parts[1] if len(parts) > 1 and parts[0] == "RULE-SET" else r
+            have = {_key_of(r) for r in cur}
+            added = [v for k, v in got.items() if k not in have]
+            added = [a for a in added if _key_of(a)]
+            if added:
+                # 按名字排序保证输出稳定 (dict 不可比较, 不能直接 sorted())
+                added.sort(key=lambda r: _key_of(r))
+                cfg[key] = cur + added
+                changed += len(added)
+        else:
+            cur = cfg.get(key)
+            if not isinstance(cur, dict):
+                cur = {}
+            for name, item in got.items():
+                if cur.get(name) != item:
+                    changed += 1
+                cur[name] = item
+            cfg[key] = cur
+    return changed
+
+
 def managed_path(frag_dir: str) -> str:
     """记录「哪些 listener 是由 config.d 注入」的台账文件。"""
     return os.path.join(frag_dir, ".managed.json")
@@ -173,6 +282,14 @@ def main() -> int:
         print(f"[OK] 剔除已删除片段残留的 listener: {', '.join(dropped)}", file=sys.stderr)
 
     cfg["listeners"] = [final[k] for k in sorted(final)]
+
+    # 出站 / 规则集 / 规则 (2026-10-07 新增)。放在 listeners 之后、原子写入
+    # 之前 —— 与 listeners 走同一次写入, 不会出现「一半生效」的中间态。
+    _top = collect_top_keys(conf_dir)
+    _n_top = merge_top_keys(cfg, _top)
+    if _n_top:
+        _what = ", ".join(f"{k}:{len(v)}" for k, v in _top.items() if v)
+        print(f"[OK] 合并片段顶层键 → {_what}", file=sys.stderr)
 
     # 原子写入
     os.makedirs(conf_dir, exist_ok=True)

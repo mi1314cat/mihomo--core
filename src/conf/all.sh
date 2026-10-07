@@ -1758,6 +1758,39 @@ XHTTP_CLIENT_HOST=$(m_client_host "$SNI")
 [[ "$XHTTP_CLIENT_HOST" =~ ^[A-Za-z0-9._-]+\.[A-Za-z]{2,}$ ]] || XHTTP_CLIENT_HOST="$PUBLIC_IP"
 printf "     ${DIM}XHTTP 的 Host 头也用它: %s${RESET}\n" "$XHTTP_CLIENT_HOST" >&2
 
+# ---------- ② 之二、CDN 回源域名 ----------
+#
+# ★ 为什么批量模式也必须问这个 (2026-10-07 新增)
+#
+#   xhttp-cdn 这个档位生成的**客户端产物**连的是 Cloudflare 边缘 (443),
+#   服务器端监听的是一个"等 Cloudflare 回源"的源站端口。而 Cloudflare 能不能
+#   回源到它, 取决于 Nginx 里有没有对应的 location —— 那一步以前**只有交互式
+#   的「挂到 CDN」菜单**会做。
+#
+#   于是 `--quick` (不提问) 这条最省事的批量路径: 节点生成成功、面板显示
+#   "成功 19"、三道关全绿, 但 CDN 那一条永远连不上。实测就是这个症状:
+#   38 个节点里只有 1 个失败, 失败的那个恰好是 CDN 档位。
+#
+#   现在批量也把 CDN 挂上: 域名可用 CDN_DOMAIN 环境变量传入 (适合无人值守),
+#   交互模式直接问一句, --quick 模式没有域名就**明确提示**而不是闷头生成一个
+#   连不上的节点。
+printf '\n' >&2
+printf "  ${BOLD}② 之二、CDN 回源${RESET} ${DIM}—— Cloudflare 要能回源到 CDN 档位节点${RESET}\n" >&2
+CDN_DOMAIN="${CDN_DOMAIN:-}"
+CDN_SITE="${CDN_SITE:-}"
+if [[ "$QUICK" == "1" && -z "$CDN_DOMAIN" ]]; then
+    printf "     ${YELLOW}—${RESET} --quick 且未设 CDN_DOMAIN ${DIM}(批量不提问)${RESET}\n" >&2
+    printf "     ${DIM}将生成 xhttp-cdn 源站, 但不会写入 Nginx 回源 —— 该节点需要你之后在${RESET}\n" >&2
+    printf "     ${DIM}服务端面板 → CDN 回源 挂一次。无人值守请设 CDN_DOMAIN=你的域名${RESET}\n" >&2
+elif [[ -n "$CDN_DOMAIN" ]]; then
+    printf "     ${GREEN}✅${RESET} %s ${DIM}(CDN_DOMAIN)${RESET}\n" "$CDN_DOMAIN" >&2
+else
+    printf "     ${DIM}CDN 回源域名 (回车 = 本批不挂 CDN):${RESET} " >&2
+    __cd=""; read -r __cd || true
+    [[ -n "$__cd" ]] && CDN_DOMAIN="$__cd"
+    [[ -n "$CDN_DOMAIN" ]] && printf "     ${GREEN}✅${RESET} %s\n" "$CDN_DOMAIN" >&2
+fi
+
 mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERTS_DIR"
 collect_used_ports
 
@@ -1879,6 +1912,61 @@ fi
 
 # ---------- 统一校验 + 重载 ----------
 printf "\n${BOLD}校验并应用${RESET}\n"
+# ---- 把本批生成的 CDN 档位节点挂到 Nginx 回源 ----
+#
+# 幂等: 绑定表按 tag 存取, 重跑覆盖同 tag 的旧行, 再整体重渲染该域名的全部
+# 绑定 —— 与交互式「挂到 CDN」走的是同一套 cdn.sh 函数, 不是第二套逻辑。
+_all_cdn_wire() {
+    [[ -n "${CDN_DOMAIN:-}" ]] || return 0
+    declare -F cdn_supported_transport >/dev/null 2>&1 || return 0
+    # shellcheck disable=SC1091
+    source "$SELF_DIR/../lib/cdn.sh" 2>/dev/null || return 0
+    cdn_available || { printf "     ${YELLOW}-${RESET} 找不到 nginx_apply.py, 跳过 CDN 挂载\n" >&2; return 0; }
+
+    local dom="$CDN_DOMAIN" site="" n=0 f meta tr path port tag dgre
+    # 域名里的 . 要转义后再做正则匹配 (grep -E 是 BRE/ERE, . 任意字符)
+    dgre=${dom//./\\.}
+    if [[ -n "${CDN_SITE:-}" && -f "${CDN_SITE:-}" ]]; then
+        site="$CDN_SITE"
+    else
+        while read -r cand; do
+            [[ -n "$cand" && -f "$cand" ]] || continue
+            if grep -qE "^[ \t]*server_name[ \t]+[^;]*\b${dgre}\b" "$cand" 2>/dev/null; then
+                site="$cand"; break
+            fi
+        done < <(python3 "$CDN_APPLY_PY" --list-paths 2>/dev/null)
+    fi
+    if [[ -z "$site" ]]; then
+        printf "     ${YELLOW}-${RESET} 没找到 server_name 含 %s 的 Nginx 站点, 跳过 CDN 挂载\n" "$dom" >&2
+        printf "     ${DIM}CDN 节点仍已生成, 但客户端连不上 —— 请先让该域名在 Nginx 上跑起来,\n" >&2
+        printf "     ${DIM}之后在 服务端面板 -> CDN 回源 挂一次即可。${RESET}\n" >&2
+        return 0
+    fi
+    printf "     ${DIM}CDN 回源站点: %s${RESET}\n" "$site" >&2
+
+    cdn_bind_init
+    for f in "$CONF_DIR"/*.yaml; do
+        [[ -f "$f" ]] || continue
+        grep -qiE '^#.*(CDN|Cloudflare)' "$f" 2>/dev/null || continue
+        meta=$(cdn_node_meta_from_fragment "$f"); tr="${meta%%|*}"; path="${meta##*|}"
+        cdn_supported_transport "$tr" || continue
+        port=$(awk '/^[[:space:]]*port:[[:space:]]*/{print $2; exit}' "$f")
+        tag=$(basename "$f" .yaml)
+        if cdn_bind_add "$tag" "$dom" "$site" "$tr" "$path" "$port"; then
+            printf "     ${GREEN}+${RESET} %-14s %-9s %-24s -> %s\n" "$tag" "$tr" "$path" "$port" >&2
+            n=$((n+1))
+        fi
+    done
+    (( n > 0 )) || { printf "     ${YELLOW}-${RESET} 本批没有 CDN 档位节点, 无需挂载\n" >&2; return 0; }
+    if cdn_apply_domain "$dom" "$site" >/dev/null 2>&1; then
+        printf "     ${GREEN}${BOLD}CDN 回源已写入并重载${RESET} ${DIM}(%d 个节点)${RESET}\n" "$n" >&2
+        printf "     ${DIM}剩下一步在 Cloudflare 后台: Origin Rule 指向源站 %s, DNS 开橙云${RESET}\n" "${PUBLIC_IP:-<你的源站IP>}" >&2
+    else
+        printf "     ${YELLOW}-${RESET} CDN 回源写入失败, 已自动回滚 (节点本身不受影响)\n" >&2
+    fi
+    return 0
+}
+
 if m_sync_reload; then
     # 重建成功 → 暂存区里的旧文件正式作废
     rebuild_commit
@@ -1891,6 +1979,14 @@ if m_sync_reload; then
     fi
     printf "  配置目录: %s\n" "$CONF_DIR"
     printf "  分享内容: %s\n" "$OUT_DIR"
+
+    # ---- CDN 回源自动挂载 (2026-10-07 新增) ----
+    #
+    # 放在**重启成功之后**: 此时 conf/config.d 里是这批真实产物, 传输与路径
+    # 可以直接读回来 (cdn_node_meta_from_fragment 是唯一真源), 不用猜。
+    # 失败不回滚整批节点 —— CDN 是锦上添花, 源站本身已经起来了。
+    _all_cdn_wire
+
     printf "\n  下一步: 服务端面板 → 生成分享链接, 或直接\n"
     printf "          python3 %s --out-dir %s --list\n\n" \
         "$SELF_DIR/../share/build_sub.py" "$OUT_DIR"

@@ -1044,6 +1044,10 @@ _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
 # DNS 管理 (服务端)。只定义函数, 不依赖上面几个, 放最后避免引入顺序耦合。
 # shellcheck source=/dev/null
 [[ -f "$_m_libdir/dns.sh" ]]    && source "$_m_libdir/dns.sh"
+# 服务端「出站 / 规则集 / 端口转发」。只定义函数, 不在 source 时做任何 IO,
+# 放最后 —— 里面的辅助函数 (_extra_*) 名字已加前缀, 不与其它 lib 撞名。
+# shellcheck source=/dev/null
+[[ -f "$_m_libdir/server_extra.sh" ]] && source "$_m_libdir/server_extra.sh"
 
 # 删除某个节点的客户端产物 —— 删节点路径共用。
 #
