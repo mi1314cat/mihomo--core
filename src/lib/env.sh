@@ -733,18 +733,33 @@ m_scan_nginx_sites() {
     done
     # 容器里的 nginx —— 宿主机扫不到的那部分
     command -v docker >/dev/null 2>&1 || return 0
-    local c
+    local c out rc
     for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
-        docker exec "$c" sh -c \
+        # ⚠ 这里不能只靠 2>/dev/null 挡错误输出。实测 docker 会把
+        #   "OCI runtime exec failed: ... exec: \"sh\": executable file not found in $PATH"
+        #   打到 **stdout** —— 机器上只要有一个不含 sh 的容器 (distroless /
+        #   scratch 镜像, moontv-core 之类), 这行错误就会原样混进域名列表,
+        #   被当成一个"站点域名"显示在选择菜单里。
+        #   根治办法是只收**长得像域名**的行, 错误文本再长也过不了这一关。
+        out=$(docker exec "$c" sh -c \
             'grep -rhoE "^[[:space:]]*server_name[[:space:]]+[^;]+;" /etc/nginx 2>/dev/null \
              | sed -E "s/^[[:space:]]*server_name[[:space:]]+//; s/;[[:space:]]*$//" \
-             | tr " \t" "\n\n" | grep -vE "^_$"' 2>/dev/null
+             | tr " \t" "\n\n" | grep -vE "^_$"' 2>/dev/null)
+        (( rc == 0 )) || continue
+        printf '%s\n' "$out"
     done
 }
 
-# 去重后的 nginx 站点域名
+# 去重后的 nginx 站点域名。
+#
+# 形状校验是必需的, 不是防御性冗余: 宿主机的 grep 也可能吐出半截配置,
+# 容器 exec 更是会回错误文本 (见 m_scan_nginx_sites 里的说明)。
+# 只有"含点、每段以字母数字开头结尾"才算域名 —— 这条正则同时排除了
+# OCI 报错、nginx 的 warning、以及 server_name 里那些通配写法。
 m_nginx_domains() {
-    m_scan_nginx_sites | sort -u | grep -vE '^$'
+    m_scan_nginx_sites \
+        | grep -E '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$' \
+        | tr 'A-Z' 'a-z' | sort -u
 }
 
 # 该域名是否已被某个 nginx 站点占用 (用于在证书列表上标注)

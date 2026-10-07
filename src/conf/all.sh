@@ -1870,6 +1870,7 @@ else
                             __ce="${__ucerts[$((__ans-1))]}"
                             __cc="${__ce%%|*}"; __cr="${__ce#*|}"; __ck="${__cr%%|*}"
                             CRT="$__cc"; KEY="$__ck"; SNI="$(cert_extract_domain "$__cc" 2>/dev/null)"
+                            CERT_IS_SELF=0
                             printf "     ${GREEN}[OK]${RESET} 证书: %s\n" "${SNI:-$CRT}" >&2
                         elif [[ "$__ans" == "$__self_no" ]]; then
                             __want_self=1
@@ -1881,10 +1882,12 @@ else
                         printf "     请选择 ${DIM}[默认 1]:${RESET} " >&2
                         __ans=""; read -r __ans || true
                         [[ "$__ans" == "2" ]] && __want_self=1
+                        CERT_IS_SELF=0
                     fi
                 fi ;;
         esac
         if (( __want_self )); then
+            CERT_IS_SELF=1
             printf "     ${DIM}自签域名 (回车=随机伪装域名):${RESET} " >&2
             __dom=""; read -r __dom || true
             [[ -z "$__dom" ]] && __dom=$(random_domain)
@@ -1998,6 +2001,27 @@ if [[ "$QUICK" == "1" && -z "$CDN_DOMAIN" ]]; then
     printf "     ${DIM}服务端面板 → CDN 回源 挂一次。无人值守请设 CDN_DOMAIN=你的域名${RESET}\n" >&2
 elif [[ -n "$CDN_DOMAIN" ]]; then
     printf "     ${GREEN}✅${RESET} %s ${DIM}(CDN_DOMAIN)${RESET}\n" "$CDN_DOMAIN" >&2
+elif [[ "${CERT_IS_SELF:-0}" != "1" && -n "${SNI:-}" ]]; then
+    # ② 已经选了真证书 -> 域名**已经知道了**, 不再把站点重列一遍让用户选第二次。
+    #
+    # 原来这里不管 ① 选了什么都要再列一遍站点, 于是同一个域名连问两遍:
+    # 在 ① 选了 aacanaps..., 到 ② 还得再选一次 aacanaps...。两问问的是
+    # 同一件事 —— Cloudflare 回源要打到的那个域名, ① 已经回答过了。
+    #
+    # 这里只问"挂不挂", 域名沿用。只有选了**自签**才需要另外挑一张 CA 可信
+    # 的证书: Cloudflare 一律拒绝自签回源。
+    printf "     ${CYAN}CDN 模式${RESET} ${DIM}—— vless/vmess/trojan 走 Cloudflare, 其余协议只能直连${RESET}\n" >&2
+    printf "       ${CYAN}1${RESET}) 挂 CDN ${DIM}(回源 %s, 沿用 ② 选的证书)${RESET}\n" "$SNI" >&2
+    printf "       ${CYAN}2${RESET}) 本批全部直连\n" >&2
+    printf "     选哪个 ${DIM}[默认 1]:${RESET} " >&2
+    __cm=""; read -r __cm || true
+    __cm="$(clean_input "${__cm:-1}")"
+    if [[ "$__cm" == "2" ]]; then
+        CDN_DOMAIN=""
+    else
+        CDN_DOMAIN="$SNI"
+        printf "     ${GREEN}✅${RESET} %s ${DIM}(沿用 ② 选的证书)${RESET}\n" "$CDN_DOMAIN" >&2
+    fi
 else
     # 把本机 nginx 站点列出来当候选 —— Cloudflare 回源打的是这个 nginx,
     # 而这些 server_name 就是它现在真在对外服务的域名, 直接选最省事。
