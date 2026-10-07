@@ -424,8 +424,12 @@ wipe_all_nodes() {
         printf "    %-24s %s\n" "$(basename "$f")" \
             "$(grep -hoE 'name: *m[A-Za-z0-9_-]+' "$f" 2>/dev/null | head -1 | sed 's/name: *//')"
     done
-    printf "\n  \033[33m保留\033[0m: 证书 / out/ 客户端产物 / 服务单元 / 分享记录\n"
-    printf "  \033[31m删除\033[0m: conf/config.d/*.yaml + 已发出的分享链接 (全部吊销)\n"
+    # out/ 里的客户端产物**一起删**。服务端配置都没了, 那些产物指向的端口
+    # 早已没人监听, 留着只会让人把死配置分发出去 —— 面板曾经显示
+    # "节点数量 61" 就是这么来的 (它数的就是产物)。
+    local n_art; n_art=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    printf "\n  \033[33m保留\033[0m: 证书 / 服务单元 / 分享记录\n"
+    printf "  \033[31m删除\033[0m: conf/config.d/*.yaml + out/ 客户端产物 (%s 个) + 已发出的分享链接 (全部吊销)\n" "${n_art:-0}"
 
     # 两级确认 —— 与 SB 一致: 普通操作 [y/N], 破坏性必须手打 yes
     local a
@@ -437,7 +441,10 @@ wipe_all_nodes() {
     local bak="$SRV_ROOT/nodes.bak.$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bak" || { print_error "备份目录创建失败, 已中止"; return 1; }
     cp -a "$SRV_CONFIGD"/*.yaml "$bak"/ 2>/dev/null
-    print_ok "已备份 $n 个节点到: $bak"
+    # 产物一并备份 —— 删了就找不回来, 留一份跟节点放在一起才对称
+    mkdir -p "$bak/out" 2>/dev/null
+    cp -a "$SRV_OUT"/*.yaml "$SRV_OUT"/*.txt "$bak/out"/ 2>/dev/null
+    print_ok "已备份 $n 个节点 + ${n_art:-0} 个产物到: $bak"
 
     # 先摘 Nginx 上的回源片段, 再删片段。
     # 反过来的话绑定表先没了, 就再也看不出这些节点当初挂在哪个域名下,
@@ -448,6 +455,11 @@ wipe_all_nodes() {
     }
 
     rm -f "$SRV_CONFIGD"/*.yaml
+    # 产物同步删。单节点删除早就走 m_out_rm_artifacts 清产物了 (见 Reality.sh),
+    # 唯独批量清空漏掉 —— 于是 out/ 越积越多, 且每个都还能被 build_sub.py
+    # 收进订阅, 用户拿到的是一批连不上的节点。
+    rm -f "$SRV_OUT"/*_client-*.yaml 2>/dev/null
+    print_ok "已删除 ${n_art:-0} 个客户端产物"
 
     # 重新合并 + 校验。**顺序很重要**: token 吊销放在校验通过之后 ——
     # 否则一旦校验失败回滚了配置, token 却已经吊销, 用户手里的链接
@@ -457,6 +469,9 @@ wipe_all_nodes() {
     if ! python3 "$M_LIB/merge.py" --conf "$SRV_CONF" >/dev/null 2>&1; then
         print_error "配置合并失败, 正在回滚"
         cp -a "$bak"/*.yaml "$SRV_CONFIGD"/ 2>/dev/null
+        # 产物一并还原 —— 回滚只恢复片段的话, out/ 里那批产物就回不来了,
+        # 用户手里的分享链接会指向一个不存在的节点集合
+        [[ -d "$bak/out" ]] && cp -a "$bak/out"/. "$SRV_OUT"/ 2>/dev/null
         python3 "$M_LIB/merge.py" --conf "$SRV_CONF" >/dev/null 2>&1
         systemctl restart "$SRV_SERVICE" 2>/dev/null
         print_ok "已回滚到清空前的状态"
@@ -468,6 +483,8 @@ wipe_all_nodes() {
     if ! "$SRV_BIN" -t -d "$SRV_CONF" >/dev/null 2>&1; then
         print_error "内核校验不通过, 正在回滚"
         cp -a "$bak"/*.yaml "$SRV_CONFIGD"/ 2>/dev/null
+        # 产物一并还原 (同上: 回滚只恢复片段的话产物就永久没了)
+        [[ -d "$bak/out" ]] && cp -a "$bak/out"/. "$SRV_OUT"/ 2>/dev/null
         python3 "$M_LIB/merge.py" --conf "$SRV_CONF" >/dev/null 2>&1
         systemctl restart "$SRV_SERVICE" 2>/dev/null
         print_ok "已回滚到清空前的状态"
@@ -734,8 +751,10 @@ EOF
            [[ -n "$shsvc" ]] && _uninstall_unit "$shsvc"
            declare -F cdn_wipe_all >/dev/null 2>&1 && cdn_wipe_all
            rm -f "$SRV_CONFIGD"/*.yaml
+           # 客户端产物一起清 —— 服务配置都没了, 产物指向的端口没人监听
+           rm -f "$SRV_OUT"/*_client-*.yaml 2>/dev/null
            python3 "$M_LIB/merge.py" --conf "$SRV_CONF" >/dev/null 2>&1 || true
-           print_ok "节点配置已删除 (Nginx 回源片段同步清理)"
+           print_ok "节点配置与客户端产物已删除 (Nginx 回源片段同步清理)"
            print_info "证书/out/分享记录已保留在 $SRV_ROOT" ;;
         3) _uninstall_all "$svc" "$shsvc" ;;
         "") print_info "已取消" ;;
