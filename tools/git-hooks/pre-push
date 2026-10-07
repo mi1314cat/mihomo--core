@@ -61,4 +61,24 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 done
 
+# ---------- 写 src/VERSION ----------
+#
+# 面板靠这个文件判断"本机版本 vs GitHub 版本"。它必须在推送时写成**将要推上去
+# 的那个提交号**, 远端那份才会和本地一致 —— 写 HEAD 在 main 与 refactor/v2
+# 不同时会写错。
+#
+# 先算好再决定推不推: 闸门拒绝时不能留下一个"版本已更新但没推上去"的 VERSION,
+# 否则面板会显示"永远有新版"。
+if [ "$status" -eq 0 ]; then
+    _v=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+    if [ -n "$_v" ]; then
+        _cur=$(head -1 src/VERSION 2>/dev/null | tr -d '[:space:]')
+        if [ "$_cur" != "$_v" ]; then
+            printf '%s\n' "$_v" > src/VERSION
+            git add src/VERSION 2>/dev/null || true
+            echo "  已更新 src/VERSION -> $_v" >&2
+        fi
+    fi
+fi
+
 exit $status
