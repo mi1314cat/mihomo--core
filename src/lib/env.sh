@@ -745,6 +745,7 @@ m_scan_nginx_sites() {
             'grep -rhoE "^[[:space:]]*server_name[[:space:]]+[^;]+;" /etc/nginx 2>/dev/null \
              | sed -E "s/^[[:space:]]*server_name[[:space:]]+//; s/;[[:space:]]*$//" \
              | tr " \t" "\n\n" | grep -vE "^_$"' 2>/dev/null)
+        rc=$?
         (( rc == 0 )) || continue
         printf '%s\n' "$out"
     done
