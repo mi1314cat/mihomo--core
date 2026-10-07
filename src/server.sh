@@ -1031,7 +1031,6 @@ main_menu() {
         ui_menu  4 "防火墙 (放行/孤儿清理/SSH 保护)"
         ui_menu  5 "CDN 回源 (Nginx 自动插入/证书/残留检查)"
         ui_menu  6 "DNS 管理 (解析/加密/防泄露)"
-        ui_menu  18 "出站 / 规则集 / 端口转发"
         ui_rule
         ui_menu  7 "生成分享链接 (单节点/全部)"
         ui_menu  8 "拉取节点 (从订阅导入)"
