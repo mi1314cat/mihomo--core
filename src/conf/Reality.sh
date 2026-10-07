@@ -334,9 +334,18 @@ add_config() {
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
+    # 4.5 先问"要哪种推荐配置" —— 与 VLESS/Trojan/AnyTLS 等保持一致。
+    #     REALITY 预设以前挂在 vless 段, 而 VLESS.sh 产不出 REALITY, 于是
+    #     「① 隐匿优先 · REALITY」静默降级成纯 TLS。现在挂回这里 ——
+    #     **抗 DPI 最强的那档, 本来就该在这里**。
+    preset_ask reality "REALITY 推荐配置"
+
     # 询问可选特性 (smux / xudp)
+    # ⚠ preset_reset 必须放在 ask_features **之后** —— 它会清掉
+    #   M_PRESET_APPLIED / M_PRESET_TR, 而 ask_features 靠这两个跳过提问。
     ask_features
     render_smux
+    preset_reset
 
     # 写 Reality 入站配置
 NODE_TAG="$(m_node_tag VLESS "$index" reality)"

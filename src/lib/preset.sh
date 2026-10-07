@@ -35,6 +35,20 @@
 # =============================================================
 
 M_PRESETS=(
+  # ---------- Reality (VLESS + REALITY) ----------
+  #
+  # ⚠ REALITY 预设原来挂在 **vless** 段, 而 src/conf/VLESS.sh 里一个 reality
+  #   字都没有 —— 用户一路回车选中「① 隐匿优先 · REALITY」, 面板照打
+  #   "已套用预置 / 节点名后缀: REALITY", 实际产出纯 TLS 节点, 没有一句降级提示。
+  #
+  #   但 REALITY 本身是**最强的抗 DPI 配置**, 不该因为脚本归属就消失 ——
+  #   真正的实现是 src/conf/Reality.sh (服务端菜单第 1 项 "Reality (VLESS+Reality)")。
+  #   所以正确的做法不是删掉, 而是**挂到能真正产出它的脚本上**。
+  #   tools/check_all.sh 的「预置不越权」关卡盯着这件事。
+  "reality|tcp|① 隐匿优先 · REALITY|tcp|off|xtls-rprx-vision|reality|裸TCP + XTLS Vision; 抗 DPI 最强; 不用证书|REALITY|"
+  "reality|grpc|② gRPC 伪装 · REALITY|grpc|video||reality|gRPC 套一层正常 HTTP/2; 观感最像普通应用|REALITY|"
+  "reality|xhttp|③ xHTTP · REALITY (M 独有)|xhttp|video||reality|xHTTP 伪装成普通 HTTP 接口调用; 仅 M 内核支持|REALITY+xHTTP|"
+
   # ---------- VLESS (M 内核变体最多) ----------
   # ★ 这里**没有 h2 预置**, 不是遗漏: mihomo 的 vless listener 结构性不支持 h2。
   #   listener 侧 sing_vless 只在 ws-path / grpc-service-name / xhttp-config
