@@ -274,6 +274,33 @@ core_version_menu() {
     done
 }
 
+# ★ systemd unit 不存在时, 提前把话说清楚。
+#
+# 背景: 「初始化基础配置」只建 conf/, **不装 systemd 服务** —— unit 是
+# core_install.sh 写的。所以在一台"只跑面板"的机器上, 用户会一路顺利地
+# 初始化完配置、生成节点, 直到点「启动」才看到:
+#     Failed to start mihomo.service: Unit mihomo.service not found.
+# 这条英文错完全没指向真正的原因 (缺的是 unit, 不是配置), 而配置已经建好,
+# 用户很难往回退两步去想"我是不是压根没装服务"。
+#
+# 在这里提示, 是因为这是**唯一**一个还能低成本补救的位置: 配置还没生成,
+# 重跑一次安装脚本代价最小。
+_core_warn_missing_unit() {
+    local root="$1" svc="$2" f="/etc/systemd/system/$svc.service"
+    [[ -f "$f" ]] && return 0
+    print_warn "还没安装系统服务 ($svc.service 不存在)"
+    print_info "「初始化基础配置」只生成配置文件, **不会**装 systemd 服务 —— 那一步在安装脚本里。"
+    print_info "不装的话, 后面点「服务管理 → 启动」会报 Unit not found。"
+    print_info "继续的话请运行:  bash $root/src/core_install.sh"
+    printf '  %b还要继续初始化吗? [y/N]: ' "${CYAN:-}" >&2
+    local a; read -r a || a=""
+    a=$(clean_input "$a")
+    case "$a" in
+        y|Y|yes|YES) return 0 ;;
+        *) print_info "已取消初始化"; return 1 ;;
+    esac
+}
+
 core_menu() {   # <安装根目录> <服务名>
     local root="$1" svc="${2:-mihomo}"
     local c
@@ -295,7 +322,8 @@ core_menu() {   # <安装根目录> <服务名>
         read -r c || return 0
         c=$(clean_input "$c")
         case "$c" in
-            1) if [[ "$svc" == "mihomo" ]]; then
+            1) _core_warn_missing_unit "$root" "$svc"
+                   if [[ "$svc" == "mihomo" ]]; then
                    bash "$root/src/server.sh" init \
                      || print_error "初始化失败, 见上面输出"
                else
