@@ -1168,7 +1168,37 @@ _ca_pick_fp() {
     [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#M_UTLS_FINGERPRINTS[@]} )) || n=1
     local pick="${M_UTLS_FINGERPRINTS[$((n-1))]}"
     m_fp_set "$pick" || { print_error "非法指纹: $pick"; return 1; }
-    print_ok "指纹已设为 $pick (新生成的节点生效)"
+    print_ok "指纹已设为 $pick"
+    _ca_apply_to_existing "client-fingerprint" "fp=$pick"
+}
+
+# 改完设置后问一句要不要落到已有产物上。
+#
+# 原来只写状态文件并注明"新生成的节点生效", 想换指纹就得把全部节点重新生成
+# 一遍 —— 端口与凭据全变, 已经发出去的分享链接全部失效。而指纹只是客户端
+# 表现层字段, 服务端一个字节都不用动, 所以直接重写产物就够了。
+_ca_apply_to_existing() { # <改了什么, 显示用>
+    local what="$1"
+    local n_art; n_art=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    (( n_art > 0 )) || { print_info "还没有产物, 新节点会直接用上"; return 0; }
+    echo >&2
+    printf "  当前有 %s 个客户端产物, 要同步改掉吗? ${DIM}[Y/n]: ${RESET}" "$n_art" >&2
+    local a; read -r a
+    case "$(clean_input "${a:-y}")" in n|N) print_info "已保留现有产物 (以后生成的用新设置)"; return 0 ;; esac
+
+    local n
+    n=$(m_artifacts_apply_fp "$(m_fp_get)")
+    (( n > 0 )) && print_ok "已更新 $n 处产物与分享链接 ($what)" \
+                 || print_warn "没有需要改的产物"
+    _ca_regen_sub
+}
+
+# 订阅是聚合产物, 单节点改了不重生成它就会与单节点对不上
+_ca_regen_sub() {
+    [[ -f "$M_LIB/build_sub.py" || -f "$M_LIB/share/build_sub.py" ]] || return 0
+    local py="$M_LIB/build_sub.py"
+    [[ -f "$py" ]] || py="$M_LIB/share/build_sub.py"
+    python3 "$py" >/dev/null 2>&1 && print_ok "订阅已重新生成" || print_warn "订阅重新生成失败"
 }
 
 _ca_pick_family() {
@@ -1184,7 +1214,27 @@ _ca_pick_family() {
     if [[ "$(m_addr_family_get)" == "v6" ]] && [[ -z "$(m_addr6_real 2>/dev/null)" ]]; then
         print_warn "本机没有可用的真实 IPv6, 新节点仍会用 IPv4 地址"
     fi
-    print_ok "连接地址已设为 $(m_addr_family_label) (新生成的节点生效)"
+    print_ok "连接地址已设为 $(m_addr_family_label)"
+
+    # 换地址族要改产物里的 server 和分享链接里的 @host
+    local want newip oldip n_art
+    want=$(m_addr_family_get)
+    if [[ "$want" == "v6" ]]; then newip=$(m_addr6_real 2>/dev/null); else newip=$(m_addr4_real 2>/dev/null); fi
+    oldip=$(m_addr4_real 2>/dev/null)
+    n_art=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    if [[ -n "$newip" && -n "$oldip" && "$newip" != "$oldip" && "$n_art" -gt 0 ]]; then
+        echo >&2
+        printf "  %d 个客户端产物当前指向 %s, 要改成 %s 吗? ${DIM}[Y/n]: ${RESET}" \
+            "$n_art" "$oldip" "$newip" >&2
+        local a; read -r a
+        if [[ "$(clean_input "${a:-y}")" != "n" && "$(clean_input "${a:-y}")" != "N" ]]; then
+            local n; n=$(m_artifacts_apply_addr "$newip" "$oldip")
+            (( n > 0 )) && print_ok "已更新 $n 处产物与分享链接" || print_warn "没有需要改的产物"
+            _ca_regen_sub
+        else
+            print_info "已保留现有产物 (以后生成的用新地址)"
+        fi
+    fi
 }
 
 extra_menu() {

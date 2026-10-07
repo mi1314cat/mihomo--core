@@ -1449,3 +1449,68 @@ m_kernel_supports() {
     local root="${2:-$(_m_kernel_root)}"
     ! m_kernel_unsupported_types "$root" | grep -qxF "$t"
 }
+
+# ---------- 客户端产物: 改了设置要能落到已有文件上 ----------
+#
+# 原来这两个设置只写状态文件, 并注明"只影响之后新生成的节点"。于是想换一套
+# 指纹 / 换个地址族, 就得把全部节点重新生成一遍 —— 端口和凭据全变, 已经
+# 发出去的分享链接全部失效。指纹和地址都是**纯客户端表现层**的字段, 改它们
+# 不影响服务端任何行为, 所以直接重写产物就够了。
+#
+# ★ 只碰 $SRV_OUT 下的产物, **绝不碰 conf/config.d/** —— 服务端配置里
+#   的监听地址、凭据与客户端产物无关, 改错了等于把服务改坏。
+
+# 把产物里的 client-fingerprint 统一改成 <fp>, 并重写分享链接的 fp= 参数。
+m_artifacts_apply_fp() { # <指纹> [1=不交互]
+    local fp="${1:-}" n=0 f
+    [[ -n "$fp" ]] || return 1
+    shopt -s nullglob
+    for f in "$SRV_OUT"/*_client-*.yaml; do
+        grep -q 'client-fingerprint:' "$f" 2>/dev/null || continue
+        sed -i -E "s/^([[:space:]]*client-fingerprint:[[:space:]]*).*/\1$fp/" "$f" 2>/dev/null || continue
+        n=$((n + 1))
+    done
+    for f in "$SRV_OUT"/*_share-*.txt; do
+        grep -q 'fp=' "$f" 2>/dev/null || continue
+        sed -i -E "s/([?&])fp=[^&]*/\1fp=$fp/g" "$f" 2>/dev/null || continue
+        n=$((n + 1))
+    done
+    shopt -u nullglob
+    printf '%s' "$n"
+}
+
+# 把产物里的 server: / 分享链接的 @host:port 统一换成 <ip>。
+#
+# CDN 节点例外: 它们连的是 Cloudflare 边缘域名而不是源站 IP, 换地址族不该
+# 动它们 —— 改了反而连不上。所以只改当前确实等于旧地址的那些。
+m_artifacts_apply_addr() { # <新IP> <旧IP> [1=不交互]
+    local new="${1:-}" old="${2:-}" n=0 f
+    [[ -n "$new" && -n "$old" ]] || return 1
+    [[ "$new" != "$old" ]] || { printf '0'; return 0; }
+    shopt -s nullglob
+    for f in "$SRV_OUT"/*_client-*.yaml; do
+        grep -qE "^[[:space:]]*server:[[:space:]]*${old//./\\.}[[:space:]]*$" "$f" 2>/dev/null || continue
+        sed -i -E "s/^([[:space:]]*server:[[:space:]]*)${old//./\\.}$/\1$new/" "$f" 2>/dev/null || continue
+        n=$((n + 1))
+    done
+    # 分享链接: vless://uuid@host:port?  -> 只换 @ 后面的 host, 端口不动
+    #
+    # ★ IPv6 必须写成 [addr]: 写成 vless://uuid@2001:db8::1:443 的话, 冒号
+    #   与端口的冒号混在一起, 客户端根本解析不出主机地址。share.sh 里的
+    #   _share_host() 本来就管这件事, 这里必须用同一套规则 ——
+    #   另写一份就是第二个真源, 迟早漂移。
+    local newh
+    if declare -F _share_host >/dev/null 2>&1; then
+        newh=$(_share_host "$new")
+    else
+        case "$new" in *:*) newh="[$new]" ;; *) newh="$new" ;; esac
+    fi
+    local ore; ore=${old//./\\.}
+    for f in "$SRV_OUT"/*_share-*.txt; do
+        grep -qE "@${ore}([:?][0-9]*)?" "$f" 2>/dev/null || continue
+        sed -i -E "s/@${ore}([:?])/@${newh}\\1/g" "$f" 2>/dev/null || continue
+        n=$((n + 1))
+    done
+    shopt -u nullglob
+    printf '%s' "$n"
+}
