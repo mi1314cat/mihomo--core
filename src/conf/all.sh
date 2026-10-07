@@ -563,7 +563,7 @@ record() {  # record <协议> <端口> <状态> <说明>
 
 # vmess-mkcp / vmess-mekya 列出但**默认不生成** (要 ALL_MKCP=1)。
 # 放在这里是为了让 `--only vmess-mkcp` 能被点名单独生成, 而不必先改默认集。
-ALL_GEN_IDS="reality reality-grpc reality-xhttp vmess-mkcp vmess-mekya trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
+ALL_GEN_IDS="reality reality-grpc reality-xhttp vmess-mkcp vmess-mekya cdn-v-ws cdn-v-grpc cdn-m-ws cdn-m-grpc cdn-t-ws cdn-t-grpc trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
 
 # --only 的 token 必须能对上真实标识符。原来的 want() 对不匹配的 token 静默
 # 返回 false, 于是 `--only tuic` (真名 tuicv5) 会安静地什么都不生成,
@@ -605,7 +605,14 @@ gen() {
     local proto="$1" label="$2" need_reality="$3" need_tls="$4" mproto="${5:-$1}"
     shift 4
     [[ $# -gt 0 ]] && shift        # 吃掉可选的第 5 参数
-    local body="$*"          # 实际生成 listener 的函数名 + 参数
+    # ★ 函数名与**额外参数**必须分开存。
+    #   原来这里是一句 local body="$*", 调用处写 "$body" —— 双引号让
+    #   "g_cdn_tier vless ws" 整个被当成**一个命令名**去找, 于是报
+    #   "g_cdn_tier vless ws: command not found"。
+    #   函数名后跟参数 (参数化生成器) 一律失效, 只能写死零参函数。
+    local bodyfn="${1:-$proto}"
+    shift || true
+    local -a bodyargs=("$@")
 
     if ! want "$proto"; then return; fi
     # need_tls 语义: 0=不需要证书, 1=有证书即可, 2=必须是**真证书**
@@ -674,7 +681,10 @@ gen() {
     # 前提是 next_index 保证 in_file/out_file 本来不存在, 所以 rm 不会误伤旧配置。
     local logf why
     logf=$(mktemp)
-    if "$body" "$idx" "$port" "$in_file" "$out_file" 2>"$logf"; then
+    # 额外参数放在固定四参之后, 生成器按位置取: $1=序号 $2=端口
+    # $3=源站片段 $4=客户端产物, 再往后才是调用方传的自定义参数。
+    if "$bodyfn" "$idx" "$port" "$in_file" "$out_file" \
+        ${bodyargs[@]+"${bodyargs[@]}"} 2>"$logf"; then
         record "$label" "$port" "成功" ""
     else
         why=$(tail -2 "$logf" | awk 'NF && !seen[$0]++' | tr '\n' ' ' | cut -c1-100)
@@ -855,6 +865,138 @@ EOF
 # 与上面「直连」版的区别: 客户端连的是 **Cloudflare 后面的域名**而不是源站 IP。
 # 直连版靠 REALITY 免证书; 本版必须用**真证书** ——
 # 自签证书会被 Cloudflare 回源校验拒绝 (CF 不认你的自签 CA)。
+# =============================================================
+# CDN 档位统一生成器 (2026-10-07 新增)
+#
+# 为什么用**一个参数化函数**而不是再抄 8 份 g_xxx_cdn():
+#   这些档位的结构是完全一样的 —— 差别只有三处: 协议类型、传输、鉴权字段。
+#   抄 8 份意味着以后改一处要改 8 处, 漏改的那份不会报错, 只会在用户配
+#   CDN 时才暴露 (症状是"CDN 侧全绿、客户端连不上", 极难排查)。
+#
+# 调用: g_cdn_tier <协议> <传输>
+#   协议: vless | vmess | trojan
+#   传输: ws | grpc | xhttp
+#   → 3 × 3 = 9 个 CDN 档位
+#
+# ★ 为什么只有这三个协议能走 CDN:
+#   Cloudflare 橙云代理的是 **HTTP 流**。只有把协议包在 HTTP 承载里
+#   (ws / gRPC / xHTTP) 才过得去。REALITY / AnyTLS / Hysteria2 / TUIC /
+#   Shadowsocks / Snell 都是裸 TCP 或 UDP, Cloudflare 根本不会转发 ——
+#   症状同样是"节点在订阅里, 但连不上"。
+#   （sing-box 那边也是同样的结论: 它的 batch.sh 注释写着"只有
+#    vless/vmess/trojan 有 Transport 字段, 其他协议给 CDN 也走不通",
+#    3 协议 × ws/grpc = 6 个。我们多出 xHTTP 这一维, 所以是 9 个。）
+#
+# ★ 客户端 server 一律写 CDN 域名, 端口 443:
+#   CDN 档位连的是**边缘**, 不是源站端口。写成源站端口是 CDN 档位最常见的
+#   配置错误 —— 源站端口只在 listener 里用, 供后台配 Origin Rule。
+# =============================================================
+g_cdn_tier() {
+    # 标准四参 ($1=序号 $2=端口 $3=源站片段 $4=客户端产物) 由 gen 统一传入,
+    # 后面两个是调用方 (gen 那行) 追加的自定义参数。
+    local _idx="$1" _port="$2" _in="$3" _out="$4" proto="${5:-}" tr="${6:-}"
+    [[ -n "$proto" && -n "$tr" ]] || { print_error "g_cdn_tier 需要 <协议> <传输> 两个参数"; return 1; }
+    local -A TNAME=( [ws]=WS [grpc]=gRPC [xhttp]=xHTTP )
+    local -A PNAME=( [vless]=VLESS [vmess]=VMess [trojan]=Trojan )
+    local tn="${TNAME[$tr]}" pn="${PNAME[$proto]}"
+    local path svc=""
+
+    # path 只对 ws / xhttp 有意义; gRPC 用 service-name, 不带斜杠。
+    case "$tr" in
+        ws)    path=$(m_check_ws_path "$(m_gen_path cdn$tr)") || return 1 ;;
+        xhttp) path=$(m_check_ws_path "$(m_gen_path cdn$tr)") || return 1
+               render_xhttp_pad ;;
+        grpc)  svc=$(m_gen_grpc_name cg "$_idx") || return 1 ;;
+    esac
+
+    NODE_TAG="$(m_node_tag "$pn" "$_idx" cdn "$tn")"
+
+    # ---- 鉴权字段: 三个协议唯一真正不同的地方 ----
+    # VLESS   : uuid
+    # VMess   : uuid + alterId + cipher (cipher 只在客户端侧)
+    # Trojan  : password
+    local auth=""
+    # ⚠ 密码一律用 $UUID, 与既有 Trojan 生成器 (g_trojan_tls 等) 保持一致。
+    #   这里原先写的是 $TROJAN_PASS —— 而全脚本**从来没有给这个变量赋过值**。
+    #   set -u 下引用未定义变量会让**整个 shell 当场退出** (不是返回非零,
+    #   而是不管不顾直接 die), 症状是 all.sh 跑到一半日志戛然而止、exit=1、
+    #   一条错误信息都没有。只有 bash -x 追到最后一条命令才定位得到。
+    case "$proto" in
+        vmess)  auth="      - uuid: $UUID"$'\n'"        alterId: 0" ;;
+        trojan) auth="      - password: \"$UUID\"" ;;
+        *)      auth="      - uuid: $UUID" ;;
+    esac
+
+    # ---- 服务端: listener ----
+    # 传输字段名同样按协议/传输分叉: listener 侧 ws 是 ws-path,
+    # grpc 是 grpc-service-name, xhttp 是 xhttp-config 块。
+    local trfield=""
+    case "$tr" in
+        ws)    trfield="    ws-path: $path" ;;
+        grpc)  trfield="    grpc-service-name: $svc" ;;
+        xhttp) trfield=$'    xhttp-config:\n      mode: '"$XHTTP_MODE"$'\n      path: '"$path"$'\n'"$XHTTP_PAD_FIELDS" ;;
+    esac
+
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · $pn + $tn + CDN (过 Cloudflare)
+# ★ 这是**源站**: 由 Cloudflare 回源到它, 监听 0.0.0.0 且用真证书。
+#   客户端连的是 CDN 边缘 (443), 不是这里的 $2 —— 本端口只用于配 Origin Rule。
+# ⚠ 必须真证书: Cloudflare 回源时不认自签 CA, 用自签必然回源失败。
+listeners:
+  - name: $NODE_TAG
+    type: $proto
+    listen: "0.0.0.0"
+    port: $2
+    users:
+$auth
+$trfield
+    certificate: $CRT
+    private-key: $KEY
+EOF
+
+    # ---- 客户端: proxy ----
+    local ctrfield="" cipherline=""
+    case "$tr" in
+        ws)    ctrfield=$'    ws-opts:\n      path: '"$path" ;;
+        grpc)  ctrfield=$'    grpc-opts:\n      grpc-service-name: '"$svc" ;;
+        xhttp) ctrfield=$'    xhttp-opts:\n      mode: '"$XHTTP_MODE"$'\n      path: '"$path"$'\n'"$XHTTP_PAD_FIELDS" ;;
+    esac
+    [[ "$proto" == "vmess" ]] && cipherline="    cipher: auto"
+
+    # 复用 ECH 探测: CDN 档位开 ECH 零额外代价 (不换 IP、不换端口、不多一跳)
+    local ech=""
+    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-1}" == "1" ]] \
+       && declare -F cdn_ech_ready >/dev/null 2>&1 && cdn_ech_ready "$SNI"; then
+        ech=$'    ech-opts:\n      enable: true\n      query-server-name: '"$SNI"$'\n'
+    fi
+
+    NODE_TAG="$(m_node_tag "$pn" "$_idx" cdn "$tn")"
+    cat > "$4" <<EOF
+# ★ 客户端产物 · $pn + $tn + CDN
+#   连的是 CDN 边缘: server=$SNI port=443。源站端口不在这里出现。
+proxies:
+  - name: $NODE_TAG
+    type: $proto
+    server: $SNI
+    port: 443
+    username: ""
+$cipherline
+EOF
+    case "$proto" in
+        vless)  echo "    uuid: $UUID" >> "$4" ;;
+        vmess)  { echo "    uuid: $UUID"; echo "    alterId: 0"; } >> "$4" ;;
+        trojan) { echo "    password: \"$UUID\""; } >> "$4" ;;
+    esac
+    cat >> "$4" <<EOF
+    network: $tr
+    tls: true
+    udp: true
+    servername: $SNI
+    client-fingerprint: $CLIENT_FP
+$ech$ctrfield
+EOF
+}
+
 g_vless_xhttp_cdn() {
     [[ -n "$CRT" && -n "$KEY" && -n "$SNI" ]] || {
         record "VLESS+xHTTP+CDN" "-" "跳过" "需要证书 (--no-tls 或证书缺失)"
@@ -1994,6 +2136,36 @@ gen trojan-tls     "Trojan+TLS"            0 1 trojan    g_trojan_tls
 gen vless-ws       "VLESS+WS+TLS"          0 1 vless     g_vless_ws_tls
 gen xhttp-tls      "VLESS+XHTTP+TLS"       0 1 vless     g_vless_xhttp_tls
 gen xhttp-cdn      "VLESS+XHTTP+CDN"       0 2 vless     g_vless_xhttp_cdn
+
+# ---- CDN 档位 (3 协议 × 3 传输 = 9 个) ----
+#
+# 为什么一次生成 9 个而不是 1 个:
+#   Cloudflare 边缘会看到你的**流量形态**。只用一种传输, 特征单一; 把
+#   ws / gRPC / xHTTP 混着用, 同一批节点对外表现是异构的, 更难被聚类识别。
+#   (sing-box 那边也是这个思路, 它的 batch.sh 明写"传输形态不同, 便于分散
+#    流量特征"。)
+#
+# 全部需要**真证书** (第 4 列 = 2): Cloudflare 回源时不认自签 CA,
+# 用自签必然回源失败, 且症状是"CDN 侧全绿、客户端连不上", 极难排查。
+#
+# ⚠ **VMess / Trojan 没有 xHTTP 档位** —— 不是漏写, 是内核不支持:
+#   xHTTP 的 listener 侧字段是 `xhttp-config`, 而它只存在于 **vless** 的
+#   listener 模式里 (validate.py LISTENER 的 vless 分支才有这一项)。
+#   写给 vmess/trojan 的 listener 会被**静默忽略** —— listener 退化成裸 TCP,
+#   客户端却按 xHTTP 去连, 必然连不上。
+#   现象是自家 validate.py 报「未知键 xhttp-config（内核会静默忽略）」,
+#   那条警告就是在拦这个。宁可少两个档位, 也不能发"永远连不上"的死节点。
+#   所以 CDN 档位实际是 7 个: vless×{ws,grpc} (xHTTP 已有专档 xhttp-cdn) +
+#   vmess×{ws,grpc} + trojan×{ws,grpc}。
+#
+# 只有 vless/vmess/trojan 出现在这里 —— 别的协议是裸 TCP/UDP,
+# Cloudflare 不转发, 给了也是连不上的死节点。
+gen cdn-v-ws       "CDN: VLESS+WS"         0 2 vless     g_cdn_tier vless ws
+gen cdn-v-grpc     "CDN: VLESS+gRPC"       0 2 vless     g_cdn_tier vless grpc
+gen cdn-m-ws       "CDN: VMess+WS"         0 2 vmess     g_cdn_tier vmess ws
+gen cdn-m-grpc     "CDN: VMess+gRPC"       0 2 vmess     g_cdn_tier vmess grpc
+gen cdn-t-ws       "CDN: Trojan+WS"        0 2 trojan    g_cdn_tier trojan ws
+gen cdn-t-grpc     "CDN: Trojan+gRPC"      0 2 trojan    g_cdn_tier trojan grpc
 # 明文档 (无 TLS)
 gen vless          "VLESS+WS"              0 0 vless     g_vless_ws
 gen xhttp          "VLESS+XHTTP"           0 0 vless     g_vless_xhttp

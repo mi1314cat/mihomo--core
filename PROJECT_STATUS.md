@@ -531,3 +531,90 @@ mKCP 事故导致客户端主机 CPU 被吃光, SSH 完全失联, **无法远程
 | SB 分享导入 | 🔴 TODO | 用户本轮明确要求**暂缓**。SB 产物是 sing-box JSON (`outbounds`/`tag`/`route`), 与 mihomo YAML 不同构, 需转换器 + 影子测试 |
 | h2 生成入口 | 🟡 PARTIAL | 校验器有 `h2-opts`, 但一键脚本无生成档位 |
 | 客户端物理重启 | 🔴 BLOCKED | 需用户操作 |
+
+---
+---
+
+# 十五、第四轮：CDN 档位从 1 个补到 7 个
+
+日期 2026-10-07
+
+## 15-A 起因: CDN 档位覆盖严重不足
+
+核对 sing-box 的对照后确认属实: 之前只做了 `xhttp-cdn` 一个 CDN 档位。
+
+
+## 15-B CDN 档位 1 → 7
+
+新增统一生成器 `g_cdn_tier <协议> <传输>`, 覆盖:
+
+| # | 档位 | 协议 | 传输 | nginx 回源 |
+|---|------|------|------|-----------|
+| 1 | `xhttp-cdn` | VLESS | xHTTP | `grpc_pass` |
+| 2 | `cdn-v-ws` | VLESS | WS | `proxy_pass` + Upgrade |
+| 3 | `cdn-v-grpc` | VLESS | gRPC | `grpc_pass` |
+| 4 | `cdn-m-ws` | VMess | WS | `proxy_pass` + Upgrade |
+| 5 | `cdn-m-grpc` | VMess | gRPC | `grpc_pass` |
+| 6 | `cdn-t-ws` | Trojan | WS | `proxy_pass` + Upgrade |
+| 7 | `cdn-t-grpc` | Trojan | gRPC | `grpc_pass` |
+
+**对比 sing-box 的 6 个** (3 协议 × {ws, grpc}), 我们多一个 VLESS+xHTTP。
+
+为什么用**一个参数化函数**而不是再抄 6 份: 这些档位结构完全一样, 差别只有
+协议类型 / 传输 / 鉴权字段三处。抄多份意味着以后改一处要改多处, 漏改的那份
+不会报错, 只在用户配 CDN 时暴露。
+
+## 15-C ⚠ 发现并去掉了 2 个"看着能做其实做不了"的档位
+
+最初按 3 协议 × 3 传输 = 9 个来生成, 跑完自家校验器报出 4 条警告:
+
+```
+listeners[10](mTrojan06-plain-xHTTP): 未知键 `xhttp-config`（内核会静默忽略）
+listeners[26](mVMess05-plain-xHTTP): 未知键 `xhttp-config`（内核会静默忽略）
+```
+
+追下去发现: xHTTP 的 listener 字段是 `xhttp-config`, 而它**只存在于 vless 的
+listener 模式里** (`validate.py` LISTENER 的 vless 分支)。写给 vmess/trojan
+会被**静默忽略** —— listener 退化成裸 TCP, 客户端却按 xHTTP 去连, 必然连不上。
+
+**那 4 条警告正好是在拦这个**, 所以最终只留 7 个。
+宁可少两个档位, 也不能发"永远连不上"的死节点 —— 那比没有更糟。
+
+## 15-D 顺带修掉两个真实缺陷
+
+### 1. `gen` 不支持带参数的生成器
+
+`gen` 里写的是 `local body="$*"`, 调用处 `"$body"` —— 双引号让
+`"g_cdn_tier vless ws"` 整个被当成**一个命令名**去找, 报
+`command not found`。也就是**任何参数化生成器都用不了**, 只能写死零参函数。
+
+已拆成 `bodyfn` + `bodyargs[]`, 调用时额外参数追加在标准四参之后。
+
+### 2. `set -u` 下引用未定义变量 = 整个 shell 当场退出
+
+新生成器里写了 `$TROJAN_PASS`, 而全脚本**从来没有给它赋过值**。
+`set -u` 下这不是"返回非零", 而是**直接 die**。
+
+症状极难定位: `all.sh` 跑到一半日志戛然而止、`exit=1`、**一条错误信息都没有**,
+连"失败明细"都不会打印。只有 `bash -x` 追到最后一条命令才看出来。
+
+已改为 `$UUID` (与既有 Trojan 生成器一致), 并把这段踩坑过程写进代码注释。
+
+## 15-E 本轮验收
+
+| 项 | 结果 |
+|----|------|
+| `tools/check_all.sh` | **11/11 通过** |
+| 发布脱敏 | ✅ 干净 |
+| 服务端档位 | **25/25 成功, 0 警告** (原 19 + 新 6, 去重后 CDN 共 7) |
+| 三道关 | 全绿 |
+| nginx 配置 | `nginx -t` 通过, **7 个 CDN location 已写入并重载** |
+| 客户端节点 | **25/25 连通** |
+| **CDN 档位** | **7/7 全通** (174–429 ms) |
+
+## 15-F 仍然遗留
+
+| 项 | 状态 |
+|----|:----:|
+| SB 分享导入转换器 | 🔴 TODO (本轮明确暂缓) |
+| h2 / httpupgrade 的生成入口 | 🟡 PARTIAL (校验器支持, 一键脚本无档位) |

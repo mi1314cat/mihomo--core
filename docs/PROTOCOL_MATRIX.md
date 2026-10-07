@@ -1,6 +1,6 @@
 # 协议支持矩阵
 
-> 生成日期: 2026-10-07 · 对应提交 `7032bc1`
+> 生成日期: 2026-10-07
 >
 > **数据来源**: 全部从代码取出 (`src/conf/all.sh` 的 `gen` 注册表 + 各协议脚本的
 > `ask_*` 交互函数), 不是凭印象写的。改代码后请同步更新本文件。
@@ -9,7 +9,7 @@
 
 ## 一、一键全协议脚本 (all.sh) 实际生成的组合
 
-`bash src/conf/all.sh --quick` 默认生成 **19 个档位**。
+`bash src/conf/all.sh --quick` 默认生成 **25 个档位** (含 7 个 CDN 档位)。
 **协议 × 传输 × 伪装** 的实际组合如下:
 
 | # | 档位 id | 中文名 | 协议 | 传输 | 安全层 | 端口 |
@@ -33,6 +33,49 @@
 | 17 | `anytls` | AnyTLS | AnyTLS | TCP | TLS | 20033 |
 | 18 | `ss` | Shadowsocks | SS | — | — | 20034 |
 | 19 | `snell` | Snell | Snell | TCP | — | 20035 |
+| 20 | `cdn-v-ws` | CDN: VLESS+WS | VLESS | WS | Cloudflare + ECH | 边缘 443 |
+| 21 | `cdn-v-grpc` | CDN: VLESS+gRPC | VLESS | gRPC | Cloudflare + ECH | 边缘 443 |
+| 22 | `cdn-m-ws` | CDN: VMess+WS | VMess | WS | Cloudflare + ECH | 边缘 443 |
+| 23 | `cdn-m-grpc` | CDN: VMess+gRPC | VMess | gRPC | Cloudflare + ECH | 边缘 443 |
+| 24 | `cdn-t-ws` | CDN: Trojan+WS | Trojan | WS | Cloudflare + ECH | 边缘 443 |
+| 25 | `cdn-t-grpc` | CDN: Trojan+gRPC | Trojan | gRPC | Cloudflare + ECH | 边缘 443 |
+
+第 20–25 行连的是 **CDN 边缘 443**, 不是源站端口 (源站端口由 Cloudflare 的
+Origin Rule 指向, 不出现在客户端配置里)。
+
+### CDN 档位 (7 个, 全部默认生成)
+
+**为什么一次生成 7 个而不是 1 个**: Cloudflare 边缘看到的是你的**流量形态**。
+只用一种传输, 特征单一; 把 ws / gRPC / xHTTP 混着用, 同一批节点对外表现是异构的,
+更难被聚类识别。
+
+| # | 档位 id | 协议 | 传输 | nginx 回源方式 |
+|---|---------|------|------|---------------|
+| 1 | `xhttp-cdn` | VLESS | xHTTP | `grpc_pass` (xHTTP 必须用, 见下) |
+| 2 | `cdn-v-ws` | VLESS | WS | `proxy_pass` + Upgrade |
+| 3 | `cdn-v-grpc` | VLESS | gRPC | `grpc_pass` |
+| 4 | `cdn-m-ws` | VMess | WS | `proxy_pass` + Upgrade |
+| 5 | `cdn-m-grpc` | VMess | gRPC | `grpc_pass` |
+| 6 | `cdn-t-ws` | Trojan | WS | `proxy_pass` + Upgrade |
+| 7 | `cdn-t-grpc` | Trojan | gRPC | `grpc_pass` |
+
+**为什么只有这 3 个协议能走 CDN**: Cloudflare 橙云代理的是 **HTTP 流**。
+只有把协议包进 HTTP 承载 (ws / gRPC / xHTTP) 才过得去。REALITY / AnyTLS /
+Hysteria2 / TUIC / SS / Snell 都是裸 TCP 或 UDP, Cloudflare 根本不转发 ——
+症状同样是"节点在订阅里, 但连不上"。
+
+**为什么 VMess / Trojan 没有 xHTTP 档位**: 不是漏写, 是**内核不支持**。
+xHTTP 的 listener 字段是 `xhttp-config`, 而它只存在于 **vless** 的 listener 模式里
+(`validate.py` 的 LISTENER / vless 分支才有)。写给 vmess/trojan 会被**静默忽略** —
+listener 退化成裸 TCP, 客户端却按 xHTTP 连, 必然失败。
+所以 CDN 组合是 **3+2+2 = 7**, 而不是理论上的 9。
+
+**对比 sing-box**: 它是 3 协议 × {ws, grpc} = **6** 个。我们多一个 VLESS+xHTTP。
+
+CDN 档位还有两条硬约束:
+- **必须真证书**: Cloudflare 回源时不认自签 CA。自签必然回源失败,
+  症状是"CDN 侧全绿、客户端连不上", 极难排查 —— 所以 `all.sh` 在生成前就拦。
+- **客户端连的是边缘 443**, 不是源站端口。源站端口只出现在 listener 里, 供配 Origin Rule。
 
 ### 可选档位 (默认不生成)
 
@@ -166,17 +209,17 @@ bash src/conf/VLESS.sh
 | 类别 | 数量 | 明细 |
 |------|:----:|------|
 | 协议种类 | 9 | VLESS / VMess / Trojan / Hysteria2 / TUIC / AnyTLS / SS / Snell / (mihomo 另支持 Hysteria1·ShadowTLS·SSH·WireGuard·Mieru 等, 项目未生成) |
-| 一键档位 | 19 | 见第一节 |
+| 一键档位 | **25** | 见第一节 (含 7 个 CDN 档位) |
 | 可选档位 | 2 | mKCP / Mekya |
 | 传输层 | 8 | ws / grpc / xhttp / h2 / tcp / mkcp / mekya / httpupgrade |
 | 安全层 | 4 | REALITY / 真证书 TLS / Cloudflare+ECH / 裸 |
-| 过 CDN 的 | 2 | `xhttp-cdn`、`vless-ws`(WS 也可套) |
+| 过 CDN 的 | **7** | 见上表 |
 
 ---
 
 ## 五、当前状态 (2026-10-07 实测)
 
-- 服务端: **19/19 档位生成成功**, 严格校验通过, `mihomo -t` 通过, 服务 active
-- 客户端: **19/19 节点连通** (167–229 ms; CDN 档 1037 ms, 多一跳属正常)
+- 服务端: **25/25 档位生成成功**, 0 警告, 严格校验通过, `mihomo -t` 通过, 服务 active
+- 客户端: **25/25 节点连通**, 其中 **CDN 档 7/7 全通** (174–429 ms)
 - 双端证据链: <CLIENT_ALIAS> 无直连 → 经代理出口 = <SERVER_ALIAS> 同目标出口 ✅, DNS 返回 fake-ip `198.18.0.4` ✅
 - ECH: 抓包带对照组验证 —— 开: 明文 SNI 仅 `cloudflare-ech.com`; 关: 真实域名暴露 ✅
