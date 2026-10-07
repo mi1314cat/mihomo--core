@@ -166,6 +166,126 @@ _extra_apply() {
 #   * 想把某些目标定向到 reject / direct 而不是默认规则
 #
 # 内核实测: outbounds 段写 type: direct / reject / socks5 / http 均通过 -t。
+# 从 URL 导入出站 —— 和客户端「添加节点」保持同一套做法。
+#
+# 用户明确要求服务端出站能像客户端一样直接喂自己的订阅 URL。
+# 与客户端 node_add 的区别只有落地位置: 客户端写 conf/providers/<名字>.yaml
+# (proxy-provider, 由内核按需拉), 服务端这里写 config.d/outbound-<NN>.yaml
+# (直接把节点展开成 outbounds)。因为服务端出站是被**规则**引用的实体,
+# 不是给客户端挑的候选, 展开成静态 outbounds 更直白, 也少一层间接。
+_extra_outbound_from_url() {
+    print_title "从 URL 导入出站"
+    printf '  订阅链接 (本机分享链接 / 通用订阅 / base64 订阅): ' >&2
+    local url; read -r url || return 1
+    url=$(clean_input "$url")
+    [[ -n "$url" ]] || { print_error "链接不能为空"; return 1; }
+    [[ "$url" == http://* || "$url" == https://* ]] \
+        || { print_error "只支持 http/https 链接"; return 1; }
+
+    printf '  导入后叫什么 (规则里用它引用): ' >&2
+    local name; read -r name || return 1
+    name=$(clean_input "$name")
+    [[ -n "$name" ]] || { print_error "名称不能为空"; return 1; }
+    if printf '%s' "$name" | grep -q '[/\\:*?"<>|[:space:]]'; then
+        print_error "名称里不能含 / \\ : * ? \" < > | 或空格"; return 1
+    fi
+
+    local tmp; tmp=$(mktemp -d) || { print_error "临时目录创建失败"; return 1; }
+    local body="$tmp/sub.yaml"; : > "$body"
+    print_info "正在拉取..."
+    # 不用 dl_curl_code: 它住在 dl_route.sh, 而 dl_route.sh 只在**客户端**
+    # 被 source, 服务端这条路径上调用会直接 "command not found"。
+    # 服务端本来也不需要下载通道那套代理决策, 直接 curl 就够。
+    local code
+    code=$(curl -sS -L -m 30 -o "$body" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+    if [[ "$code" != "200" ]]; then
+        print_error "拉取失败 (HTTP ${code:-000})"
+        rm -rf "$tmp"; return 1
+    fi
+
+    # 通用订阅常见的三种外层: 明文 YAML / base64 的一串分享链接 /
+    # {"proxies":[...]}。三种都还原成 Mihomo 的 proxies 结构。
+    python3 - "$body" "$tmp/norm.yaml" "$_m_libdir" <<'PYURL' 2>&1 | tail -3
+import sys, yaml, base64, re
+src, dst, lib = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, lib)
+raw = open(src, encoding="utf-8", errors="replace").read().strip()
+d = None
+try:
+    d = yaml.safe_load(raw)
+except Exception:
+    d = None
+# 情况 2: 顶层不是 proxies, 但像 base64
+if not (isinstance(d, dict) and isinstance(d.get("proxies"), list)):
+    b = re.sub(r"\s+", "", raw)
+    if len(b) > 20 and re.fullmatch(r"[A-Za-z0-9+/=_-]+", b):
+        try:
+            dec = base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8", "replace")
+            d2 = yaml.safe_load(dec)
+            if isinstance(d2, dict) and isinstance(d2.get("proxies"), list):
+                d = d2
+        except Exception:
+            pass
+if not (isinstance(d, dict) and isinstance(d.get("proxies"), list) and d["proxies"]):
+    print("[ERR] 链接里没找到 Mihomo 订阅 (需要顶层 proxies: 列表, 或 base64 编码的订阅)")
+    sys.exit(1)
+# 剔除内核不认识的类型 —— 否则节点会被**静默丢弃**, 表现是"订阅里有但连不上"
+import validate as V
+known = getattr(V, "PROXY_TYPES", None) or set()
+out = [p for p in d["proxies"]
+       if isinstance(p, dict) and (not known or p.get("type") in known)]
+if not out:
+    print("[ERR] 订阅里的节点全都不是 mihomo 支持的类型: %s"
+          % sorted({str(p.get('type')) for p in d['proxies'] if isinstance(p, dict)}))
+    sys.exit(1)
+yaml.safe_dump({"proxies": out}, open(dst, "w", encoding="utf-8"), allow_unicode=True)
+print("[OK] 可用节点 %d / 共 %d" % (len(out), len(d["proxies"])))
+PYURL
+    local rc=$?
+    if [[ $rc -ne 0 || ! -s "$tmp/norm.yaml" ]]; then
+        rm -rf "$tmp"; return 1
+    fi
+
+    local idx; idx=$(_extra_next_index outbound)
+    local f; f=$(printf '%s/outbound-%s.yaml' "$(_extra_dir)" "$idx")
+    # 名字冲突直接挡: 规则按名字引用, 覆盖等于悄悄改坏规则
+    if python3 - "$(_extra_dir)" "$name" <<'PYDUP' 2>/dev/null
+import sys, glob, yaml
+for f in glob.glob(sys.argv[1] + "/outbound-*.yaml"):
+    try: d = yaml.safe_load(open(f, encoding="utf-8"))
+    except Exception: continue
+    for o in (d.get("outbounds") or []) if isinstance(d, dict) else []:
+        if isinstance(o, dict) and o.get("name") == sys.argv[2]: raise SystemExit(0)
+raise SystemExit(1)
+PYDUP
+    then
+        print_error "已存在同名出站 '$name' —— 请换个名字"
+        rm -rf "$tmp"; return 1
+    fi
+    python3 - "$f" "$name" "$tmp/norm.yaml" <<'PYEXP'
+import sys, yaml
+path, name, sub = sys.argv[1:4]
+proxies = yaml.safe_load(open(sub, encoding="utf-8"))["proxies"]
+# 原先手工拼 YAML 字符串, 结果缩进错了 2 空格 —— `- name:` 之后的键要跟
+# name 同列 (4 空格), 我写成了 6。校验器当场报 YAML 解析失败, 但更好的做法
+# 是不手拼: 交给 yaml 序列化, 缩进/转义/嵌套全由它保证。
+out = []
+for i, p in enumerate(proxies, 1):
+    o = {k: v for k, v in p.items() if k != "name"}
+    # 名字加组名前缀, 否则两个 URL 里都叫"香港01"的节点会互相覆盖
+    o = {"name": "%s/%02d %s" % (name, i, p.get("name", "?")), **o}
+    out.append(o)
+head = ("# 服务端出站组 · %s —— 由 URL 导入 (%d 个节点), 删除请用面板菜单\n"
+        % (name, len(out)))
+body = yaml.safe_dump({"outbounds": out}, allow_unicode=True, default_flow_style=False,
+                      sort_keys=False, width=4096)
+open(path, "w", encoding="utf-8").write(head + body)
+PYEXP
+    print_ok "已创建 outbound-$idx ($name)"
+    _extra_apply
+    rm -rf "$tmp"
+}
+
 _extra_ask_outbound_type() {
     # 之前只有 direct/reject/socks5/http 四项, 是**我们菜单窄**, 不是内核不支持。
     # mihomo 的 outbound/ 下实际实现了 16 种 (validate.py OUTBOUND_TYPES 与
@@ -191,20 +311,33 @@ _extra_ask_outbound_type() {
     printf '   11) anytls    AnyTLS\n' >&2
     printf '   12) snell     Snell\n' >&2
     printf '   13) wireguard WireGuard\n' >&2
+    ui_rule
+    printf '   14) 从订阅 URL 导入 (和客户端添加节点一样)\n' >&2
     printf '  请选择 [1]: ' >&2
     local c; read -r c || return 1
+    # ⚠ 这里的结果是用全局变量 OB_TYPE 传出去的, 不是 stdout。
+    #   原先 `t=$(_extra_ask_outbound_type)` 跑在**命令替换子shell**里,
+    #   于是第 14 项里调用的 _extra_outbound_from_url 也在子shell里执行 ——
+    #   它写的文件还在, 但 t 拿到的仍是 direct, 于是主流程继续走手工分支,
+    #   结果: 用户选了"从 URL 导入", 却拿到一个用 URL 拼出来的畸形名字,
+    #   而且**全程无报错**。
     case "$c" in
-        2) printf 'reject' ;; 3) printf 'socks5' ;; 4) printf 'http' ;;
-        5) printf 'ss' ;; 6) printf 'vmess' ;; 7) printf 'vless' ;;
-        8) printf 'trojan' ;; 9) printf 'hysteria2' ;; 10) printf 'tuic' ;;
-        11) printf 'anytls' ;; 12) printf 'snell' ;; 13) printf 'wireguard' ;;
-        *) printf 'direct' ;;
+        2) OB_TYPE=reject ;; 3) OB_TYPE=socks5 ;; 4) OB_TYPE=http ;;
+        5) OB_TYPE=ss ;; 6) OB_TYPE=vmess ;; 7) OB_TYPE=vless ;;
+        8) OB_TYPE=trojan ;; 9) OB_TYPE=hysteria2 ;; 10) OB_TYPE=tuic ;;
+        11) OB_TYPE=anytls ;; 12) OB_TYPE=snell ;; 13) OB_TYPE=wireguard ;;
+        14) OB_TYPE=__url__ ;;
+        *) OB_TYPE=direct ;;
     esac
+    printf '%s' "$OB_TYPE"
 }
 
 outbound_add() {
     print_title "添加服务端出站"
-    local t; t=$(_extra_ask_outbound_type) || return 1
+    local OB_TYPE="" t
+    t=$(_extra_ask_outbound_type) || return 1
+    # __url__ 必须在主流程里分派 (见 _extra_ask_outbound_type 里的说明)
+    [[ "$t" == "__url__" ]] && { _extra_outbound_from_url; return $?; }
 
     local name default_port
     case "$t" in
