@@ -357,6 +357,21 @@ choose_listen_ip() {
 # 修复: 网卡公网 IP 优先, 外部查询作兜底 (防 WARP/代理污染, 与 X 内核版一致)
 detect_public_ip() {
     local local_ip public_ip ip
+
+    # ★ 先看「客户端产物设置」里选的地址族。
+    #   原来这里无条件走 ip -4, 于是把产物设成 IPv6 之后, 生成出来的节点
+    #   **仍然是 IPv4** —— 那个设置对新节点完全不起作用, 而界面上看不出任何
+    #   异常: 提示会打印"选择 (默认1)", 用户选了 2, 然后 IPv6 就无声地丢了。
+    #   m_addr6_real 只读网卡并排除隧道接口, 选了 WARP 的机器不会拿到 WARP 地址。
+    if [[ "$(m_addr_family_get)" == "v6" ]]; then
+        local_ip=$(m_addr6_real 2>/dev/null) || local_ip=""
+        if [[ -n "$local_ip" ]]; then
+            printf '%s\n' "$local_ip"
+            return 0
+        fi
+        print_warn "已选择 IPv6 但本机没有可用的真实 IPv6 (隧道地址已排除), 仍用 IPv4"
+    fi
+
     local_ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | \
         while read -r ip; do
             [[ "$ip" == 172.* || "$ip" == 10.* || "$ip" == 127.* || "$ip" == 192.168.* ]] || echo "$ip"
