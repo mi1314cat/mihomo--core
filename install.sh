@@ -476,8 +476,20 @@ auto_update() {
     esac
     [[ -d "$tmp" ]] || { warn "更新失败, 已保留本地版本"; return 1; }
 
-    # 内容一致就别白覆盖一遍 (每次进面板都重写文件会让人以为在改动)
-    if diff -rq "$tmp/src" "$root/src" >/dev/null 2>&1; then
+    # 内容一致就别白覆盖一遍 (每次进面板都重写文件 + 建备份, 用户会以为在改动)。
+    #
+    # ⚠ 必须**逐个清单文件**比对, 不能 diff -rq 整个 src 目录:
+    #   src/manifest.txt 是清单自己, 不会列进自己, 于是 diff 永远报
+    #   "Only in src: manifest.txt" —— 每次进面板都判定为"有更新",
+    #   白跑一遍下载还建一个备份目录。同理用户自己加的本地文件也会被算进去。
+    local same=1 f2
+    while IFS= read -r f2; do
+        f2="${f2%%#*}"
+        f2="$(printf '%s' "$f2" | tr -d '[:space:]')"
+        [[ -n "$f2" ]] || continue
+        cmp -s "$tmp/$f2" "$root/$f2" || { same=0; break; }
+    done < "$tmp/manifest.txt"
+    if (( same )); then
         rm -rf "$tmp"; return 10
     fi
 
