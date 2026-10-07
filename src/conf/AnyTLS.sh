@@ -454,10 +454,10 @@ $PADDING_BLOCK
 EOF
 
     # 9. 写入客户端配置（Clash Meta）
-NODE_TAG="$(m_node_tag AnyTLS "$num2" tls)"
+NODE_TAG="$(m_node_tag AnyTLS "$index" tls)"
 cat > "$OUT_FILE" <<EOF
 proxies:
-  - name: anytls
+  - name: $NODE_TAG
     type: anytls
     server: $SERVER_IP
     port: $ANYTLS_PORT

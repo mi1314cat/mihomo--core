@@ -326,7 +326,9 @@ listeners:
     max-udp-relay-packet-size: 1500
 EOF
 
-    NODE_TAG="$(m_node_tag TUIC "$num" tls)"
+    # 编号变量是 $index; add_config 里从未赋值 $num (set -o nounset 下会直接
+    # 以 "num: unbound variable" 中止, 即使侥幸跑过也会写出空/陈旧的节点名)。
+    NODE_TAG="$(m_node_tag TUIC "$index" tls)"
     cat > "$OUT_FILE" <<EOF
 proxies:
   - name: $NODE_TAG

@@ -220,6 +220,54 @@ m_port_allowed() {
 # 端口是否已被占用 (TCP + UDP 都要查 —— QUIC 节点只看 TCP 会漏)
 m_port_in_use() { m_port_listening "$1"; }
 
+# m_port_held_by_self <端口> —— 占用它的进程是不是**我们自己**的 mihomo?
+#
+# 为什么必须区分"谁在占"
+# ----------------------
+# m_resolve_ports 的注释写着"已经在用的端口 (自己刚起的服务) 不算冲突",
+# 但实现只调了 m_port_in_use —— 那只回答"有没有人在听", 分不出是谁。
+# 全新安装上这个缺口**必现**:
+#   core_install 生成的基线配置把 external-controller 定成
+#   127.0.0.1:9090 并**立刻启动服务**, 随后首次进面板调 m_resolve_ports,
+#   它看到 9090 在监听 (其实是自己), 于是把控制口顺延成 9091 写进
+#   settings.env, 还告诉用户"9090 已被占用"。用户从没要求改端口, 而
+#   9090 上坐着的正是他刚装的这个客户端; 每重装一次就再往后推一位。
+#
+# 判据用 /proc/<pid>/exe 与候选内核路径比对, 而不是看进程名 —— 机器上
+# 常有**另一个**项目的 mihomo 同名在跑, 那种必须照旧算真冲突。
+m_port_held_by_self() {
+    local port="$1" pid exe cand real v
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    local cands=()
+    for v in "${MIHOMO_BIN:-}" "${CLI_BIN:-}" "${SRV_BIN:-}"; do
+        [[ -n "$v" ]] && cands+=("$v")
+    done
+    for v in "${SRV_ROOT:-}" "${CLI_ROOT:-}" "${M_ROOT:-}" "${INSTALL_DIR:-}"; do
+        [[ -n "$v" ]] && cands+=("$v/mihomo")
+    done
+    ((${#cands[@]})) || return 1
+
+    while read -r pid; do
+        [[ -n "$pid" ]] || continue
+        exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || continue
+        [[ -n "$exe" ]] || continue
+        for cand in "${cands[@]}"; do
+            [[ -e "$cand" ]] || continue
+            real=$(readlink -f "$cand" 2>/dev/null) || continue
+            [[ "$exe" == "$real" ]] && return 0
+        done
+    done < <(ss -tulnpH 2>/dev/null | grep -E "[:.]${port}[[:space:]]" \
+             | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+    return 1
+}
+
+# 真正的端口冲突: 有人在听, **并且** 那不是我们自己刚起的那个内核。
+m_port_conflict() {
+    m_port_in_use "$1" || return 1
+    m_port_held_by_self "$1" && return 1
+    return 0
+}
+
 # m_free_port [首选端口] [扫描范围]
 #
 # 首选端口空闲就用它, 被占用则向后顺延找一个空闲的。
@@ -270,7 +318,7 @@ m_resolve_ports() {
     local mixed="${1:-7890}" ctrl="${2:-9090}" share="${3-}"
     local changed=0
 
-    if m_port_in_use "$mixed"; then
+    if m_port_conflict "$mixed"; then
         local n
         if n=$(m_free_port "$mixed" 200); then
             if [[ "$n" != "$mixed" ]]; then
@@ -282,7 +330,7 @@ m_resolve_ports() {
         fi
     fi
 
-    if m_port_in_use "$ctrl"; then
+    if m_port_conflict "$ctrl"; then
         local n
         if n=$(m_free_port "$ctrl" 200); then
             if [[ "$n" != "$ctrl" ]]; then
@@ -296,7 +344,7 @@ m_resolve_ports() {
 
     # 分享口只服务端要用。客户端传空串跳过 —— 客户端的分享口是
     # 另一个变量 (CLI_SHARE_PORT, 默认 9444), 不该在这里被 9443 顶掉。
-    if [[ -n "$share" ]] && m_port_in_use "$share"; then
+    if [[ -n "$share" ]] && m_port_conflict "$share"; then
         local n
         if n=$(m_free_port "$share" 200); then
             if [[ "$n" != "$share" ]]; then

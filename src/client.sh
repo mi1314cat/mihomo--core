@@ -150,7 +150,29 @@ ensure_dirs() { mkdir -p "$CLI_CONF" "$CLI_PROVIDERS" "$CLI_NODES" "$CLI_UI"; }
 gen_secret() { openssl rand -hex 16; }
 
 node_files() { ls "$CLI_PROVIDERS"/*.yaml 2>/dev/null | sort; }
-node_count() { node_files | wc -l | tr -d ' '; }
+
+# 面板状态里那个"节点: N"。
+#
+# 原来数的是 conf/providers/ 下的**文件个数** (= 订阅个数), 于是导入一个
+# 含 19 个节点的订阅之后, 面板依旧显示 "节点: 1" —— 用户完全看不出自己
+# 到底有多少个节点可用, 与"查看节点"里显示的 19 个也对不上账。
+# 这里改为数 provider 里真实的 proxies 条目。
+node_count() {
+    local f c n=0
+    for f in $(node_files); do
+        c=$(python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+    p = d.get("proxies") if isinstance(d, dict) else None
+    print(len([x for x in (p or []) if isinstance(x, dict) and x.get("name")]))
+except Exception:
+    print(0)' "$f" 2>/dev/null || echo 0)
+        [[ "$c" =~ ^[0-9]+$ ]] || c=0
+        n=$((n + c))
+    done
+    printf '%s' "$n"
+}
 
 subs_file_init() { [[ -f "$CLI_SUBS" ]] || echo '{"subscriptions":[]}' > "$CLI_SUBS"; }
 
@@ -789,39 +811,88 @@ api() { curl -s -m 8 -H "Authorization: Bearer $(cat "$CLI_ROOT/.secret" 2>/dev/
 node_test() {
     print_title "节点测速"
     svc_active || { print_warn "服务未运行, 请先启动"; return 1; }
-    curl -s -m 8 -H "Authorization: Bearer $(cat "$CLI_ROOT/.secret" 2>/dev/null)" \
-        "http://$BIND_ADDR:$PORT_CTRL/proxies" > /tmp/proxies.json 2>/dev/null
+    # 连通性预检; 真正的取数在下面的 python 里 (要打 /proxies、
+    # /providers/proxies、/group/<组>/delay 三个接口)。
+    api /proxies > /tmp/proxies.json 2>/dev/null
     [[ -s /tmp/proxies.json ]] || { print_error "无法连接控制 API"; return 1; }
     python3 - "$CLI_ROOT/.secret" "$BIND_ADDR" "$PORT_CTRL" <<'PYTEST'
 import json, sys, urllib.request, urllib.parse
 secret = open(sys.argv[1]).read().strip()
 base = f"http://{sys.argv[2]}:{sys.argv[3]}"
 H = {"Authorization": "Bearer " + secret}
+TEST = "http://www.gstatic.com/generate_204"
+
+
+def get(path, timeout=15):
+    return json.load(urllib.request.urlopen(
+        urllib.request.Request(base + path, headers=H), timeout=timeout))
+
+
 try:
-    d = json.load(open("/tmp/proxies.json"))["proxies"]
+    allp = get("/proxies").get("proxies") or {}
 except Exception:
     print("[错误] 控制 API 返回异常"); sys.exit(1)
-SKIP = {"Direct", "Reject", "Pass", "Compatible", "REJECT", "PASS", "COMPATIBLE",
-        "GLOBAL", "REJECT-DROP"}
-TEST = "http://www.gstatic.com/generate_204"
-rows = []
-for name, v in d.items():
-    if v.get("type") in SKIP:
+
+# 真实节点来自 provider —— /proxies 只含代理组与内置项 (DIRECT/REJECT/PASS...)
+# 内置 provider 的名字固定是 "default", 里面装的是 DIRECT/REJECT/PROXY/AUTO
+# 这些**不是节点**的东西; 组类型同理。两者都要排掉 —— 否则分母里混进 6 个
+# 非节点项 (显示"可用 18/24"), 看起来像有一堆节点坏了。
+BUILTIN = {"Direct", "Reject", "Selector", "URLTest", "Fallback",
+           "LoadBalance", "Relay", "Compatible", "Pass", "PassRule",
+           "RejectDrop"}
+nodes = {}
+try:
+    prov = (get("/providers/proxies").get("providers") or {})
+except Exception:
+    prov = {}
+for _pn, _pv in prov.items():
+    if _pn == "default":
         continue
-    url = (f"{base}/proxies/{urllib.parse.quote(name)}/delay"
-           f"?timeout=8000&url={urllib.parse.quote(TEST)}")
+    for _x in (_pv.get("proxies") or []):
+        if _x.get("name") and _x.get("type") not in BUILTIN:
+            nodes[_x["name"]] = _x.get("type", "?")
+
+GROUP_TYPES = ("Selector", "URLTest", "Fallback", "LoadBalance", "Relay")
+groups = [n for n, v in allp.items()
+          if v.get("type") in GROUP_TYPES and n != "GLOBAL"]
+
+# ★ 单个 provider 节点的延迟**不能**用 /proxies/<name>/delay 测 —— 实测返回
+#   404 {"message":"Resource not found"}; mihomo 也没有
+#   /providers/proxies/<provider>/<node>/delay 这条路由 (404 page not found)。
+#   一次能拿到全组每个节点延迟的是 /group/<组名>/delay, 它返回
+#   {"节点名": 延迟, ...} 的映射, 而且是**当场实测**。
+#   用错接口的表现就是: 每个节点都显示"失败", 但实际全都通。
+delays = {}
+for g in groups:
     try:
-        r = json.load(urllib.request.urlopen(
-            urllib.request.Request(url, headers=H), timeout=12))
-        rows.append((r.get("delay", "?"), name, v.get("type", "?"), True))
-    except Exception as e:
-        msg = ""
-        if hasattr(e, "read"):
-            try:
-                msg = json.loads(e.read()).get("message", "")
-            except Exception:
-                pass
-        rows.append((99999, name, v.get("type", "?"), False, msg))
+        r = get(f"/group/{urllib.parse.quote(g)}/delay"
+                f"?timeout=8000&url={urllib.parse.quote(TEST)}", timeout=20)
+        if isinstance(r, dict):
+            for k, v in r.items():
+                if isinstance(v, int) and v > 0:
+                    delays[k] = v
+    except Exception:
+        pass
+
+# 组没覆盖到 (或压根没有组) -> 退回 provider 的健康检查历史
+if not delays:
+    for _pn, _pv in prov.items():
+        for _x in (_pv.get("proxies") or []):
+            h = _x.get("history") or []
+            if h and h[-1].get("delay"):
+                delays[_x["name"]] = h[-1]["delay"]
+
+rows = []
+for name, t in nodes.items():
+    if name in delays:
+        rows.append((delays[name], name, t, True))
+    else:
+        rows.append((99999, name, t, False))
+
+if not rows:
+    print("\n  (没有可测速的节点 —— 先用「2) 添加节点」导入订阅)\n")
+    sys.exit(0)
+
 rows.sort(key=lambda r: (not r[3], r[0]))
 print()
 print(f"  {'延迟':>8}  {'类型':<14} 名称")

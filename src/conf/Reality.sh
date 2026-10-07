@@ -361,12 +361,29 @@ EOF
     echo "PUBKEY_${index}=$PUBLIC_KEY" >> "$PUB_ENV"
 
     # 写 Reality 客户端配置（Clash Meta）
-NODE_TAG="$(m_node_tag VLESS "$num" reality)"
+    #
+    # 对外地址必须走 m_server_ip: 它会自检"这个地址是否真在本机网卡上"。
+    # 套 WARP / 透明代理时 install_info.env 里的 PUBLIC_IP 很可能是**出口地址**,
+    # 直接写进去客户端一个都连不上 —— 实测本机写出 <WARP_EXIT_IP> (WARP 出口),
+    # 真实地址是 <REAL_SERVER_IP>, 分享链接与客户端配置双双作废。
+    # 其余协议脚本 (VLESS/Trojan/TUIC/AnyTLS/hysteria2) 与 all.sh 早就走
+    # m_server_ip, 这里此前是全项目唯一的例外。
+    SERVER_IP=$(m_server_ip)
+    if [[ -z "$SERVER_IP" ]]; then
+        print_error "拿不到对外地址, 无法生成客户端配置 (可在 install_info.env 里设 PUBLIC_IP)"
+        return 1
+    fi
+    [[ "$SERVER_IP" =~ : ]] && LINK_IP="[$SERVER_IP]" || LINK_IP="$SERVER_IP"
+
+    # 编号变量是 $index; $num 在 add_config 里从未赋值, 而 m_node_tag 对空 index
+    # 直接 return 1 -> 客户端 name 写成空串 -> build_sub.py 丢掉空名节点,
+    # Reality 节点因此从不出现在任何分享/订阅里。
+NODE_TAG="$(m_node_tag VLESS "$index" reality)"
 cat > "$OUT_FILE" <<EOF
 proxies:
   - name: $NODE_TAG
     type: vless
-    server: $PUBLIC_IP
+    server: $SERVER_IP
     port: $REALITY_PORT
     uuid: $UUID
     network: tcp
@@ -383,7 +400,9 @@ $(render_pkt_block)
 EOF
 
     # 写 Reality 分享链接
-echo "vless://$UUID@$link_ip:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=$CLIENT_FP&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
+    # 同样用自检过的 $LINK_IP, 不用 install_info.env 里的 $link_ip —— 后者可能是
+    # WARP/代理出口地址, 分享出去对方必然连不上。
+echo "vless://$UUID@$LINK_IP:$REALITY_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$dest_server&fp=$CLIENT_FP&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp#Reality-$index" > "$SHARE_FILE"
 
     print_ok "Reality 配置生成成功"
     echo -e "编号: $index" >&2

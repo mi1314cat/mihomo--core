@@ -277,7 +277,8 @@ fetch() {  # fetch <远端相对路径> <本地路径>
 # 提交里, 改代码时更容易被一起改到, 而且能用 tools/check_manifest.sh 卡住。
 _FALLBACK_FILES=(
     "src/lib/cdn.sh" "src/lib/cert.sh" "src/lib/core_mgmt.sh"
-    "src/lib/dl_route.sh" "src/lib/env.sh" "src/lib/envtool.py"
+    "src/lib/dl_route.sh" "src/lib/dns.sh" "src/lib/dns_edit.py"
+    "src/lib/env.sh" "src/lib/envtool.py"
     "src/lib/fw.sh" "src/lib/lan_dispatch.sh" "src/lib/merge.py"
     "src/lib/portcheck.sh" "src/lib/preset.sh" "src/lib/rules_bind.sh"
     "src/lib/simple_proxy.sh" "src/lib/ui.sh" "src/lib/validate.py"
