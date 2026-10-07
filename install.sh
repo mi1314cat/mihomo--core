@@ -407,6 +407,26 @@ menu() {
 #   若放在面板自己里面, bash 早已把脚本读进内存, 更新完界面上仍毫无变化 ——
 #   用户会判定成"更新没用"。实测就是这个症状。
 
+# 取版本标记 (src/VERSION, 内容哈希, 只有 12 字节)。
+#
+# ★ 这是整个自动更新里唯一的**必经网络请求**, 正常情况下就这一次。
+#   原来的做法是进面板前把 34 个文件全下下来比一遍, 实测 RN 上要 7~17 秒,
+#   慢一点的网络就是好几分钟 —— 面板卡在"检测到已安装, 直接进入面板"不动,
+#   用户以为面板坏了。
+#   先用一个 12 字节的探针判断, 真的有新版再去下全部。
+#
+# 超时给得很短 (默认 8 秒): 连不上就跳过更新, 照常进面板。
+# 让人多等十几秒去换一个"可能根本没更新", 不划算。
+_probe_version() {   # 远端版本号取不到返回非 0
+    local t out; t=$(mktemp) || return 1
+    out=$(curl -fsSL --max-time "${_VERSION_PROBE_TIMEOUT:-8}" -H 'Cache-Control: no-cache' \
+            $(_cargs) "${REPO_RAW}/src/VERSION" -o "$t" 2>/dev/null) || true
+    if [[ -s "$t" ]]; then
+        tr -d '[:space:]' < "$t"; rm -f "$t"; return 0
+    fi
+    rm -f "$t"; return 1
+}
+
 # 取新版到临时目录, 只返回状态码, 从不退出。
 fetch_soft() {
     local tmp; tmp="$(mktemp -d)" || return 2
@@ -469,6 +489,20 @@ scripts_sane() {
 auto_update() {
     local root="$1" rc=0 t0=$SECONDS tmp
     [[ -d "$root/src" ]] || return 2
+
+    # ---- 第一步: 12 字节探针, 绝大多数情况到这就结束了 ----
+    local cur rem
+    cur=$(head -1 "$root/src/VERSION" 2>/dev/null | tr -d '[:space:]')
+    if rem=$(_probe_version) && [[ -n "$rem" ]]; then
+        if [[ "$cur" == "$rem" ]]; then
+            return 10          # 已是最新, 一个文件都不用下
+        fi
+        say "面板有新版本 (${cur:-未知} → $rem), 正在更新…"
+    else
+        warn "暂时连不上 GitHub, 跳过更新 (不影响使用)"
+        return 2
+    fi
+
     tmp=$(fetch_soft) || rc=$?
     case $rc in
         2) warn "暂时连不上 GitHub, 这次跳过更新 (不影响使用)"; return 2 ;;

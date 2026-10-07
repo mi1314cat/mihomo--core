@@ -61,4 +61,27 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 done
 
+# ---------- 写 src/VERSION ----------
+#
+# 内容哈希, 不是提交号: 用提交号的话每次提交 (哪怕只改 README) 都会让面板
+# 提示有更新, 而版本号的用处恰恰是回答"我这台机器的脚本是不是最新的"。
+# ⚠ 内容哈希在推送**之后**才算最终值, 所以推完这一轮还要再补一个提交 ——
+#   这是自指的固有代价, 不影响判断: 比对的是"本机装的"与"GitHub 上的"。
+#
+# 先算好再决定推不推: 闸门拒绝时不能留下"版本已更新但没推上去"的 VERSION。
+if [ "$status" -eq 0 ]; then
+    _v=$(while read -r f; do
+            case "$f" in ''|'#'*) continue ;; src/VERSION) continue ;; esac
+            cat "$f" 2>/dev/null
+        done < src/manifest.txt | sha1sum 2>/dev/null | cut -c1-12)
+    if [ -n "$_v" ]; then
+        _cur=$(head -1 src/VERSION 2>/dev/null | tr -d '[:space:]')
+        if [ "$_cur" != "$_v" ]; then
+            printf '%s\n' "$_v" > src/VERSION
+            git add src/VERSION 2>/dev/null || true
+            echo "  已更新 src/VERSION -> $_v" >&2
+        fi
+    fi
+fi
+
 exit $status

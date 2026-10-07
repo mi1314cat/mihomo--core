@@ -181,7 +181,7 @@ core_update_scripts() {
             "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
             "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"
             "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
-            "src/core_install.sh" "src/server.sh" "src/client.sh"
+            "src/core_install.sh" "src/server.sh" "src/client.sh" "src/VERSION"
         )
     fi
 
