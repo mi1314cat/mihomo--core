@@ -615,6 +615,20 @@ gen() {
     local -a bodyargs=("$@")
 
     if ! want "$proto"; then return; fi
+
+    # ★ 开工前先问内核这个协议认不认。
+    #   协议支持是**随内核版本变**的: snell 的 outbound 在 v1.19.24 上是
+    #   "unsupport proxy type: snell", 到 v1.19.32 才支持。批量清单写死,
+    #   于是每一步都报"成功", 22 个节点全生成完, 合并出的配置最后被内核
+    #   整体拒绝 —— 摘要写"成功 22 · 失败 0"紧跟一行校验失败, 两句话互相矛盾。
+    #   同一套脚本在 v1.19.32 的机器上跑就没事, 用户只会觉得"随机出错"。
+    #   在这里跳过, 摘要会明确写"跳过 · 内核 v1.19.24 不支持 snell"。
+    if ! m_kernel_supports "$mproto"; then
+        local _kv; _kv=$("${MIHOMO_BIN:-/root/catmi/mihomo/mihomo}" -v 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+        record "$label" "-" "跳过" "内核 ${_kv:-本机} 不支持 $mproto (升级内核后可生成)"
+        return
+    fi
+
     # need_tls 语义: 0=不需要证书, 1=有证书即可, 2=必须是**真证书**
     # 档位 2 是给 CDN 用的: 自签证书在直连场景客户端 skip-cert-verify 就行,
     # 但过 CDN 时是 Cloudflare 去回源校验, 它不认自签 CA, 回源必然失败。

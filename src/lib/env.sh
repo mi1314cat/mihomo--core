@@ -1355,3 +1355,97 @@ if [[ -f "$_m_libdir/../share/share.sh" ]]; then
     # shellcheck source=/dev/null
     source "$_m_libdir/../share/share.sh"
 fi
+
+# ---------- 内核能力探测 ----------
+#
+# 同一个脚本在不同机器上可能跑在不同内核版本上, 而**协议支持是随版本变的**:
+# snell 的 outbound 在 v1.19.24 上是 "unsupport proxy type: snell",
+# 到 v1.19.32 才支持。原先批量清单写死, 于是每一步都报"成功", 生成完 22 个
+# 节点, 合并出的配置最后被内核整体拒绝 —— 用户看到的是"成功 22 · 失败 0"
+# 紧跟着一行校验失败和回滚, 两句话互相矛盾。
+#
+# 探测办法: 把候选类型塞进一个最小配置跑一次 `mihomo -t`, 它会把不支持的那个
+# 类型名报出来 (proxy N: unsupport proxy type: XXX), 去掉再来, 直到干净。
+# 通常 1~2 次就收敛, 比逐个类型试 20 多次便宜得多。
+#
+# 结果缓存到文件: 探测要起内核, 不该每批都做。
+_M_PROBE_SNIPPET_vless='    {name: p, type: vless, server: 127.0.0.1, port: 1, uuid: 00000000-0000-0000-0000-000000000000}'
+_M_PROBE_SNIPPET_trojan='    {name: p, type: trojan, server: 127.0.0.1, port: 1, password: p}'
+_M_PROBE_SNIPPET_vmess='    {name: p, type: vmess, server: 127.0.0.1, port: 1, uuid: 00000000-0000-0000-0000-000000000000, cipher: auto}'
+_M_PROBE_SNIPPET_hysteria2='    {name: p, type: hysteria2, server: 127.0.0.1, port: 1, password: p}'
+_M_PROBE_SNIPPET_tuic='    {name: p, type: tuic, server: 127.0.0.1, port: 1, uuid: 00000000-0000-0000-0000-000000000000, password: p}'
+_M_PROBE_SNIPPET_anytls='    {name: p, type: anytls, server: 127.0.0.1, port: 1, password: p}'
+_M_PROBE_SNIPPET_ss='    {name: p, type: ss, server: 127.0.0.1, port: 1, cipher: aes-128-gcm, password: p}'
+_M_PROBE_SNIPPET_snell='    {name: p, type: snell, server: 127.0.0.1, port: 1, psk: p, version: "3"}'
+
+# 探测用哪份内核: 显式指定的 MIHOMO_BIN 最权威 (all.sh 里它一定有值),
+# 其次 SRV_ROOT, 都没有才用默认安装目录。
+#
+# 两个入口必须走同一个解析 —— 之前 m_kernel_supports 跟 MIHOMO_BIN 而
+# m_kernel_unsupported_types 写死默认目录, 于是"探测的是 A 内核、判断用的是
+# B 内核", 表现为桩程序完全不生效、探测结果永远对不上被测的那份内核。
+#
+# ⚠ MIHOMO_BIN 要优先于 SRV_ROOT: 库文件被单独 source 时 SRV_ROOT 也带默认值,
+# 顺序反了就拿着与实际内核无关的目录去探测。
+_m_kernel_root() {
+    if [[ -n "${MIHOMO_BIN:-}" ]]; then printf '%s' "$(dirname "$MIHOMO_BIN")"
+    elif [[ -n "${SRV_ROOT:-}" ]]; then printf '%s' "$SRV_ROOT"
+    else printf '%s' "/root/catmi/mihomo"; fi
+}
+
+m_kernel_unsupported_types() {
+    # ⚠ 必须分成两条 local: bash 会**先把整条命令行展开完再执行 local**,
+    #   写成 local root=... bin="$root/mihomo" 时, bin 拿到的是外层的空值,
+    #   于是 bin=/mihomo, [[ -x ]] 判否, 函数直接 return —— 探测静默失效,
+    #   表现为"永远都支持"。
+    local root="${1:-/root/catmi/mihomo}"
+    local bin="$root/mihomo"
+    local cf="$root/.kernel-unsupported"
+    [[ -x "$bin" ]] || return 0
+    # 换内核版本后缓存要失效, 所以把版本一起记进去
+    local ver; ver=$("$bin" -v 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+    if [[ -f "$cf" ]]; then
+        local cv; cv=$(head -1 "$cf" 2>/dev/null)
+        [[ "$cv" == "ver=$ver" ]] && { tail -n +2 "$cf" 2>/dev/null; return 0; }
+    fi
+
+    local -a want=(vless trojan vmess hysteria2 tuic anytls ss snell)
+    local t body out bad i
+    local tmp; tmp=$(mktemp -d 2>/dev/null) || return 0
+    trap 'rm -rf "$tmp"' RETURN
+
+    for (( i = 0; i < 6; i++ )); do
+        body=""
+        for t in "${want[@]}"; do
+            local snip_var="_M_PROBE_SNIPPET_$t"
+            body+="${!snip_var}"$'\n'
+        done
+        printf 'proxies:\n%s' "$body" > "$tmp/config.yaml"
+        out=$("$bin" -t -d "$tmp" 2>&1)
+        bad=$(printf '%s' "$out" | grep -oE 'unsupport(ed)? proxy type: [a-z0-9]+' | head -1 | awk '{print $NF}')
+        [[ -n "$bad" ]] || break
+        local keep=() k
+        for k in "${want[@]}"; do [[ "$k" == "$bad" ]] || keep+=("$k"); done
+        want=("${keep[@]}")
+    done
+
+    local -a missing=()
+    for t in vless trojan vmess hysteria2 tuic anytls ss snell; do
+        printf '%s\n' "${want[@]}" | grep -qxF "$t" || missing+=("$t")
+    done
+    { printf 'ver=%s\n' "$ver"; (( ${#missing[@]} )) && printf '%s\n' "${missing[@]}"; } > "$cf" 2>/dev/null
+    (( ${#missing[@]} )) && printf '%s\n' "${missing[@]}"
+    return 0
+}
+
+# 该类型是否被当前内核支持。
+#
+# root 缺省**跟着实际用的内核走** (dirname MIHOMO_BIN), 不用写死
+# /root/catmi/mihomo —— 否则把内核装在别处 (测试目录、备用内核) 时,
+# 探测会去找一个不存在的路径, 直接 return, 于是"永远都支持",
+# 比没有这个机制更糟: 它会让用户以为已经检查过了。
+m_kernel_supports() {
+    local t="$1"
+    local root="${2:-$(_m_kernel_root)}"
+    ! m_kernel_unsupported_types "$root" | grep -qxF "$t"
+}
