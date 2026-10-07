@@ -97,15 +97,8 @@ fetch_script() {
         rm -f "$tmp"
         if curl -fsSL --max-time 30 "$base/$path" -o "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
             # 健全性检查: 必须是可解析的 shell 脚本才执行。
-            #
-            # ⚠ 原来判的是 `head -c 2 | grep -q '#!'`, 即要求**头两个字节**
-            #   正好是 "#!"。而实测那份 domains.sh 的第 1 字节是**换行**,
-            #   第 2 字节才是 "s" —— 于是它被判成"不像可执行脚本"而丢弃,
-            #   Reality/Trojan 的域名优选**从来没成功过**, 全部静默退化成
-            #   硬编码的 www.microsoft.com。curl 明明 200、7837 字节、语法正确。
-            #
-            #   正确的判据是"能不能被 bash 解析", 顺便用 grep 看一眼内容里
-            #   有没有 shebang, 覆盖"文件头是注释但确实是脚本"的情况。
+            # ⚠ 判据不能用 `head -c 2 | grep '#!'` —— domains.sh 第 1 字节是换行,
+            #   头两字节永远匹配不上, 会把合法脚本误判丢弃。
             if grep -qm1 '^#!' "$tmp" || bash -n "$tmp" 2>/dev/null; then
                 mv -f "$tmp" "$dest"
                 chmod +x "$dest" 2>/dev/null
@@ -544,42 +537,20 @@ m_safe_read_port() {
 #    教训: 兜底值绝不能拍脑袋写。老代码兜底用的正是 bing, 于是"不手动选
 #    dest"的用户 100% 拿到一个连不上、却显示成功的 REALITY 节点。
 #
-# 2026-10-07 重新实测 (真实内核握手 x3, 判据 = 代理请求返回 204):
-#    下面 12 个**全部 3/3 通过**, 因此整份名单换成了这批大厂域名:
-#      microsoft / apple / cloudflare / google / swdist.apple / samsung
-#      amd / intel / lenovo / sony / nvidia / tesla
-#    顺带重测了上一版记为"坏"的三个:
-#      www.bing.com      → 本轮 3/3 **通过**
-#      one.one.one.one   → 本轮 3/3 **通过**
-#      oracle.com        → 本轮仍然失败
-#    也就是说当年那三个"必失败"的结论**并不稳定**: bing / 1.1.1.1 在当时
-#    的网络条件下失败, 现在却稳定可用。这恰恰说明**静态名单不可信** ——
-#    所以上面这批也不能当真理, 只是"此刻实测能用"的快照。
-#    M_REALITY_PROBE_FORCE=1 可随时强制重测; 用户自己的 domains.sh 域名池
-#    才是第一来源, 这份名单只在取不到时兜底。
+# 2026-10-07 实测 (真实内核握手 x3): 下面 12 个全部 3/3 通过。
+# 上一版记为"坏"的 bing / 1.1.1.1 本轮反而通过 —— 静态判定并不稳定,
+# 所以这份名单只是"此刻可用"的快照, 不是真理。域名池才是第一来源,
+# M_REALITY_PROBE_FORCE=1 可强制重测。
 REALITY_DESTS_BAD=("oracle.com")
 # =============================================================
-# 统一域名优选 (从 One-click-script 的 domains.sh 现场取)
+# 统一域名优选 (从 One-click-script 的 domains.sh 现场取, 失败退回本地名单)
 #
-# 为什么走这个而不是本地名单:
-#   REALITY_DESTS 那 8 个是**写死在本文件里的快照**, 而域名池是用户在
-#   One-click-script/domains.sh 里统一维护、经常改的。域名会过期 (换 CDN /
-#   改 ALPN / 下线), 而 REALITY 的失败方式极其隐蔽: 客户端报
-#   "REALITY authentication failed", 服务端一条日志都没有, 面板全绿。
-#   用一份会过期的本地副本 = 用户维护了域名池, 项目这边却还在用旧的。
-#   所以这里每次现取, 本地名单只作为**取不到时的兜底**。
-#
-# domains.sh 的接口是 stdin 不是命令行参数:
-#     read -rp "请输入Reality伪装网址: " dest_server
-#     [ -z "$dest_server" ] && dest_server=$(random_website)
-#     update_env $NINSTALL_ENV dest_server "${dest_server}"
-# 所以关掉 stdin 让 read 返回空, 走 random_website() 现场优选; 结果经
-# update_env 落到 install_info.env 的 dest_server, 这里再回读。
-#
-# stdout: 一个域名 (成功) / 空 (失败, 由调用方决定兜底)
-# 拉取文本内容到 stdout (只读, 不落盘、不执行)。
-# 与 fetch_script 的区别: 后者是为了**执行**而落盘并加 chmod, 而这里只需要
-# 读一段脚本文本出来解析, 没必要在磁盘上留一个会被误执行的文件。
+# domains.sh 的接口是 stdin 不是命令行参数: 关掉 stdin 让 read 返回空,
+# 即走 random_website() 现场优选。抽函数执行而不整份跑, 是为了避开它开头
+# 对 update_env.sh / load_env.sh 的 source 依赖, 以及写盘副作用。
+
+# 拉取文本到 stdout (只读, 不落盘不执行)。
+# 与 fetch_script 的区别: 后者是为了执行才落盘, 这里只需解析文本。
 fetch_text() { # <url>
     local url="${1:-}" base
     [[ -n "$url" ]] || return 1
@@ -603,22 +574,9 @@ m_auto_website() {   # <尝试次数-默认 3>  → stdout: 一个域名; 失败
         return 1
     fi
 
-    # ★ 只抽取 random_website() 这一个函数, 跳过文件尾部的
-    #   read -rp "请输入Reality伪装网址: " dest_server
-    #   [ -z "$dest_server" ] && dest_server=$(random_website)
-    #   update_env $NINSTALL_ENV dest_server "${dest_server}"
-    #
-    # 为什么不整份执行 (原实现是整份跑, 然后去读 install_info.env):
-    #   那一版依赖 **三样** 本项目不该依赖的东西 ——
-    #     1. 文件开头 source <(curl ...update_env.sh) 和 load_env.sh
-    #        (任何一份拉不到, 整条链路就断)
-    #     2. /root/catmi/catmi.env 里的 mode —— 实测这台机器 mode="xray",
-    #        于是域名被写进 /root/catmi/**xray**/install_info.env, 而不是
-    #        mihomo 的; 两套产品还会互相覆盖彼此的 dest_server
-    #     3. update_env 的写盘副作用 —— 我们只想**读**一个域名, 不该去
-    #        改另一个项目的环境文件
-    #   抽函数的方式 (与 SB 的 reality_random_domain 同一思路) 三样都不需要:
-    #   不 source、不看 mode、不写盘, 域名直接走 stdout。
+    # 只抽 random_website() 一个函数执行, 跳过文件尾部的 read/update_env 尾巴:
+    #   不 source 外部脚本、不看 catmi.env 的 mode、不写盘, 域名直接走 stdout。
+    #   (整份执行会把域名写进 mode 指向的那个产品的 install_info.env)
     fn=$(printf '%s\n' "$tmp" \
          | awk '/^random_website\(\) *\{/{f=1} f{print; if (/^\}/) exit}')
 
@@ -666,13 +624,8 @@ M_DEST_CACHE="${M_DEST_CACHE:-$SRV_ROOT/reality_dest_cache.tsv}"
 m_reality_dest_cache_seed() {
     [[ -f "$M_DEST_CACHE" ]] && return 0
     mkdir -p "$(dirname "$M_DEST_CACHE")" 2>/dev/null || return 0
-    # ⚠ 种子写的是 REALITY_DESTS 里各域名**在 2026-10-07 实测握手通过**,
-    #   但那只是"此刻能用"的快照 —— 站点会下线/换 CDN/改 ALPN。所以:
-    #   * 用户自己维护的 domains.sh 域名池才是第一来源 (每次现取 + 现测)
-    #   * 这份名单只是取不到时的兜底
-    #   * M_REALITY_PROBE_FORCE=1 可强制重测, 不信种子
-    # 早先这里把 bing / 1.1.1.1 硬写成 bad, 而本轮实测它们 3/3 都通过 ——
-    # 静态判定被现实证伪过一次, 所以只对"本轮确实测过"的域名下结论。
+    # ⚠ 种子只是"此刻实测通过"的快照, 不是真理; 域名池才是第一来源,
+    #   M_REALITY_PROBE_FORCE=1 可强制重测, 不信种子。
     { local d
       for d in "${REALITY_DESTS[@]}"; do printf '%s\tok\n' "$d"; done
       for d in "${REALITY_DESTS_BAD[@]}"; do printf '%s\tbad\n' "$d"; done
@@ -840,14 +793,8 @@ m_pick_dest() {
     # 实测复现: m_pick_dest "www.microsoft.com" 管道喂 "2"
     #           → dest_server 从 www.microsoft.com 变成 REALITY_DESTS[1]。
     #
-    # ⚠ 本函数只设 **DEST_SERVER**, 而 Reality.sh 消费的是 **dest_server**
-    #   (install_info.env 里的变量名)。两个名字不同 → 这里选出来的结果
-    #   **从来没有真正到达过 Reality.sh**: 用户在这个交互里选的域名会被
-    #   静默丢弃, 节点里写的一直是 env 里的旧值。之前没暴露, 是因为
-    #   旧值恰好也是唯一来源。现在由调用方同步 (见 Reality.sh)。
-    #
-    # 名单内的值直接采用; 名单外但格式合法的自定义域名也直接采用
-    # (用户手填的 dest 同样不该被覆盖)。只有空值/非法值才回到交互问询。
+    # ⚠ 本函数只设 DEST_SERVER, 而 Reality.sh 消费的是 dest_server, 两者不同名;
+    #   调用方须显式同步, 否则这里的结果传不过去。
     if [[ -n "$cur" ]]; then
         local _k
         for _k in "${REALITY_DESTS[@]}"; do
@@ -1152,16 +1099,8 @@ m_sync_reload() {
 _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
 
 # smux 档位是否真的开着。
-#
-# ⚠ 预设表里 "off" 是一个**合法档位名** (preset.sh 的 mux 列), 表示"不要
-#   smux"。但各处判据写的是 `[[ -z "$SMUX_PROFILE" ]]` / `[[ -n ... ]]`
-#   —— 只判空不判值, 而 "off" 非空, 于是:
-#     摘要打 "smux: 已启用 (off 档, brutal 200/500 Mbps)"
-#     客户端 yaml 真的写了 smux.enabled: true
-#     服务端片段只有 mux-option.padding, 没有 smux 块
-#     片段头注释还写着 "# smux: off"
-#   三处互相打架, 而用户是**一路回车**选中这一档的, 没有任何一次主动输入。
-#   统一收口到这一个函数, 不要再各自判空。
+# ⚠ 预设表里 "off" 是合法档位名, 只判空会把 off 当成已启用 —— 统一收口到这里,
+#   不要各处自行判空。
 _smux_on() {
     local v="${1-}"
     [[ -n "$v" && "$v" != "off" && "$v" != "none" && "$v" != "false" ]]

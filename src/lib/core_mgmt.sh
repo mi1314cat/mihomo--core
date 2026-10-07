@@ -274,17 +274,10 @@ core_version_menu() {
     done
 }
 
-# ★ systemd unit 不存在时, 提前把话说清楚。
-#
-# 背景: 「初始化基础配置」只建 conf/, **不装 systemd 服务** —— unit 是
-# core_install.sh 写的。所以在一台"只跑面板"的机器上, 用户会一路顺利地
-# 初始化完配置、生成节点, 直到点「启动」才看到:
-#     Failed to start mihomo.service: Unit mihomo.service not found.
-# 这条英文错完全没指向真正的原因 (缺的是 unit, 不是配置), 而配置已经建好,
-# 用户很难往回退两步去想"我是不是压根没装服务"。
-#
-# 在这里提示, 是因为这是**唯一**一个还能低成本补救的位置: 配置还没生成,
-# 重跑一次安装脚本代价最小。
+# ★ systemd unit 不存在时提前提示: 「初始化基础配置」只建 conf/, 不装
+#   systemd 服务 (unit 由 core_install.sh 写)。不提示的话, 用户会一路
+#   顺利初始化完, 到点「启动」才看到 Unit mihomo.service not found ——
+#   而配置已经建好, 很难往回退去找原因。
 _core_warn_missing_unit() {
     local root="$1" svc="$2" f="/etc/systemd/system/$svc.service"
     [[ -f "$f" ]] && return 0
@@ -297,12 +290,8 @@ _core_warn_missing_unit() {
     a=$(clean_input "$a")
     case "$a" in
         y|Y|yes|YES) return 0 ;;
-        # ⚠ 返回值必须被调用方用 if 接住。上一版写的是
-        #   _core_warn_missing_unit ... ; bash ... init
-        #   两句之间没有 &&, 于是 return 1 只让**这一句**返回非零, 后面的
-        #   init 照跑不误 —— 用户选 n, 屏幕显示"已取消初始化", 转头发现
-        #   conf/certs、config.d/.managed.json、config.yaml、out/ 全建好了。
-        #   取消一个动作却留下了全部副作用, 比不取消更糟。
+        # ⚠ 返回值必须被调用方用 if 接住 —— 写成 `f ...; cmd` 时 return 1 只
+        #   让本句返回非零, 后面的 cmd 照跑, 用户选"取消"却留下全部副作用。
         *) print_info "已取消初始化"; return 1 ;;
     esac
 }

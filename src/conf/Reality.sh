@@ -56,12 +56,8 @@ safe_read_port() {
     m_safe_read_port "$1"
 }
 
-# ★ 端口区间必须与 all.sh 的 PORT_CURSOR 起点 (20000) 和界面口径一致。
-#   原来这里是 10000-60000, 而 all.sh 从 20000 起顺延, 统计口径又是
-#   20000-29999 —— 三者各说各话。后果: 手工建的节点约 60% 落在 30000 以上,
-#   状态栏「运行中的协议端口」**少报甚至报 0** (实测 4 个真实 socket 显示 1),
-#   用户会以为节点没起来。update_config 的"占用端口"列表也用同一个过滤器,
-#   同样漏 (31 个节点只列 23 个)。
+# 端口区间须与 all.sh 的 PORT_CURSOR 起点和状态栏统计口径一致, 否则手工建的
+# 节点会落在统计区间外, 面板「运行中的协议端口」少报。
 random_port() { shuf -i 20000-29999 -n 1; }
 
 # ================================
@@ -309,27 +305,14 @@ add_config() {
     m_load_env "$ENV_FILE"
 
     # Reality dest 站点
-    #
-    # 顺序: 先从用户在 One-click-script/domains.sh 里**统一维护**的域名池现取,
-    # 取不到才退回本地名单 (REALITY_DESTS)。
-    #
-    # 为什么不直接用本地名单: 那 8 个是写死在 env.sh 里的快照, 而域名池是
-    # 用户经常维护的。域名会过期 (换 CDN / 改 ALPN / 下线), REALITY 的失败
-    # 方式又极其隐蔽 —— 客户端报 "REALITY authentication failed", 服务端
-    # 一条日志都没有, 面板全绿, 只有用户连不上。用户更新了域名池, 这边却
-    # 还在用几个月前的快照, 那这个"统一管理"就白做了。
-    #
-    # ⚠ 不能复用已加载的 $dest_server: install_info.env 里的旧值正是
-    #   陈旧值的来源, 复用它就等于永远不刷新。
+    # 域名先从 domains.sh 统一域名池现取, 取不到才退回本地 REALITY_DESTS 兜底。
+    # ⚠ 不能复用已加载的 $dest_server —— env 里的旧值正是陈旧值的来源。
     REALITY_DEST_FROM_POOL=""
     for _try in 1 2 3; do
         _rd=$(m_auto_website 2>/dev/null)
         [[ -n "$_rd" ]] || break
-        # ⚠ **必须实测**。用户明确说过"有时候它那个伪装域名可能有问题,
-        #   导致我连接不上" —— 域名池是人工维护的, 会有站点下线/换 CDN/
-        #   改 ALPN。而 REALITY 的失败方式极其隐蔽: 客户端报
-        #   "REALITY authentication failed", 服务端一条日志都没有,
-        #   面板全绿。池子里有坏域名时不能直接用, 换下一个。
+        # ⚠ 必须实测握手再采用: REALITY 失败极其隐蔽 —— 客户端报
+        #   authentication failed, 服务端无日志、面板全绿, 只有用户连不上。
         if m_reality_dest_probe "$_rd"; then
             REALITY_DEST_FROM_POOL="$_rd"
             print_info "REALITY 伪装域名 (来自 domains.sh 域名池): $REALITY_DEST_FROM_POOL ${DIM}(实测握手通过)${RESET:-}"
@@ -366,10 +349,7 @@ add_config() {
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"
     SHARE_FILE="$OUT_DIR/${PROTO}_share-$index.txt"
 
-    # 4.5 先问"要哪种推荐配置" —— 与 VLESS/Trojan/AnyTLS 等保持一致。
-    #     REALITY 预设以前挂在 vless 段, 而 VLESS.sh 产不出 REALITY, 于是
-    #     「① 隐匿优先 · REALITY」静默降级成纯 TLS。现在挂回这里 ——
-    #     **抗 DPI 最强的那档, 本来就该在这里**。
+    # 4.5 先问推荐配置 (REALITY 预设须挂在本脚本 —— VLESS.sh 产不出 REALITY)
     preset_ask reality "REALITY 推荐配置"
 
     # 询问可选特性 (smux / xudp)
@@ -718,10 +698,7 @@ main_menu() {
         read || break
     done
 }
-# 直接跑本脚本 = 管理面板 (查看/新增/删除)。
-# 从服务端面板「添加节点」进来时, 目标是**新增一个**, 不该再让人选一次
-# 「2) 新增配置」—— 那层二级菜单在"一路回车"的批量场景下会把所有回车
-# 吃成「无效选项:」, 最后节点数仍是 0, 而界面没有任何异常提示。
+# 带 add 参数 = 直接进新增向导 (从「添加节点」进来时的路径), 不进管理面板。
 case "${1:-}" in
     add|"")
         if [[ "${1:-}" == "add" ]]; then

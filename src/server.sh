@@ -166,12 +166,9 @@ BATCH_PROTO_HINT=(
     "无需证书, 兼容性最好"
     "无需证书, 轻量"
 )
-# ⚠ 这里的 id 必须与 all.sh 的 ALL_GEN_IDS 对得上。原来第三个写的是
-#   "vmess" —— 那是上一轮**已删除**的明文 VMess+WS 档位。id 一旦不存在,
-#   check_only_tokens 直接 return 1 整批中止, 表现为「VMess 一个节点都
-#   建不出来, 且报错只说"无法识别的协议标识"」。现在只剩两个 REALITY 档;
-#   WS 形态归到 cdn-m-ws (要走 CDN), 由全协议一键生成。
-# tools/check_all.sh 里有专门关卡盯着这份列表, 以后再漂移会直接失败。
+# ⚠ 这里的 id 必须与 all.sh 的 ALL_GEN_IDS 对得上 —— id 不存在时
+#   check_only_tokens 整批中止, 表现为该协议一个节点都建不出来。
+# tools/check_all.sh 有关卡盯着这份列表。
 BATCH_PROTO_ONLY=("vmess-reality,vmess-grpc" "ss" "snell")
 
 # 协议脚本跑完后的收口: 为本次新增的节点文件放行防火墙端口。

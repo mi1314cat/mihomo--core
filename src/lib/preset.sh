@@ -36,15 +36,8 @@
 
 M_PRESETS=(
   # ---------- Reality (VLESS + REALITY) ----------
-  #
-  # ⚠ REALITY 预设原来挂在 **vless** 段, 而 src/conf/VLESS.sh 里一个 reality
-  #   字都没有 —— 用户一路回车选中「① 隐匿优先 · REALITY」, 面板照打
-  #   "已套用预置 / 节点名后缀: REALITY", 实际产出纯 TLS 节点, 没有一句降级提示。
-  #
-  #   但 REALITY 本身是**最强的抗 DPI 配置**, 不该因为脚本归属就消失 ——
-  #   真正的实现是 src/conf/Reality.sh (服务端菜单第 1 项 "Reality (VLESS+Reality)")。
-  #   所以正确的做法不是删掉, 而是**挂到能真正产出它的脚本上**。
-  #   tools/check_all.sh 的「预置不越权」关卡盯着这件事。
+  # ⚠ REALITY 预设须挂在本段 —— VLESS.sh 没有 REALITY 实现, 挂 vless 段
+  #   会静默降级成纯 TLS。
   "reality|tcp|① 隐匿优先 · REALITY|tcp|off|xtls-rprx-vision|reality|裸TCP + XTLS Vision; 抗 DPI 最强; 不用证书|REALITY|"
   "reality|grpc|② gRPC 伪装 · REALITY|grpc|video||reality|gRPC 套一层正常 HTTP/2; 观感最像普通应用|REALITY|"
   "reality|xhttp|③ xHTTP · REALITY (M 独有)|xhttp|video||reality|xHTTP 伪装成普通 HTTP 接口调用; 仅 M 内核支持|REALITY+xHTTP|"
@@ -56,12 +49,8 @@ M_PRESETS=(
   #   否则客户端发来的 HTTP/2 帧会被当成 VLESS 头 -> 必然握手失败。
   #   实测 vless+h2 恒为 0/5, 而对照 vless+grpc 5/5 (二者同为 HTTP/2)。
   #   VLESS.sh 会在用户选 h2 时自动改道到 grpc。
-  # ⚠ 这几行原来挂着 REALITY, 但 **src/conf/VLESS.sh 里一个 reality 字都没有**
-  #   (REALITY 由独立的 Reality.sh 实现)。用户一路回车选中
-  #   「① 隐匿优先 · REALITY」, 面板却打"已套用预置 / 节点名后缀: REALITY",
-  #   实际产出纯 TLS (mVLESS01-TLS、真证书、无 reality-opts),
-  #   **一句"已降级"都没有**。预置表借用隔壁脚本的能力 = 骗用户。
-  #   tools/check_all.sh 的「预置不越权」关卡盯着这件事。
+  # ⚠ REALITY 预设不能挂在 vless 段 —— VLESS.sh 没有 REALITY 实现,
+  #   选了会静默降级成纯 TLS。REALITY 的实现在 Reality.sh, 挂那边的段。
   "vless|tcp-vision|① 裸TCP + Vision · 真证书|tcp|off|xtls-rprx-vision|真证书|裸TCP + XTLS Vision; 抗 DPI 最强的一档|TCP+Vision|"
   "vless|grpc-video|② gRPC 伪装 · 真证书|grpc|video||真证书|gRPC 套一层正常 HTTP/2; 观感最像普通应用|gRPC|"
   "vless|grpc-dl|③ gRPC 高并发 · 真证书|grpc|download||真证书|多路复用扛并发; 适合大量小请求|gRPC+高并发|"
