@@ -416,6 +416,32 @@ def check_keys(d, allowed, where, r: Report, ctx="", owner=""):
                       + (f"；是否想写 `{near}`？" if near else ""))
 
 
+def strip_unknown(proxy: dict) -> tuple:
+    """按节点类型剔掉内核不认的字段, 返回 (清理后的 dict, 被剔掉的字段名)。
+
+    为什么必须做: mihomo 核心遇到不认识的键**不报错, 只是静默忽略**。
+    于是从别的内核导出的订阅、或自己手写的节点里混进的字段 (最常见的是
+    username —— 它只对 socks5/http/openvpn 合法, 却在几乎所有分享链接里
+    都带着) 会一路带进最终配置。表现为"字段看着挺对, 就是不生效",
+    而没有任何一条错误指向真正的原因。
+
+    不做剔除 vs 剔除, 唯一差别是**没人知道** vs **配置干净**;
+    但后者能让人一眼看出这份配置是自己写的, 而不是从别处搬来的。
+    """
+    if not isinstance(proxy, dict):
+        return proxy, []
+    t = proxy.get("type")
+    allowed = PROXY.get(t) if t else None
+    if allowed is None:
+        return dict(proxy), []      # 类型都不认识, 交给上游的类型过滤去处理
+    # name/server/port 是所有节点都要的; 具体字段再按类型并上
+    keep = BASE_PROXY | allowed
+    dropped = [k for k in proxy if k not in keep]
+    if not dropped:
+        return dict(proxy), []
+    return {k: v for k, v in proxy.items() if k not in set(dropped)}, dropped
+
+
 def check_outbounds(cfg, r: Report):
     """校验 outbounds 段 (服务端出站管理用)。"""
     seen = set()

@@ -232,8 +232,21 @@ if not (isinstance(d, dict) and isinstance(d.get("proxies"), list) and d["proxie
 # 剔除内核不认识的类型 —— 否则节点会被**静默丢弃**, 表现是"订阅里有但连不上"
 import validate as V
 known = getattr(V, "PROXY_TYPES", None) or set()
-out = [p for p in d["proxies"]
-       if isinstance(p, dict) and (not known or p.get("type") in known)]
+kept, dropped_total = [], 0
+for p in d["proxies"]:
+    if not isinstance(p, dict):
+        continue
+    if known and p.get("type") not in known:
+        continue
+    # 按 type 剔掉内核不认的字段。原先是原样搬运, 于是 username 这类
+    # 只对 socks5/http 合法、却几乎在每份订阅里都带的字段会被一路抄进
+    # 最终配置 —— 内核静默忽略, 不报错, 用户只看到"配了没反应"。
+    p2, dropped = V.strip_unknown(p)
+    dropped_total += len(dropped)
+    kept.append(p2)
+out = kept
+if dropped_total:
+    print("[Info] 已剔除 %d 个内核不认的字段 (如 username 混在非代理节点上)" % dropped_total)
 if not out:
     print("[ERR] 订阅里的节点全都不是 mihomo 支持的类型: %s"
           % sorted({str(p.get('type')) for p in d['proxies'] if isinstance(p, dict)}))

@@ -619,7 +619,19 @@ fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
 os.close(fd)
 with open(tmp, "w", encoding="utf-8") as fh:
     fh.write(f"# 导入于 {__import__('datetime').datetime.now().isoformat(timespec='seconds')}\n")
-    yaml.safe_dump({"proxies": d["proxies"]}, fh, sort_keys=False,
+    # 按 type 剔除内核不认的字段 (见 validate.strip_unknown 的说明)。
+    # 内核对不认识的键是**静默忽略**, 所以这一步不是洁癖: 少了它,
+    # username 这类只对 socks5/http 合法、却几乎在每份订阅里都带的字段
+    # 会一路写进 provider, 用户看到的是"配了没反应"且无任何报错指向它。
+    _dropped = 0
+    _ps = []
+    for _p in d["proxies"]:
+        _p2, _dd = _v.strip_unknown(_p)
+        _dropped += len(_dd)
+        _ps.append(_p2)
+    if _dropped:
+        print("[Info] 已剔除 %d 个内核不认的字段" % _dropped)
+    yaml.safe_dump({"proxies": _ps}, fh, sort_keys=False,
                    allow_unicode=True, default_flow_style=False)
 os.replace(tmp, dst)
 print(f"[OK] 已写入 {dst} ({len(d['proxies'])} 个节点"
