@@ -566,43 +566,60 @@ m_safe_read_port() {
 # update_env 落到 install_info.env 的 dest_server, 这里再回读。
 #
 # stdout: 一个域名 (成功) / 空 (失败, 由调用方决定兜底)
+# 拉取文本内容到 stdout (只读, 不落盘、不执行)。
+# 与 fetch_script 的区别: 后者是为了**执行**而落盘并加 chmod, 而这里只需要
+# 读一段脚本文本出来解析, 没必要在磁盘上留一个会被误执行的文件。
+fetch_text() { # <url>
+    local url="${1:-}" base
+    [[ -n "$url" ]] || return 1
+    for base in "$url"; do
+        curl -fsSL --max-time 30 "$base" 2>/dev/null && return 0
+    done
+    return 1
+}
+
 DOMAINS_URL="${DOMAINS_URL:-https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh}"
 
-m_auto_website() {
-    local CATMI_DIR="/root/catmi"
-    local CATMIENV_FILE="$CATMI_DIR/catmi.env"
-    # domains.sh 依赖 catmi.env 的 mode 决定写入目录。
-    if [[ -f "$CATMIENV_FILE" ]]; then
-        grep -qE '^mode=[^"]' "$CATMIENV_FILE" && \
-            sed -i 's/^mode=\([^"]*\)$/mode="\1"/' "$CATMIENV_FILE"
+m_auto_website() {   # <尝试次数-默认 3>  → stdout: 一个域名; 失败返回 1
+    local tries="${1:-3}" tmp fn d i=1
+    while (( i <= tries )); do
+        tmp=$(fetch_text "$DOMAINS_URL" 2>/dev/null) || true
+        [[ -n "$tmp" ]] && break
+        sleep 1
+    done
+    if [[ -z "$tmp" ]]; then
+        print_warn "拉取 domains.sh 失败"
+        return 1
     fi
-    if [[ ! -f "$CATMIENV_FILE" ]] || ! grep -qE '^mode="[^"]+"' "$CATMIENV_FILE"; then
-        printf 'mode="mihomo"\n' >> "$CATMIENV_FILE" 2>/dev/null || return 1
+
+    # ★ 只抽取 random_website() 这一个函数, 跳过文件尾部的
+    #   read -rp "请输入Reality伪装网址: " dest_server
+    #   [ -z "$dest_server" ] && dest_server=$(random_website)
+    #   update_env $NINSTALL_ENV dest_server "${dest_server}"
+    #
+    # 为什么不整份执行 (原实现是整份跑, 然后去读 install_info.env):
+    #   那一版依赖 **三样** 本项目不该依赖的东西 ——
+    #     1. 文件开头 source <(curl ...update_env.sh) 和 load_env.sh
+    #        (任何一份拉不到, 整条链路就断)
+    #     2. /root/catmi/catmi.env 里的 mode —— 实测这台机器 mode="xray",
+    #        于是域名被写进 /root/catmi/**xray**/install_info.env, 而不是
+    #        mihomo 的; 两套产品还会互相覆盖彼此的 dest_server
+    #     3. update_env 的写盘副作用 —— 我们只想**读**一个域名, 不该去
+    #        改另一个项目的环境文件
+    #   抽函数的方式 (与 SB 的 reality_random_domain 同一思路) 三样都不需要:
+    #   不 source、不看 mode、不写盘, 域名直接走 stdout。
+    fn=$(printf '%s\n' "$tmp" \
+         | awk '/^random_website\(\) *\{/{f=1} f{print; if (/^\}/) exit}')
+
+    # 抽不到就退回整份执行 (万一将来 random_website 改名或换了写法)
+    if [[ -n "$fn" ]]; then
+        d=$(bash -c "$fn; random_website" 2>/dev/null)
+    else
+        d=$(bash -c "$tmp" </dev/null 2>/dev/null | tail -1)
     fi
-    local mode
-    mode=$(grep -E '^mode=' "$CATMIENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
-    mode=$(clean_input "$mode" | tr '[:upper:]' '[:lower:]' | sed 's/^"//; s/"$//')
-    [[ "$mode" =~ ^[a-z0-9_-]+$ ]] || mode="mihomo"
-    local NINSTALL_ENV="/root/catmi/$mode/install_info.env"
 
-    # 清掉旧值, 保证回读到的**一定**是本次 domains.sh 的结果, 不沿用陈旧值
-    [[ -f "$NINSTALL_ENV" ]] && sed -i '/^dest_server=/d' "$NINSTALL_ENV" 2>/dev/null
-
-    # ⚠ 判据不能是 `head -c 2 | grep '#!'`: domains.sh **第 1 字节是换行**,
-    #   第 2 字节才是 's', 头两个字节永远匹配不上 "#!" —— 于是它每次都被
-    #   当成"不像可执行脚本"丢弃, 域名优选**从来没成功过**, 全部退化成硬编码值。
-    #   现在判"能不能被 bash 解析"。另外 warn 后不能 `return 1`: 那会跳出
-    #   镜像循环, 备用源根本没试。
-    fetch_script "domains.sh" "$CFMGR_DIR/domains.sh" \
-        && bash "$CFMGR_DIR/domains.sh" </dev/null >/dev/null 2>&2
-
-    local d=""
-    if [[ -f "$NINSTALL_ENV" ]]; then
-        d=$(grep -E "^dest_server=" "$NINSTALL_ENV" | tail -1 | sed 's/^dest_server=//')
-        d=$(clean_input "$d" | sed 's/^"//; s/"$//')
-    fi
-    d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]')
-    [[ "$d" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+    d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]' | sed 's|^[a-z]*://||; s|/.*$||')
+    [[ "$d" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || { print_warn "domains.sh 返回的域名不合法: ${d:-空}"; return 1; }
     echo "$d"
 }
 

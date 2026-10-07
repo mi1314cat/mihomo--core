@@ -322,12 +322,22 @@ add_config() {
     # ⚠ 不能复用已加载的 $dest_server: install_info.env 里的旧值正是
     #   陈旧值的来源, 复用它就等于永远不刷新。
     REALITY_DEST_FROM_POOL=""
-    if _rd=$(m_auto_website 2>/dev/null) && [[ -n "$_rd" ]]; then
-        REALITY_DEST_FROM_POOL="$_rd"
-        print_info "REALITY 伪装域名 (来自 domains.sh 域名池): $REALITY_DEST_FROM_POOL"
-    else
-        print_warn "未能从 domains.sh 取到伪装域名, 改用本地候选名单"
-    fi
+    for _try in 1 2 3; do
+        _rd=$(m_auto_website 2>/dev/null)
+        [[ -n "$_rd" ]] || break
+        # ⚠ **必须实测**。用户明确说过"有时候它那个伪装域名可能有问题,
+        #   导致我连接不上" —— 域名池是人工维护的, 会有站点下线/换 CDN/
+        #   改 ALPN。而 REALITY 的失败方式极其隐蔽: 客户端报
+        #   "REALITY authentication failed", 服务端一条日志都没有,
+        #   面板全绿。池子里有坏域名时不能直接用, 换下一个。
+        if m_reality_dest_probe "$_rd"; then
+            REALITY_DEST_FROM_POOL="$_rd"
+            print_info "REALITY 伪装域名 (来自 domains.sh 域名池): $REALITY_DEST_FROM_POOL ${DIM}(实测握手通过)${RESET:-}"
+            break
+        fi
+        print_warn "域名池里的「$_rd」实测 REALITY 握手失败, 换一个 (第 $_try/3 次)"
+    done
+    [[ -n "$REALITY_DEST_FROM_POOL" ]] || print_warn "未能从域名池取到实测可用的域名, 改用本地候选名单"
     m_pick_dest "$REALITY_DEST_FROM_POOL" || return
     # 同步: m_pick_dest 设的是 DEST_SERVER, 本文件消费的是 dest_server。
     # 不加这一行, 上面从域名池取来的域名会被丢掉, 节点里写的还是 env 旧值。
