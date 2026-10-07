@@ -1045,6 +1045,7 @@ main_menu() {
         ui_menu 16 "卸载服务端"
         ui_menu 17 "切换到客户端面板 (装/进另一端)"
         ui_menu 18 "出站 / 规则集 / 端口转发"
+        ui_menu 19 "SOCKS 入站 (自己 / 内网用)"
         ui_menu  0 "退出"
         echo >&2
         ui_rule
@@ -1078,6 +1079,7 @@ main_menu() {
             16) uninstall_service ;;
             17) switch_side "$SRV_ROOT" ;;
             18) extra_menu ;;
+            19) socks_menu ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

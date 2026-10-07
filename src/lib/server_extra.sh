@@ -28,7 +28,44 @@
 # 一、通用: 片段读写
 # =============================================================
 
-_extra_dir() { printf '%s' "$CONF_DIR"; }
+# ⚠ 之前这里直接 `printf '%s' "$CONF_DIR"`, 而 **CONF_DIR 全项目只有
+#   conf/all.sh 和各协议脚本会赋值** —— server.sh 从没设过它。
+#   于是从服务端菜单调用时它为空串, 文件被写到**文件系统根目录**
+#   (/outbound-01.yaml、/pfwd-01.yaml …), 节点自然一个都没多。
+#   表现极具迷惑性: 面板一路显示"已生效"(因为 _extra_apply 只看校验和重载,
+#   它根本没检查文件落地没有), 直到查 config.d 才发现空空如也。
+#
+# 改成**自己算**, 不依赖任何环境变量:
+#   SRV_CONF (server.sh 一定有) 的目录 + /config.d
+#   退路: CONF_DIR 若已被调用方设好就用它
+# 不同调用方给的 SRV_CONF 含义并不统一 (server.sh 给的是**目录**
+# $SRV_ROOT/conf, 而 share.sh 的 systemd 单元里给的是同一个变量的路径),
+# 所以这里**逐个试, 用存在性判断**, 而不是靠约定:
+#   1. $SRV_CONF 本身就是个 config.d      (调用方已经算好了)
+#   2. $SRV_CONF/config.d 存在            (SRV_CONF 是 conf 目录)
+#   3. $(dirname $SRV_CONF)/config.d 存在  (SRV_CONF 是 conf/config.yaml)
+# 都不中才退回默认路径。
+#
+# ⚠ 曾试过纯字符串推导, 结果两种约定各错一半: 对着"SRV_CONF 是文件"算对了,
+#   碰上真实的"SRV_CONF 是目录"就拼出 /conf/config.d 之外的东西。存在性
+#   判断没有这种歧义。
+_extra_dir() {
+    local c
+    # ★ SRV_CONFIGD 排第一: 它是 env.sh / server.sh 已经算好的**规范路径**
+    #   ($SRV_CONF/config.d, SRV_CONF 本身就是 conf 目录)。
+    #
+    #   之前把 $SRV_CONF 本身也列为候选, 结果它**里面就有 config.yaml**,
+    #   glob "$c/*.yaml" 命中 → 片段被写成 conf/socks-01.yaml, 少了一层
+    #   config.d, 而合并器只读 conf/config.d/*。于是: 目录存在、校验通过、
+    #   重载成功, 三步全绿, 而新节点一个都没多 —— 又一个假阳性。
+    for c in "${SRV_CONFIGD:-}"              "${CONF_DIR:-}"              "${SRV_CONF:-}"              "${SRV_CONF:-}/config.d"              "${SRV_CONF:+$(dirname "$SRV_CONF")/config.d}"              "/root/catmi/mihomo/conf/config.d"; do
+        [[ -n "$c" && -d "$c" ]] || continue
+        # 必须真的是"片段目录": 里面若已有 yaml, 或名字以 config.d 结尾, 更可信
+        if compgen -G "$c/*.yaml" >/dev/null 2>&1; then printf '%s' "$c"; return 0; fi
+        [[ "${c%/}" == */config.d ]] && { printf '%s' "$c"; return 0; }
+    done
+    printf '%s' "/root/catmi/mihomo/conf/config.d"
+}
 
 _extra_next_index() { # <前缀> -> 第一个空位 NN
     local pre="$1" i
@@ -101,6 +138,16 @@ _extra_del() { # <前缀> <NN>
 
 # 三个功能共用的收尾: 合并 -> 校验 -> 重载
 _extra_apply() {
+    # ★ 先确认片段真的落到 config.d 了, 再去重载。
+    #   之前这里直接 m_sync_reload —— 而重载的是**已经存在的** config.yaml,
+    #   片段没落地时它照样成功, 于是面板一路显示"已生效", 而 config.d 里
+    #   一个新文件都没有。这类"校验通过但功能没生效"的假阳性最难查:
+    #   每一步都绿, 结果什么都没发生。
+    local d; d=$(_extra_dir)
+    if [[ ! -d "$d" ]]; then
+        print_error "片段目录不存在: $d"
+        return 1
+    fi
     printf '\n  应用配置...\n'
     if m_sync_reload; then
         print_ok "已生效"
@@ -517,3 +564,174 @@ pfwd_menu() {
 # 与 _uninstall_all 的清单放在一起 (见 server.sh)。这里只提供名字列表,
 # 免得那处再手写一遍前缀。
 _extra_fragment_prefixes() { printf 'outbound ruleset pfwd'; }
+
+# =============================================================
+# SOCKS 入站
+#
+# 为什么单独做: 协议档位都是**给外面用的**节点, 需要证书/REALITY/抗封锁;
+# 而 SOCKS 入站是给**自己或内网**用的 —— 比如在内部跑脚本、让同网段的
+# 机器借道出网。它不需要任何抗封锁能力, 越简单越好维护, 所以只问三件事:
+# 监听地址 / 端口 / 用户名密码。
+#
+# 监听地址的四个常用写法 (这是最容易配错的一项, 所以做成选项而不是自由输入):
+#   127.0.0.1  只有本机能连       ← 默认, 最安全
+#   0.0.0.0    本机所有 IPv4 网卡  ← 允许局域网访问
+#   ::         本机所有 IPv6 网卡  ← 允许 IPv6 网络访问
+#   ::1       只有本机的 IPv6 回环
+# =============================================================
+
+_socks_addr_choices() {
+    printf '    1) 127.0.0.1  —— 只有本机能连 (默认, 最安全)\n'
+    printf '    2) 0.0.0.0    —— 本机所有 IPv4 网卡 (允许局域网访问)\n'
+    printf '    3) ::         —— 本机所有 IPv6 网卡 (允许 IPv6 网络访问)\n'
+    printf '    4) ::1        —— 只有本机的 IPv6 回环\n'
+    printf '    5) 手输一个地址\n'
+}
+
+socks_add() {
+    print_title "添加 SOCKS 入站"
+    ui_hint "给自己或内网用的出站口。不需要证书, 也不做抗封锁 —— 只问监听地址、端口和账号密码。"
+
+    printf '\n  监听地址 (决定谁能连):\n' >&2
+    _socks_addr_choices
+    printf '  请选择 [1]: ' >&2
+    local c; read -r c || return 1
+    c=$(clean_input "$c"); c="${c:-1}"
+    local laddr
+    case "$c" in
+        2) laddr="0.0.0.0" ;;
+        3) laddr="::" ;;
+        4) laddr="::1" ;;
+        5)
+            printf '  请输入监听地址: ' >&2
+            read -r laddr || return 1
+            laddr="${laddr:-127.0.0.1}"
+            local chk="${laddr#[}"; chk="${chk%]}"
+            [[ "$chk" =~ ^[0-9A-Za-z._:-]+$ ]] \
+                || { print_error "监听地址不合法: $laddr"; return 1; }
+            ;;
+        *) laddr="127.0.0.1" ;;
+    esac
+
+    printf '\n  监听端口 (1-65535, 建议 1080 或 10808): ' >&2
+    local lport; read -r lport || return 1
+    lport=$(clean_input "$lport"); lport="${lport:-1080}"
+    [[ "$lport" =~ ^[0-9]{1,5}$ ]] && (( lport >= 1 && lport <= 65535 )) \
+        || { print_error "端口必须是 1-65535 的数字"; return 1; }
+    # 占用预检: mihomo bind 失败会导致**整个服务端起不来**, 不是这个
+    # 入站不能用, 是全部节点一起挂 —— 所以宁可在这里挡住。
+    if ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$lport\$"; then
+        print_error "端口 $lport 已被占用, 换一个"
+        return 1
+    fi
+
+    printf '\n  用户名: ' >&2
+    local user; read -r user || return 1
+    user=$(clean_input "$user")
+    [[ -n "$user" ]] || { print_error "用户名不能为空"; return 1; }
+
+    printf '  密码 (留空则自动生成): ' >&2
+    local pass; read -r pass || return 1
+    pass=$(clean_input "$pass")
+    if [[ -z "$pass" ]]; then
+        pass=$(openssl rand -base64 12 2>/dev/null | tr -d '/+=' | cut -c1-16)
+        [[ -n "$pass" ]] || pass=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-16)
+        print_info "已自动生成密码: $pass"
+    fi
+    # 用户名密码里的引号/反斜杠会破坏 YAML, 双引号包裹 + 转义
+    user=${user//\\/\\\\}; user=${user//\"/\\\"}
+    pass=${pass//\\/\\\\}; pass=${pass//\"/\\\"}
+
+    printf '\n  允许 UDP 转发? (SOCKS5 的 UDP ASSOCIATE)\n' >&2
+    printf '    1) 是\n' >&2
+    printf '    2) 否 (只要 TCP, 更省心)\n' >&2
+    printf '  请选择 [1]: ' >&2
+    local uc; read -r uc || return 1
+    uc=$(clean_input "$uc"); uc="${uc:-1}"
+    local udp="udp: false"
+    [[ "$uc" == "1" ]] && udp="udp: true"
+
+    local idx; idx=$(_extra_next_index socks)
+    local tag="socks-$(printf '%02d' "$idx")"
+    local f="$(_extra_dir)/$tag.yaml"
+
+    cat > "$f" <<EOF
+# 由 server.sh SOCKS 入站生成 · $laddr:$lport
+listeners:
+  - name: mSOCKS-$idx
+    type: socks
+    listen: "$laddr"
+    port: $lport
+    users:
+      - username: "$user"
+        password: "$pass"
+    $udp
+EOF
+
+    if ! _extra_apply; then
+        print_error "配置校验未通过, 已自动回滚"
+        rm -f "$f"
+        return 1
+    fi
+    print_ok "已添加并生效: $laddr:$lport"
+    print_info "用户名 $user / 密码 $pass"
+    return 0
+}
+
+socks_list() {
+    local f found=0
+    for f in "$(_extra_dir)"/socks-*.yaml; do
+        [[ -f "$f" ]] || continue
+        found=1
+        local a p u
+        a=$(awk '/^[[:space:]]*listen:/{gsub(/"/,"",$2);print $2;exit}' "$f")
+        p=$(awk '/^[[:space:]]*port:/{print $2;exit}' "$f")
+        u=$(awk '/^[[:space:]]*username:/{gsub(/"/,"",$2);print $2;exit}' "$f")
+        printf '  %-10s %-24s %-14s 用户: %s\n' "$(basename "$f" .yaml)" "${a:-?}:${p:-?}" \
+            "$(grep -q 'udp: true' "$f" && echo 'UDP+TCP' || echo '仅 TCP')" "${u:-?}"
+    done
+    (( found )) || print_info "还没有 SOCKS 入站"
+}
+
+socks_del() {
+    socks_list
+    printf '\n  要删哪个? (填编号对应的文件名, 如 socks-01): ' >&2
+    local tag; read -r tag || return 1
+    tag=$(clean_input "$tag")
+    [[ -n "$tag" ]] || return 1
+    local f="$(_extra_dir)/$tag.yaml"
+    [[ -f "$f" ]] || { print_error "没有这个条目: $tag"; return 1; }
+    rm -f "$f"
+    if _extra_apply; then
+        print_ok "已删除并生效"
+    else
+        print_error "删除后校验失败, 请手工确认"
+    fi
+}
+
+socks_menu() {
+    local c
+    while true; do
+        print_title "SOCKS 入站 (自己 / 内网用)"
+        ui_hint "不需要证书, 也不做抗封锁。只决定: 谁能连 (监听地址) + 端口 + 账号密码。"
+        ui_menu 1 "添加"
+        ui_menu 2 "查看"
+        ui_menu 3 "删除"
+        ui_rule
+        ui_menu 0 "返回"
+        echo >&2
+        printf "  ${CYAN}请选择${RESET}: " >&2
+        read -r c || { printf '\n' >&2; print_info "非交互环境, 已退出"; return 0; }
+        c=$(clean_input "$c")
+        case "$c" in
+            1) socks_add ;;
+            2) socks_list ;;
+            3) socks_del ;;
+            0) return 0 ;;
+            *) ui_invalid "$c" ;;
+        esac
+        echo >&2
+        printf "  ${DIM}按回车继续...${RESET}" >&2
+        read -r _ || true
+    done
+}

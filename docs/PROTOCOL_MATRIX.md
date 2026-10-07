@@ -9,7 +9,19 @@
 
 ## 一、一键全协议脚本 (all.sh) 实际生成的组合
 
-`bash src/conf/all.sh --quick` 默认生成 **25 个档位** (含 7 个 CDN 档位)。
+`bash src/conf/all.sh --quick` 默认生成 **22 个档位** (含 7 个 CDN 档位)。
+
+### 已剔除的过时组合
+
+| 档位 | 内容 | 剔除理由 |
+|------|------|---------|
+| ~~VLESS+WS~~ | 无 TLS / 无 REALITY | **明文握手**, 被动 DPI 直接识别; 协议与 TLS 版相同, 唯一区别就是不加密 |
+| ~~VLESS+xHTTP~~ | 同上 | 同上 |
+| ~~VMess+WS~~ | 同上 | 同上 |
+
+"贵在精"而不是"贵在多": 这 3 个**没有任何优势**, 协议相同只少了加密,
+属于自报家门。删掉后**没有证书时依然有 5 个 REALITY 档位 + SS + Snell 可用**,
+不缺入口。剩下的 22 档每一个都带真实加密或 REALITY 抗识别。
 **协议 × 传输 × 伪装** 的实际组合如下:
 
 | # | 档位 id | 中文名 | 协议 | 传输 | 安全层 | 端口 |
@@ -209,7 +221,7 @@ bash src/conf/VLESS.sh
 | 类别 | 数量 | 明细 |
 |------|:----:|------|
 | 协议种类 | 9 | VLESS / VMess / Trojan / Hysteria2 / TUIC / AnyTLS / SS / Snell / (mihomo 另支持 Hysteria1·ShadowTLS·SSH·WireGuard·Mieru 等, 项目未生成) |
-| 一键档位 | **25** | 见第一节 (含 7 个 CDN 档位) |
+| 一键档位 | **22** | 见第一节 (含 7 个 CDN 档位) |
 | 可选档位 | 2 | mKCP / Mekya |
 | 传输层 | 8 | ws / grpc / xhttp / h2 / tcp / mkcp / mekya / httpupgrade |
 | 安全层 | 4 | REALITY / 真证书 TLS / Cloudflare+ECH / 裸 |
@@ -219,8 +231,8 @@ bash src/conf/VLESS.sh
 
 ## 五、当前状态 (2026-10-07 实测)
 
-- 服务端: **25/25 档位生成成功**, 0 警告, 严格校验通过, `mihomo -t` 通过, 服务 active
-- 客户端: **25/25 节点连通**, 其中 **CDN 档 7/7 全通** (174–429 ms)
+- 服务端: **22/22 档位生成成功**, 0 警告, 严格校验通过, `mihomo -t` 通过, 服务 active
+- 客户端: **22/22 节点连通**, 其中 **CDN 档 7/7 全通**
 - 双端证据链: <CLIENT_ALIAS> 无直连 → 经代理出口 = <SERVER_ALIAS> 同目标出口 ✅, DNS 返回 fake-ip `198.18.0.4` ✅
 - ECH: 抓包带对照组验证 —— 开: 明文 SNI 仅 `cloudflare-ech.com`; 关: 真实域名暴露 ✅
 ---
@@ -259,3 +271,20 @@ CDN 相关档位（VLESS/VMess/Trojan 的 ws / gRPC / xHTTP）全部带 **ECH**�
 
 实现位置：`src/lib/preset.sh`（预置表 + `preset_ask`/`preset_apply`），
 各协议脚本在问特性之前先调 `preset_ask`，消费完再 `preset_reset`。
+
+---
+
+## 七、SOCKS 入站 (服务端面板 · 菜单 19)
+
+协议档位都是**给外面用的**节点；SOCKS 入站是**给自己或内网用**的——
+内部跑脚本、让同网段机器借道出网。不需要证书，也不做抗封锁，所以只问三件事：
+
+| 项 | 取值 |
+|---|---|
+| **监听地址** | `127.0.0.1`(默认, 仅本机) / `0.0.0.0`(所有 IPv4) / `::`(所有 IPv6) / `::1` / 手输 |
+| **端口** | 1–65535, 占用预检 (bind 失败会导致**整个服务端起不来**) |
+| **账号密码** | 用户名必填; 密码留空则自动生成 |
+| UDP | 可选开关 (SOCKS5 UDP ASSOCIATE) |
+
+实测（<SERVER_ALIAS>）：正确凭据出网正常；错误密码拒绝；无凭据拒绝；
+监听 `127.0.0.1` 时从公网 IP 连不上。

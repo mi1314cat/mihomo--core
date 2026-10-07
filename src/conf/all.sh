@@ -563,7 +563,7 @@ record() {  # record <协议> <端口> <状态> <说明>
 
 # vmess-mkcp / vmess-mekya 列出但**默认不生成** (要 ALL_MKCP=1)。
 # 放在这里是为了让 `--only vmess-mkcp` 能被点名单独生成, 而不必先改默认集。
-ALL_GEN_IDS="reality reality-grpc reality-xhttp vmess-mkcp vmess-mekya cdn-v-ws cdn-v-grpc cdn-m-ws cdn-m-grpc cdn-t-ws cdn-t-grpc trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
+ALL_GEN_IDS="reality reality-grpc reality-xhttp vmess-mkcp vmess-mekya cdn-v-ws cdn-v-grpc cdn-m-ws cdn-m-grpc cdn-t-ws cdn-t-grpc trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn hysteria2 tuicv5 anytls ss snell"
 
 # --only 的 token 必须能对上真实标识符。原来的 want() 对不匹配的 token 静默
 # 返回 false, 于是 `--only tuic` (真名 tuicv5) 会安静地什么都不生成,
@@ -1405,39 +1405,6 @@ proxies:
 EOF
 }
 
-g_vless_ws() {
-    local path="/ws$1"
-NODE_TAG="$(m_node_tag VLESS "$1" plain WS)"
-    cat > "$3" <<EOF
-# 由 all.sh 一键生成
-listeners:
-  - name: $NODE_TAG
-    type: vless
-    listen: "0.0.0.0"
-    port: $2
-    users:
-      - uuid: $UUID
-    ws-path: $path
-    # v1.19.x 起, 明文 VLESS 入站必须显式 allow-insecure,
-    # 否则内核直接拒绝: "disallow using Vless without any certificates/..."
-    allow-insecure: true
-EOF
-NODE_TAG="$(m_node_tag VLESS "$1" plain WS)"
-    cat > "$4" <<EOF
-proxies:
-  - name: $NODE_TAG
-    type: vless
-    server: $PUBLIC_IP
-    port: $2
-    uuid: $UUID
-    network: ws
-    tls: false
-    udp: true
-    ws-opts:
-      path: $path
-EOF
-}
-
 g_vless_ws_tls() {
     local path="/wss$1"
 NODE_TAG="$(m_node_tag VLESS "$1" tls WS)"
@@ -1493,50 +1460,6 @@ EOF
 #      抗探测收益远低于 443 + 域名 + 证书 + CDN。批量默认出**明文 + TLS 两个**,
 #      真要上线请优先用 xhttp-tls 那个并配好域名。
 # =============================================================
-g_vless_xhttp() {
-    # 路径过短容易被扫到, 借 env.sh 的共享校验过一道 (>=8 字符, 见 M_MIN_WS_PATH_LEN)
-    local path; path=$(m_check_ws_path "$(m_gen_path xhttp)") || return 1
-    render_xhttp_pad
-NODE_TAG="$(m_node_tag VLESS "$1" plain XHTTP)"
-    cat > "$3" <<EOF
-# 由 all.sh 一键生成 · VLESS + XHTTP (明文)
-listeners:
-  - name: $NODE_TAG
-    type: vless
-    listen: "0.0.0.0"
-    port: $2
-    users:
-      - uuid: $UUID
-    # listener 侧**没有** network 字段, 传输方式靠 xhttp-config 是否非空判定
-    # (listener/inbound/vless.go:17; listener/sing_vless/server.go:207)
-    xhttp-config:
-      mode: $XHTTP_MODE
-      path: $path
-${XHTTP_PAD_FIELDS}
-    # 与明文 WS 同一条约束: 不写 allow-insecure, 内核拒绝启动
-    # "disallow using Vless without any certificates/..." (server.go:275-277)
-    allow-insecure: true
-EOF
-NODE_TAG="$(m_node_tag VLESS "$1" plain XHTTP)"
-    cat > "$4" <<EOF
-# 由 all.sh 一键生成 · VLESS + XHTTP (明文) 客户端
-proxies:
-  - name: $NODE_TAG
-    type: vless
-    server: $XHTTP_DIRECT_HOST
-    port: $2
-    uuid: $UUID
-    network: xhttp
-    tls: false
-    udp: true
-    # xhttp-opts 与 listener 的 xhttp-config **逐字段一致** (同一份字符串渲染)
-    xhttp-opts:
-      mode: $XHTTP_MODE
-      path: $path
-${XHTTP_PAD_FIELDS}
-EOF
-}
-
 g_vless_xhttp_tls() {
     local path; path=$(m_check_ws_path "$(m_gen_path xhttps)") || return 1
     render_xhttp_pad
@@ -1612,47 +1535,6 @@ vmess_pad_client_block() {
     else
         VMESS_PAD_BLOCK="    # VMESS_PAD=0: 本次未开 global-padding / authenticated-length"
     fi
-}
-
-g_vmess_ws() {
-    local path="/vm$1"
-    vmess_pad_client_block
-NODE_TAG="$(m_node_tag VMess "$1" plain)"
-    cat > "$3" <<EOF
-# 由 all.sh 一键生成
-listeners:
-  - name: $NODE_TAG
-    type: vmess
-    listen: "0.0.0.0"
-    port: $2
-    users:
-      - uuid: $UUID
-        # alterId: 0 是唯一安全值 (adapter/outbound/vmess.go:59)
-        alterId: 0
-    ws-path: $path
-    # 注意: global-padding / authenticated-length 在 listener 上**不存在**
-    # (listener/inbound/vmess.go:12-30), 它们只属于客户端, 理由见本函数上方注释。
-EOF
-NODE_TAG="$(m_node_tag VMess "$1" plain)"
-    cat > "$4" <<EOF
-# 由 all.sh 一键生成
-proxies:
-  - name: $NODE_TAG
-    type: vmess
-    server: $PUBLIC_IP
-    port: $2
-    uuid: $UUID
-    # ⚠️ alterId / cipher 的 tag 无 omitempty, 漏写内核直接报 unset fields
-    # (adapter/outbound/vmess.go:59-60)
-    alterId: 0
-    cipher: auto
-    network: ws
-    tls: false
-    udp: true
-${VMESS_PAD_BLOCK}
-    ws-opts:
-      path: $path
-EOF
 }
 
 g_hysteria2() {
@@ -2167,9 +2049,9 @@ gen cdn-m-grpc     "CDN: VMess+gRPC"       0 2 vmess     g_cdn_tier vmess grpc
 gen cdn-t-ws       "CDN: Trojan+WS"        0 2 trojan    g_cdn_tier trojan ws
 gen cdn-t-grpc     "CDN: Trojan+gRPC"      0 2 trojan    g_cdn_tier trojan grpc
 # 明文档 (无 TLS)
-gen vless          "VLESS+WS"              0 0 vless     g_vless_ws
-gen xhttp          "VLESS+XHTTP"           0 0 vless     g_vless_xhttp
-gen vmess          "VMess+WS"              0 0 vmess     g_vmess_ws
+
+
+
 gen hysteria2      "Hysteria2"      0 1 hysteria2 g_hysteria2
 gen tuicv5         "TUIC v5"        0 1 tuicv5    g_tuicv5
 gen anytls         "AnyTLS"         0 1 anytls    g_anytls
