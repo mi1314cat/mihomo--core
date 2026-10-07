@@ -297,6 +297,12 @@ _core_warn_missing_unit() {
     a=$(clean_input "$a")
     case "$a" in
         y|Y|yes|YES) return 0 ;;
+        # ⚠ 返回值必须被调用方用 if 接住。上一版写的是
+        #   _core_warn_missing_unit ... ; bash ... init
+        #   两句之间没有 &&, 于是 return 1 只让**这一句**返回非零, 后面的
+        #   init 照跑不误 —— 用户选 n, 屏幕显示"已取消初始化", 转头发现
+        #   conf/certs、config.d/.managed.json、config.yaml、out/ 全建好了。
+        #   取消一个动作却留下了全部副作用, 比不取消更糟。
         *) print_info "已取消初始化"; return 1 ;;
     esac
 }
@@ -322,13 +328,14 @@ core_menu() {   # <安装根目录> <服务名>
         read -r c || return 0
         c=$(clean_input "$c")
         case "$c" in
-            1) _core_warn_missing_unit "$root" "$svc"
+            1) if _core_warn_missing_unit "$root" "$svc"; then
                    if [[ "$svc" == "mihomo" ]]; then
-                   bash "$root/src/server.sh" init \
-                     || print_error "初始化失败, 见上面输出"
-               else
-                   bash "$root/src/client.sh" init \
-                     || print_error "初始化失败, 见上面输出"
+                     bash "$root/src/server.sh" init \
+                       || print_error "初始化失败, 见上面输出"
+                   else
+                     bash "$root/src/client.sh" init \
+                       || print_error "初始化失败, 见上面输出"
+                   fi
                fi ;;
             2) core_do_install "$root" "$svc" ;;
             3) core_do_update "$root" "$svc" ;;

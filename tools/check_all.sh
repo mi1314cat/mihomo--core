@@ -115,7 +115,14 @@ scrub_scan() {
     #   现在 scrub.py 只放通用规则, 具体值在 gitignored 的 scrub-private.py。
     #   于是校验器可以、也必须校验自己。
     local files
-    files=$(git ls-files | grep -v '^tools/scrub-private\.py$')
+    # ★ 已跟踪 + **未跟踪但没被 gitignore** 的都要扫。
+    #   原来只有 `git ls-files`, 于是**新建的文件在被 git add 之前完全不在
+    #   扫描范围里** —— 而这正是密钥最容易溜进去的窗口: 报告/笔记里贴了一段
+    #   token, 检查全绿, git add -a 一提交, 密钥就进了历史, 直到 push 被
+    #   GitHub 的 secret scanning 拦下才发现。
+    #   (实测就是这么翻车的: E2E 报告里原样带着 PAT。)
+    files=$( { git ls-files; git ls-files --others --exclude-standard; } \
+             | grep -v '^tools/scrub-private\.py$' | sort -u )
     [[ -n "$files" ]] || { printf "❌ 没拿到文件清单 (不在 git 仓库里?)\n"; return 1; }
     # shellcheck disable=SC2086
     python3 tools/scrub.py --check $files
@@ -205,6 +212,53 @@ if miss or orphan_menu:
     sys.exit(1)
 PY
 }
+# server.sh 里 BATCH_PROTO_ONLY 写死了 all.sh 的档位 id。两份清单分处两个
+# 文件, 任何一边增删档位都不会通知对方 —— 上一轮删掉明文 "vmess" 档位后,
+# 「添加节点 → 7) VMess」就静默失效: check_only_tokens 整批 return 1,
+# 用户看到的是"无法识别的协议标识", 完全想不到是菜单里写了个过期 id。
+#
+# 这类漂移靠人记不住, 只能自动查。
+ids_consistent() {
+    python3 - <<'PY'
+import re, sys
+srv = open("src/server.sh", encoding="utf-8").read()
+allsh = open("src/conf/all.sh", encoding="utf-8").read()
+
+m = re.search(r'ALL_GEN_IDS="([^"]*)"', allsh)
+if not m:
+    print("❌ 找不到 ALL_GEN_IDS"); sys.exit(1)
+legal = set(m.group(1).split())
+
+bad = []
+for mm in re.finditer(r'BATCH_PROTO_ONLY=\(([^)]*)\)', srv):
+    for grp in re.findall(r'"([^"]*)"', mm.group(1)):
+        for tok in grp.split(","):
+            tok = tok.strip()
+            # 跳过 shell 变量引用 (--only "$only" 这类) —— 它们不是字面 id,
+            # 真正的字面 id 一律是纯小写字母/数字/短横线
+            if tok and "$" not in tok and not re.fullmatch(r"[A-Za-z0-9_-]+", tok):
+                continue
+            if tok and tok not in legal:
+                bad.append(tok)
+
+# --only 的单值形式也常常被手写
+for mm in re.finditer(r'_all_run\s+--only\s+"([^"]+)"', srv):
+    for tok in mm.group(1).split(","):
+        tok = tok.strip()
+        if "$" in tok or not re.fullmatch(r"[A-Za-z0-9_-]+", tok):
+            continue
+        if tok and tok not in legal:
+            bad.append(tok)
+
+if bad:
+    print("❌ 菜单/脚本里引用了 all.sh 里不存在的档位 id: %s" % ", ".join(sorted(set(bad))))
+    print("   合法 id: %s" % " ".join(sorted(legal)))
+    sys.exit(1)
+PY
+}
+
+run_gate "档位 id 一致"   ids_consistent
+
 run_gate "幽灵函数"     phantom_scan
 
 printf "\n"

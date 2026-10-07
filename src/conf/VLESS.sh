@@ -366,13 +366,22 @@ render_share_link() {
     # 传输方式不进名字, 对齐 SB 上游 tag_form_suffix 的取舍 (只分 TLS 形态)。
     # 以前这里是 VLESS-XHTTP-01 / VLESS-WS-01, 而 listener 叫 vless-01,
     # 用户在客户端看到的和面板里列的是两个东西。
+    # ⚠ 端口必须用 $VLESS_PORT, 不能写死 443。
+    #   原来这里 5 条分享链接 + 客户端 yaml 全是硬编码 443, 而 listener
+    #   实际在 VLESS_PORT (实测 31857)。结果一路回车建出来的节点
+    #   **生成即不可用**: 向导摘要说"端口 31857 / 生成成功", 客户端配置里
+    #   却是 443, 客户端实测测速直接失败, 而**全程零报错**。
+    #   那个 443 是照着"nginx 在 443 做四层透传"写的, 可紧接着的
+    #   「nginx 要不要直接配好?」默认是**跳过**, 前提根本不成立。
+    #   要走 443/CDN 的形态由 CDN 档位负责 (server 填 CDN 域名, 端口 443),
+    #   直连档位就该老老实实用自己的 VLESS_PORT。
     local tag="${NODE_TAG:-$(m_node_tag VLESS "$INDEX" tls)}"
     case "$VLESS_TRANSPORT" in
-        xhttp) SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#$tag" ;;
-        grpc)  SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#$tag" ;;
-        h2)    SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#$tag" ;;
-        tcp)   SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#$tag" ;;
-        *)     SHARE_LINK="vless://$UUID@$CLIENT_HOST:443?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#$tag" ;;
+        xhttp) SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=xhttp&mode=$XHTTP_MODE&path=$XHTTP_PATH$ech#$tag" ;;
+        grpc)  SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=grpc&serviceName=$GRPC_SERVICE$ech#$tag" ;;
+        h2)    SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=h2&host=$CLIENT_HOST&path=$H2_PATH$ech#$tag" ;;
+        tcp)   SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=tcp$ech#$tag" ;;
+        *)     SHARE_LINK="vless://$UUID@$CLIENT_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$CLIENT_SNI&fp=$fp&type=ws&path=$WS_PATH&host=$CLIENT_HOST$ech#$tag" ;;
     esac
 }
 
@@ -428,7 +437,7 @@ proxies:
   - name: $NODE_TAG
     type: vless
     server: $CLIENT_HOST
-    port: 443
+    port: $VLESS_PORT
     uuid: $UUID
     servername: $CLIENT_SNI
     client-fingerprint: $CLIENT_FP
