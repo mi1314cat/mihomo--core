@@ -708,6 +708,51 @@ m_publish_addrs() {
     m_warp_active && print_info "检测到 WARP/隧道接口, 其上的地址未纳入 server_ipv4/ipv6" >&2
 }
 
+# =============================================================
+# nginx 站点检测 —— 扫出本机真正在用的 server_name
+#
+# 为什么必须扫 nginx 而不是让用户手打:
+#   证书选择和 CDN 回源都要"选哪个域名"。光列 /etc/letsencrypt/live 下的
+#   证书路径, 用户判断不了"哪个域名是我对外真在用的"; 而 nginx 站点里的
+#   server_name 就是他真实对外的域名, 拿来对照选择直观得多 (做法对齐 SB 的
+#   sb_scan_nginx_sites)。
+#
+# ★ 必须同时扫容器里的 nginx:
+#   很多部署 (含本项目实测的这台) 的 nginx 跑在 docker 容器中, 宿主机上
+#   /etc/nginx/conf.d 是空的。只扫宿主机 → 一个站点都列不出来, 界面上就变成
+#   "没检测到", 而用户明明配好了站点。
+# =============================================================
+m_scan_nginx_sites() {
+    local d f n
+    # 宿主机
+    for d in /etc/nginx /etc/nginx/conf.d /home/web/conf.d /usr/local/nginx/conf; do
+        [[ -d "$d" ]] || continue
+        while read -r n; do
+            [[ -n "$n" ]] && printf '%s\n' "$n"
+        done < <(grep -rhoE '^[[:space:]]*server_name[[:space:]]+[^;]+;' "$d" 2>/dev/null                   | sed -E 's/^[[:space:]]*server_name[[:space:]]+//; s/;[[:space:]]*$//'                   | tr ' \t' '\n\n' | grep -vE '^_$')
+    done
+    # 容器里的 nginx —— 宿主机扫不到的那部分
+    command -v docker >/dev/null 2>&1 || return 0
+    local c
+    for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+        docker exec "$c" sh -c \
+            'grep -rhoE "^[[:space:]]*server_name[[:space:]]+[^;]+;" /etc/nginx 2>/dev/null \
+             | sed -E "s/^[[:space:]]*server_name[[:space:]]+//; s/;[[:space:]]*$//" \
+             | tr " \t" "\n\n" | grep -vE "^_$"' 2>/dev/null
+    done
+}
+
+# 去重后的 nginx 站点域名
+m_nginx_domains() {
+    m_scan_nginx_sites | sort -u | grep -vE '^$'
+}
+
+# 该域名是否已被某个 nginx 站点占用 (用于在证书列表上标注)
+m_domain_in_nginx_site() {
+    [[ -n "${1:-}" ]] || return 1
+    m_nginx_domains | grep -qxF "$1"
+}
+
 REALITY_DESTS=(
     "www.microsoft.com"  "www.apple.com"      "www.cloudflare.com"
     "dl.google.com"      "swdist.apple.com"   "www.samsung.com"

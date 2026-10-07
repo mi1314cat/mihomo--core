@@ -1821,12 +1821,67 @@ else
             real) ;;                    # 明确要求只用真证书, 不问
             auto)
                 if [[ -t 0 && "$QUICK" != "1" ]]; then
-                    printf "     ${CYAN}用哪张证书?${RESET}\n" >&2
-                    printf "       ${CYAN}1${RESET}) 本机真实证书 ${DIM}%s${RESET} ${GREEN}(推荐)${RESET}\n" "${SNI:-$CRT}" >&2
-                    printf "       ${CYAN}2${RESET}) 现生成自签 ${DIM}(可自定义域名; 客户端需 skip-cert-verify; 过 CDN 无效)${RESET}\n" >&2
-                    printf "     请选择 ${DIM}[默认 1]:${RESET} " >&2
-                    __ans=""; read -r __ans || true
-                    [[ "$__ans" == "2" ]] && __want_self=1
+                    # 多张证书时**列出来让用户按域名挑**, 而不是只报一个总数。
+                    # 只给"检测到 N 张, 已自动选用优先级最高的"时, 用户没有
+                    # 任何入口换一张 —— 而同一台机器上哪张该用, nginx 站点的
+                    # server_name 就是答案 (做法对齐 SB)。
+                    if (( ALL_CERT_N > 1 )); then
+                        # 按**域名**去重, 不按路径。
+                        # 同一张证书在磁盘上通常有多份 (acme.sh 的 x.pem、cloudflare
+                        # 的源站证书、nginx/certs 下的副本), 路径确实不同, 所以按
+                        # 路径去重没用 —— 用户看到同一个域名连着出现 4 次, 编号还
+                        # 和预期对不上, 很容易选错 (SB 的 sb_dedup_certs_by_domain
+                        # 处理的正是这个)。保留第一份: scan_certs 的扫描顺序里
+                        # 先扫到的通常正是现有 nginx 站点在用的那张。
+                        __ucerts=(); declare -A __seen_dom=()
+                        for __ce in "${FOUND_CERTS[@]}"; do
+                            __cdom="$(cert_extract_domain "${__ce%%|*}" 2>/dev/null)"
+                            # 抽不出真域名的 (自签 CN 写成 "common name" 之类) 不列,
+                            # 选它必然连不上, 列出来只是干扰。
+                            [[ "$__cdom" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$ ]] || continue
+                            [[ -n "${__seen_dom[$__cdom]:-}" ]] && continue
+                            __seen_dom[$__cdom]=1
+                            __ucerts+=("$__ce")
+                        done
+                        __sites_n=0
+                        declare -a __dsites=()
+                        while read -r __s; do [[ -n "$__s" ]] && __dsites+=("$__s"); done < <(m_nginx_domains 2>/dev/null)
+                        __sites_n=${#__dsites[@]}
+                        # ⚠ 标题里的张数必须用**去重之后**的个数, 且要在去重之后才打印。
+                        #   先打印再去重会让标题写 9 张、下面只列 3 个; 自签那项再按
+                        #   去重前的 ALL_CERT_N 编号, 于是和第 3 张重号 —— 用户按 3
+                        #   拿到的到底是证书还是自签, 取决于列表长度。
+                        printf "     ${CYAN}用哪张证书?${RESET} ${DIM}按域名去重后 %d 张${RESET}\n" "${#__ucerts[@]}" >&2
+                        (( __sites_n > 0 )) && printf "     ${DIM}(检测到 %d 个 nginx 站点域名)${RESET}\n" "$__sites_n" >&2
+                        __ci=1
+                        for __ce in "${__ucerts[@]}"; do
+                            __cdom="$(cert_extract_domain "${__ce%%|*}" 2>/dev/null)"
+                            __mark=""; (( __sites_n > 0 )) && m_domain_in_nginx_site "$__cdom" && __mark="  ${GREEN}← nginx 站点在用${RESET}"
+                            printf "       ${CYAN}%d${RESET}) %-40s%s\n" "$__ci" "${__cdom:-?}" "$__mark" >&2
+                            __ci=$((__ci+1))
+                        done
+                        __self_no=$(( ${#__ucerts[@]} + 1 ))
+                        printf "       %s%d${RESET}) 现生成自签 ${DIM}(可自定义域名; 客户端需 skip-cert-verify; 过 CDN 无效)${RESET}\n" \
+                            "$CYAN" "$__self_no" >&2
+                        printf "     选哪张 (回车 = 1):${RESET} " >&2
+                        __ans=""; read -r __ans || true
+                        __ans="$(clean_input "${__ans:-1}")"
+                        if [[ "$__ans" =~ ^[0-9]+$ ]] && (( __ans >= 1 && __ans < ${#__ucerts[@]} )); then
+                            __ce="${__ucerts[$((__ans-1))]}"
+                            __cc="${__ce%%|*}"; __cr="${__ce#*|}"; __ck="${__cr%%|*}"
+                            CRT="$__cc"; KEY="$__ck"; SNI="$(cert_extract_domain "$__cc" 2>/dev/null)"
+                            printf "     ${GREEN}[OK]${RESET} 证书: %s\n" "${SNI:-$CRT}" >&2
+                        elif [[ "$__ans" == "$__self_no" ]]; then
+                            __want_self=1
+                        fi
+                    else
+                        printf "     ${CYAN}用哪张证书?${RESET}\n" >&2
+                        printf "       ${CYAN}1${RESET}) 本机真实证书 ${DIM}%s${RESET} ${GREEN}(推荐)${RESET}\n" "${SNI:-$CRT}" >&2
+                        printf "       ${CYAN}2${RESET}) 现生成自签 ${DIM}(可自定义域名; 客户端需 skip-cert-verify; 过 CDN 无效)${RESET}\n" >&2
+                        printf "     请选择 ${DIM}[默认 1]:${RESET} " >&2
+                        __ans=""; read -r __ans || true
+                        [[ "$__ans" == "2" ]] && __want_self=1
+                    fi
                 fi ;;
         esac
         if (( __want_self )); then
@@ -1944,9 +1999,38 @@ if [[ "$QUICK" == "1" && -z "$CDN_DOMAIN" ]]; then
 elif [[ -n "$CDN_DOMAIN" ]]; then
     printf "     ${GREEN}✅${RESET} %s ${DIM}(CDN_DOMAIN)${RESET}\n" "$CDN_DOMAIN" >&2
 else
-    printf "     ${DIM}CDN 回源域名 (回车 = 本批不挂 CDN):${RESET} " >&2
-    __cd=""; read -r __cd || true
-    [[ -n "$__cd" ]] && CDN_DOMAIN="$__cd"
+    # 把本机 nginx 站点列出来当候选 —— Cloudflare 回源打的是这个 nginx,
+    # 而这些 server_name 就是它现在真在对外服务的域名, 直接选最省事。
+    # 原来这里只有一句"回车 = 本批不挂 CDN"让用户手打, 明明配好的站点
+    # 要自己回忆域名。
+    __sites=(); declare -a __sites=()
+    while read -r __s; do [[ -n "$__s" ]] && __sites+=("$__s"); done < <(m_nginx_domains 2>/dev/null)
+    if (( ${#__sites[@]} > 0 )); then
+        printf "     ${CYAN}CDN 回源域名${RESET} ${DIM}— 选本机 nginx 站点, Cloudflare 要能回源到它${RESET}\n" >&2
+        printf "     ${DIM}检测到 %d 个 nginx 站点域名${RESET}\n" "${#__sites[@]}" >&2
+        __i=1
+        for __s in "${__sites[@]}"; do
+            printf "       ${CYAN}%d${RESET}) %s\n" "$__i" "$__s" >&2
+            __i=$((__i+1))
+        done
+        printf "       %s0${RESET}) 不挂 CDN\n" "${CYAN}" >&2
+        printf "     选哪个 (回车 = 1, 不挂则输 0):${RESET} " >&2
+        __cd=""; read -r __cd || true
+        __cd="$(clean_input "${__cd:-1}")"
+        if [[ "$__cd" =~ ^[0-9]+$ ]] && (( __cd >= 1 && __cd <= ${#__sites[@]} )); then
+            CDN_DOMAIN="${__sites[$((__cd-1))]}"
+        elif [[ "$__cd" == "0" ]]; then
+            CDN_DOMAIN=""
+        elif [[ -n "$__cd" ]]; then
+            # 也接受直接手打域名
+            [[ "$__cd" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] && CDN_DOMAIN="$__cd"
+        fi
+    else
+        printf "     ${DIM}CDN 回源域名 (回车 = 本批不挂 CDN):${RESET} " >&2
+        __cd=""; read -r __cd || true
+        [[ -n "$__cd" ]] && CDN_DOMAIN="$__cd"
+        printf "     ${DIM}未检测到 nginx 站点; 可直接输入域名, 或留空跳过${RESET}\n" >&2
+    fi
     [[ -n "$CDN_DOMAIN" ]] && printf "     ${GREEN}✅${RESET} %s\n" "$CDN_DOMAIN" >&2
 fi
 
