@@ -44,6 +44,22 @@ bash /root/catmi/mihomo/src/server.sh          # 服务端
 bash /root/catmi/mihomo-client/src/client.sh   # 客户端
 ```
 
+### 面板更新
+
+每次通过 `install.sh` 进面板时会自动比对 GitHub，有新版就静默更新，更新完
+紧接着打开的面板就是新代码，不用重启。
+
+- 连不上 GitHub 时只提示一句，照常用本地版本进面板
+- 更新前把旧脚本备份到 `<安装目录>/backup/scripts-<时间戳>/`
+- 更新后的脚本全部过一遍语法检查，不通过自动回滚
+- 内容一致就跳过，不重复覆盖
+
+面板里「安装 / 内核管理 → 更新脚本」是手动入口，更新完会问是否立即重新载入
+面板。
+
+> 直接 `bash src/server.sh` 进面板不会触发自动更新——那条命令不经过
+> `install.sh`。要走自动更新，请从 `install.sh` 进。
+
 ## 目录
 
 ```
