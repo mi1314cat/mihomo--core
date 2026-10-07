@@ -58,48 +58,10 @@ mkdir -p "$CONF_DIR" "$OUT_DIR" "$CERT_DIR" "$PUB_DIR"
 #       进度/诊断均走 stderr; 失败返回非 0.
 # domains.sh 更新后此处无需改动.
 # ================================
-DOMAINS_URL="https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh"
-
-auto_website() {
-    local CATMI_DIR="/root/catmi"
-    local CATMIENV_FILE="$CATMI_DIR/catmi.env"
-    # domains.sh 依赖 catmi.env 的 mode 决定写入目录; Trojan 体系固定为 mihomo.
-    # load_env 要求值带双引号且按行序生效, 故把遗留的裸 mode= 行统一为带引号格式.
-    if [[ -f "$CATMIENV_FILE" ]]; then
-        grep -qE '^mode=[^"]' "$CATMIENV_FILE" && \
-            sed -i 's/^mode=\([^"]*\)$/mode="\1"/' "$CATMIENV_FILE"
-    fi
-    if [[ ! -f "$CATMIENV_FILE" ]] || ! grep -qE '^mode="[^"]+"' "$CATMIENV_FILE"; then
-        printf 'mode="mihomo"\n' >> "$CATMIENV_FILE" 2>/dev/null || return 1
-    fi
-    # 父进程无 load_env, mode 从 catmi.env 现场读取; 异常时按 mihomo 处理
-    local mode
-    mode=$(grep -E '^mode=' "$CATMIENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
-    mode=$(clean_input "$mode" | tr '[:upper:]' '[:lower:]' | sed 's/^"//; s/"$//')
-    [[ "$mode" =~ ^[a-z0-9_-]+$ ]] || mode="mihomo"
-    local NINSTALL_ENV="/root/catmi/$mode/install_info.env"
-
-    # 清掉旧值, 保证回读到的一定是本次 domains.sh 的结果 (防止沿用陈旧值)
-    if [[ -f "$NINSTALL_ENV" ]]; then
-        sed -i '/^dest_server=/d' "$NINSTALL_ENV" || return 1
-    fi
-
-    # 与 Reality.sh 完全一致的调用方式; 关闭 stdin 使其 read 返回空, 走自动优选分支
-    fetch_script "domains.sh" "$CFMGR_DIR/domains.sh" \
-        && bash "$CFMGR_DIR/domains.sh" </dev/null >/dev/null 2>&2 || true
-
-    local d=""
-    if [[ -f "$NINSTALL_ENV" ]]; then
-        d=$(grep -E "^dest_server=" "$NINSTALL_ENV" | tail -1 | sed 's/^dest_server=//')
-        d=$(clean_input "$d" | sed 's/^"//; s/"$//; s/^'\''//; s/'\''$//')
-    fi
-    d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]')
-    [[ "$d" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || {
-        print_error "domains.sh 未返回有效域名"
-        return 1
-    }
-    echo "$d"
-}
+# 实现已挪到 src/lib/env.sh 的 m_auto_website —— Trojan 与 Reality.sh
+# 必须走**同一个**域名源 (用户在 One-click-script/domains.sh 里统一维护),
+# 两边各留一份实现迟早会漂移。
+auto_website() { m_auto_website; }
 
 # ================================
 # 输入清理

@@ -309,7 +309,29 @@ add_config() {
     m_load_env "$ENV_FILE"
 
     # Reality dest 站点
-    m_pick_dest "${dest_server:-}" || return
+    #
+    # 顺序: 先从用户在 One-click-script/domains.sh 里**统一维护**的域名池现取,
+    # 取不到才退回本地名单 (REALITY_DESTS)。
+    #
+    # 为什么不直接用本地名单: 那 8 个是写死在 env.sh 里的快照, 而域名池是
+    # 用户经常维护的。域名会过期 (换 CDN / 改 ALPN / 下线), REALITY 的失败
+    # 方式又极其隐蔽 —— 客户端报 "REALITY authentication failed", 服务端
+    # 一条日志都没有, 面板全绿, 只有用户连不上。用户更新了域名池, 这边却
+    # 还在用几个月前的快照, 那这个"统一管理"就白做了。
+    #
+    # ⚠ 不能复用已加载的 $dest_server: install_info.env 里的旧值正是
+    #   陈旧值的来源, 复用它就等于永远不刷新。
+    REALITY_DEST_FROM_POOL=""
+    if _rd=$(m_auto_website 2>/dev/null) && [[ -n "$_rd" ]]; then
+        REALITY_DEST_FROM_POOL="$_rd"
+        print_info "REALITY 伪装域名 (来自 domains.sh 域名池): $REALITY_DEST_FROM_POOL"
+    else
+        print_warn "未能从 domains.sh 取到伪装域名, 改用本地候选名单"
+    fi
+    m_pick_dest "$REALITY_DEST_FROM_POOL" || return
+    # 同步: m_pick_dest 设的是 DEST_SERVER, 本文件消费的是 dest_server。
+    # 不加这一行, 上面从域名池取来的域名会被丢掉, 节点里写的还是 env 旧值。
+    dest_server="$DEST_SERVER"
 
     required_vars=(UUID PRIVATE_KEY PUBLIC_KEY SHORT_ID dest_server PUBLIC_IP link_ip REALITY_PORT)
     for v in "${required_vars[@]}"; do

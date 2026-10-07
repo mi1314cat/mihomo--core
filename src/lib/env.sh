@@ -547,6 +547,65 @@ m_safe_read_port() {
 #        one.one.one.one     REALITY authentication failed
 #    教训: 兜底值绝不能拍脑袋写。老代码兜底用的正是 bing, 于是"不手动选
 #    dest"的用户 100% 拿到一个连不上、却显示成功的 REALITY 节点。
+# =============================================================
+# 统一域名优选 (从 One-click-script 的 domains.sh 现场取)
+#
+# 为什么走这个而不是本地名单:
+#   REALITY_DESTS 那 8 个是**写死在本文件里的快照**, 而域名池是用户在
+#   One-click-script/domains.sh 里统一维护、经常改的。域名会过期 (换 CDN /
+#   改 ALPN / 下线), 而 REALITY 的失败方式极其隐蔽: 客户端报
+#   "REALITY authentication failed", 服务端一条日志都没有, 面板全绿。
+#   用一份会过期的本地副本 = 用户维护了域名池, 项目这边却还在用旧的。
+#   所以这里每次现取, 本地名单只作为**取不到时的兜底**。
+#
+# domains.sh 的接口是 stdin 不是命令行参数:
+#     read -rp "请输入Reality伪装网址: " dest_server
+#     [ -z "$dest_server" ] && dest_server=$(random_website)
+#     update_env $NINSTALL_ENV dest_server "${dest_server}"
+# 所以关掉 stdin 让 read 返回空, 走 random_website() 现场优选; 结果经
+# update_env 落到 install_info.env 的 dest_server, 这里再回读。
+#
+# stdout: 一个域名 (成功) / 空 (失败, 由调用方决定兜底)
+DOMAINS_URL="${DOMAINS_URL:-https://github.com/mi1314cat/One-click-script/raw/refs/heads/main/domains.sh}"
+
+m_auto_website() {
+    local CATMI_DIR="/root/catmi"
+    local CATMIENV_FILE="$CATMI_DIR/catmi.env"
+    # domains.sh 依赖 catmi.env 的 mode 决定写入目录。
+    if [[ -f "$CATMIENV_FILE" ]]; then
+        grep -qE '^mode=[^"]' "$CATMIENV_FILE" && \
+            sed -i 's/^mode=\([^"]*\)$/mode="\1"/' "$CATMIENV_FILE"
+    fi
+    if [[ ! -f "$CATMIENV_FILE" ]] || ! grep -qE '^mode="[^"]+"' "$CATMIENV_FILE"; then
+        printf 'mode="mihomo"\n' >> "$CATMIENV_FILE" 2>/dev/null || return 1
+    fi
+    local mode
+    mode=$(grep -E '^mode=' "$CATMIENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2)
+    mode=$(clean_input "$mode" | tr '[:upper:]' '[:lower:]' | sed 's/^"//; s/"$//')
+    [[ "$mode" =~ ^[a-z0-9_-]+$ ]] || mode="mihomo"
+    local NINSTALL_ENV="/root/catmi/$mode/install_info.env"
+
+    # 清掉旧值, 保证回读到的**一定**是本次 domains.sh 的结果, 不沿用陈旧值
+    [[ -f "$NINSTALL_ENV" ]] && sed -i '/^dest_server=/d' "$NINSTALL_ENV" 2>/dev/null
+
+    # ⚠ 判据不能是 `head -c 2 | grep '#!'`: domains.sh **第 1 字节是换行**,
+    #   第 2 字节才是 's', 头两个字节永远匹配不上 "#!" —— 于是它每次都被
+    #   当成"不像可执行脚本"丢弃, 域名优选**从来没成功过**, 全部退化成硬编码值。
+    #   现在判"能不能被 bash 解析"。另外 warn 后不能 `return 1`: 那会跳出
+    #   镜像循环, 备用源根本没试。
+    fetch_script "domains.sh" "$CFMGR_DIR/domains.sh" \
+        && bash "$CFMGR_DIR/domains.sh" </dev/null >/dev/null 2>&2
+
+    local d=""
+    if [[ -f "$NINSTALL_ENV" ]]; then
+        d=$(grep -E "^dest_server=" "$NINSTALL_ENV" | tail -1 | sed 's/^dest_server=//')
+        d=$(clean_input "$d" | sed 's/^"//; s/"$//')
+    fi
+    d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]')
+    [[ "$d" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+    echo "$d"
+}
+
 REALITY_DESTS=(
     "www.microsoft.com"  "www.apple.com"      "www.cloudflare.com"
     "swdist.apple.com"   "www.lovelive-anime.jp" "dl.google.com"
@@ -748,6 +807,12 @@ m_pick_dest() {
     #   于是 install_info.env 里选好的 dest_server 被静默改掉。
     # 实测复现: m_pick_dest "www.microsoft.com" 管道喂 "2"
     #           → dest_server 从 www.microsoft.com 变成 REALITY_DESTS[1]。
+    #
+    # ⚠ 本函数只设 **DEST_SERVER**, 而 Reality.sh 消费的是 **dest_server**
+    #   (install_info.env 里的变量名)。两个名字不同 → 这里选出来的结果
+    #   **从来没有真正到达过 Reality.sh**: 用户在这个交互里选的域名会被
+    #   静默丢弃, 节点里写的一直是 env 里的旧值。之前没暴露, 是因为
+    #   旧值恰好也是唯一来源。现在由调用方同步 (见 Reality.sh)。
     #
     # 名单内的值直接采用; 名单外但格式合法的自定义域名也直接采用
     # (用户手填的 dest 同样不该被覆盖)。只有空值/非法值才回到交互问询。
