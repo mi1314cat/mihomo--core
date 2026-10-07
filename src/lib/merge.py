@@ -156,6 +156,32 @@ def collect_top_keys(conf_dir: str):
     return found
 
 
+def _insert_before_match(cur: list, added: list) -> list:
+    """把新规则插到**终止规则之前**, 而不是追加到末尾。
+
+    ⚠ 这是个会让功能完全失效、却一路全绿的坑。
+    mihomo 的 rules 是**从上到下匹配, 一旦命中即返回**, 而 `MATCH,xxx`
+    会匹配一切。原先新规则一律 `cur + added` 追加到末尾, 于是合并后的
+    配置长这样:
+
+        rules:
+          - MATCH,DIRECT              <- 终结匹配
+          - RULE-SET,testset,DIRECT   <- 永远轮不到它
+
+    现象是: 规则集文件确实写进了 config.d, validate 通过, mihomo -t 通过,
+    重载成功, 面板显示"已生效" —— 但那条规则**一次都不会生效**。
+    域名分流看起来"配了没反应", 而且没有任何一条报错指向它。
+
+    所以必须插到第一条终止规则 (MATCH / FINAL) 之前。
+    """
+    ins = len(cur)
+    for i, r in enumerate(cur):
+        if isinstance(r, str) and r.strip().upper().split(",")[0] in ("MATCH", "FINAL"):
+            ins = i
+            break
+    return cur[:ins] + added + cur[ins:]
+
+
 def merge_top_keys(cfg: dict, incoming: dict) -> int:
     """把 incoming 合进 cfg 的对应顶层键, 返回新增/变更的条目数。
 
@@ -183,7 +209,10 @@ def merge_top_keys(cfg: dict, incoming: dict) -> int:
             if added:
                 # 按名字排序保证输出稳定 (dict 不可比较, 不能直接 sorted())
                 added.sort(key=lambda r: _key_of(r))
-                cfg[key] = cur + added
+                if key == "rules":
+                    cfg[key] = _insert_before_match(cur, added)
+                else:
+                    cfg[key] = cur + added
                 changed += len(added)
         else:
             cur = cfg.get(key)

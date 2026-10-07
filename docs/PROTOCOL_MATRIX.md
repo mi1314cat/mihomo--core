@@ -288,3 +288,37 @@ CDN 相关档位（VLESS/VMess/Trojan 的 ws / gRPC / xHTTP）全部带 **ECH**�
 
 实测（<SERVER_ALIAS>）：正确凭据出网正常；错误密码拒绝；无凭据拒绝；
 监听 `127.0.0.1` 时从公网 IP 连不上。
+
+---
+
+## 八、出站 / 规则集 / 端口转发 (服务端面板 · 菜单 18)
+
+对标 sing-box 的「网络管理」。三项都有，且已实测：
+
+| 功能 | 说明 | 产物 |
+|------|------|------|
+| **出站管理** | `direct` / `reject` / `socks5` / `http` 上游 | `outbounds` |
+| **端口转发** | 本机端口 → 目标地址，tcp/udp | `tunnel` listener |
+| **规则集** | 域名/IP → 走哪个出口 | `rule-providers` + `rules` |
+
+### ⚠ 两条踩过的坑（都会「全绿但功能没生效」）
+
+**1. 规则被追加到 `MATCH` 之后 = 死规则**
+mihomo 的 `rules` 从上到下匹配、命中即返回，而 `MATCH,xxx` 匹配一切。
+新规则原先一律追加到末尾，于是：
+
+```
+MATCH,DIRECT               ← 终结匹配
+RULE-SET,testset,DIRECT    ← 永远轮不到
+```
+现象是文件写进了 `config.d`、`validate` 通过、`-t` 通过、重载成功、面板显示
+「已生效」——**但那条规则一次都不会生效**，且没有任何报错指向它。
+现已改为插入到第一条终止规则之前。
+
+**2. `_extra_dir` 依赖未赋值的 `CONF_DIR`**
+原实现 `printf '%s' "$CONF_DIR"`，而 `CONF_DIR` 只有 `conf/all.sh` 和各协议
+脚本会赋值，**`server.sh` 从没设过它**。于是从服务端菜单调用时为空串，
+片段被写到**文件系统根目录**（`/outbound-01.yaml`、`/pfwd-01.yaml` …）。
+上面这三项功能**因此从来没有真正工作过**，直到本轮修复。
+
+`_extra_apply` 现在会先确认片段真的落到 `config.d` 再重载，堵住这类假阳性。

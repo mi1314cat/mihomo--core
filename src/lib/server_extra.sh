@@ -356,13 +356,37 @@ PY
     done
     (( ${#items[@]} > 0 )) || { print_error "至少要一条规则"; return 1; }
 
-    # 命中的目标: 直接 还是 某个出站
+    # 命中的目标: 内置的 DIRECT / REJECT, 外加**用户自己建的出站**
+    # (比如 socks5 / http 上游)。原先只有 DIRECT/REJECT 两项, 等于
+    # "把某个域名指定到某个出口" 这件事根本做不了。
     printf '\n  命中后走哪里:\n' >&2
     printf '    1) DIRECT 直连\n' >&2
-    printf '    2) REJECT 拒绝\n' >&2
+    printf '    2) REJECT 拒绝 (断掉, 不回源)\n' >&2
+    local -a ob_names=(); local of
+    for of in "$(_extra_dir)"/outbound-*.yaml; do
+        [[ -f "$of" ]] || continue
+        local on; on=$(awk '/^[[:space:]]*- name:/{gsub(/"/,"",$3);print $3;exit}' "$of")
+        local ot; ot=$(awk '/^[[:space:]]*type:/{print $2;exit}' "$of")
+        [[ -n "$on" ]] && ob_names+=("$on|${ot:-?}")
+    done
+    if (( ${#ob_names[@]} > 0 )); then
+        local i=3
+        for of in "${ob_names[@]}"; do
+            printf '    %d) 自定义出站 %s (%s)\n' "$i" "${of%%|*}" "${of##*|}" >&2
+            i=$(( i + 1 ))
+        done
+    fi
     local oc; printf '  请选择 [1]: ' >&2
     read -r oc || oc=1
-    local target="DIRECT"; [[ "$oc" == "2" ]] && target="REJECT"
+    oc=$(clean_input "$oc"); oc="${oc:-1}"
+    local target="DIRECT"
+    if [[ "$oc" == "2" ]]; then
+        target="REJECT"
+    elif (( oc >= 3 )) && [[ -n "${ob_names[$(( oc - 3 ))]:-}" ]]; then
+        target="${ob_names[$(( oc - 3 ))]%%|*}"
+    elif [[ "$oc" != "1" ]]; then
+        print_warn "无效选项, 按 DIRECT 处理"
+    fi
 
     local idx; idx=$(_extra_next_index ruleset)
     local f; f=$(printf '%s/ruleset-%s.yaml' "$(_extra_dir)" "$idx")
