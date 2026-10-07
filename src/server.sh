@@ -56,12 +56,34 @@ status_block() {
     # 输出统一走 stderr: UI 文本混进 stdout 会污染 $(...) 捕获的数据, 而且
 # 两个流缓冲策略不同, 与 print_title(stderr) 混排时顺序会颠倒 ——
 # 实测出现过"状态先于标题出现"。
-    local svc="未运行" ver="-" frag
-    systemctl is-active --quiet "$SRV_SERVICE" && svc="${GREEN}运行中${RESET}"
-    [[ -x "$SRV_BIN" ]] && ver=$("$SRV_BIN" -v 2>/dev/null | head -1)
+    local svc ver pid frag
+    pid=$(systemctl show -p MainPID --value "$SRV_SERVICE" 2>/dev/null) || pid=""
+    [[ "$pid" == "0" ]] && pid=""
+    if systemctl is-active --quiet "$SRV_SERVICE"; then
+        svc="${GREEN}● 运行中${RESET}${pid:+ (PID $pid)}"
+    else
+        svc="${YELLOW}○ 未运行${RESET}"
+    fi
+    ver="未安装"
+    [[ -x "$SRV_BIN" ]] && ver=$("$SRV_BIN" -v 2>/dev/null | head -1 | awk '{print $3}')
+    [[ -n "$ver" ]] || ver="未知"
     frag=$(ls "$SRV_CONFIGD"/*.yaml 2>/dev/null | wc -l | tr -d ' ')
-    printf "  服务: %-16s 内核: %s\n" >&2 "$svc" "$ver"
-    printf "  监听配置: %-8s 节点: %-4s 分享端口: %s\n" >&2 "$frag" "$(node_count)" "${SHARE_PORT:-9443}"
+
+    ui_kv "服务状态" "$svc"
+    ui_kv "节点数量" "$(node_count)"
+    ui_kv "内核版本" "$ver"
+
+    # ---------- 对外地址 ----------
+    # 显示面板选定的那个地址族, 以及本机真实持有哪些地址。
+    # 套了 WARP 时外部探测会拿到 WARP 出口, 隧道接口上的地址也不可对外 ——
+    # 所以只认网卡上真实存在、且排除隧道接口的那些。
+    echo >&2
+    printf "  ${CYAN}对外地址${RESET}  ${DIM}产物将使用 ${RESET}${RESET}$(m_addr_family_label)\n" >&2
+    ui_kv_i "IPv4" "$(m_addr4_real 2>/dev/null || echo "${DIM}(无)${RESET}")"
+    ui_kv_i "IPv6" "$(m_addr6_real  2>/dev/null || echo "${DIM}(无)${RESET}")"
+    m_warp_active && ui_kv_i "隧道" "${YELLOW}WARP 在跑, 其地址已排除${RESET}"
+    ui_kv_i "分享端口" "${SHARE_PORT:-9443}"
+    ui_kv_i "客户端指纹" "$(m_fp_get)"
     # 注意: ss -tlnp 的进程列是**进程名**(users:(("mihomo",pid=...))),
     # 不是可执行文件全路径。拿 $SRV_BIN (/root/catmi/mihomo/mihomo) 去 grep
     # 永远匹配不上 —— 面板于是永远显示 0, 哪怕十几个端口都在监听。
@@ -77,7 +99,7 @@ status_block() {
         | grep "(\"$nm\"," \
         | awk '{print $4}' | sed -n 's/.*:\([0-9]\{1,5\}\)$/\1/p' \
         | awk -v lo=$PROTO_PORT_LO -v hi=$PROTO_PORT_HI '$1 >= lo && $1 <= hi' | sort -un | wc -l | tr -d ' ' )
-    printf "  运行中的协议端口: %s (TCP+UDP, %d-%d)\n" >&2 "${p:-0}" "$PROTO_PORT_LO" "$PROTO_PORT_HI"
+    ui_kv "协议端口" "${p:-0} ${DIM}个在监听 (TCP+UDP, ${PROTO_PORT_LO}-${PROTO_PORT_HI})${RESET}"
 }
 
 node_count() {
@@ -1152,7 +1174,9 @@ extra_menu() {
 main_menu() {
     local c
     while true; do
-        print_title "Mihomo 服务端面板"
+        ui_rule
+        printf "  ${CYAN}${BOLD}Mihomo 服务端${RESET}\n" >&2
+        ui_rule
         echo >&2
         # ── 每项内联子项说明 ──
         #

@@ -921,65 +921,63 @@ for s in d.get('subscriptions',[]):
 # 状态 / 测试
 # =============================================================
 status_block() {
-    local svc="未运行" ver="-" n; n=$(node_count)
-    svc_active && svc="${GREEN}运行中${RESET}"
-    if [[ -x "$CLI_BIN" ]]; then ver=$("$CLI_BIN" -v 2>/dev/null | head -1); fi
-    # 输出走 stderr: UI 混进 stdout 会污染 $(...), 且与 print_title(stderr)
-    # 混排时缓冲不同步会出现"状态先于标题"。
-    printf "  服务: %-14s 节点: %-4s 内核: %s\n" "$svc" "$n" "$ver" >&2
-    # ---------- 显示实际生效的端口与地址 ----------
-    #
-    # 原来这里是 `ss -lntpH | grep 我们的进程 | ... | head -1` —— 抓的是**我们
-    # 进程监听列表里的第一个端口**。而 ss 的输出顺序里控制端口排在前面, 于是
-    # 控制端口 (9090) 被当成了 HTTP/SOCKS 端口显示, 用户看到:
-    #
-    #     HTTP/SOCKS: 127.0.0.1:9090   控制面板: http://127.0.0.1:9090/ui/
-    #
-    # 两个一样的端口 —— 面板把 HTTP/SOCKS 端口和控制面板端口显示成了同一个。
-    #
-    # 根因是**用"进程监听了哪些端口"去反推"配置想让它听哪个"** —— 这个反推
-    # 本身就不成立 (一个进程会听很多端口: 代理、控制 API、DNS)。
-    #
-    # SB 的做法更直接 (client.sh: load_effective): **配置文件才是唯一事实来源**,
-    # 直接读配置里的值。照搬。
+    local svc ver pid n
+    pid=$(systemctl show -p MainPID --value "$CLI_SERVICE" 2>/dev/null) || pid=""
+    [[ "$pid" == "0" ]] && pid=""
+    n=$(node_count)
+    ver="未安装"
+    [[ -x "$CLI_BIN" ]] && ver=$("$CLI_BIN" -v 2>/dev/null | head -1 | awk '{print $3}')
+    [[ -n "$ver" ]] || ver="未知"
+
+    if svc_active; then
+        svc="${GREEN}● 运行中${RESET}${pid:+ (PID $pid)}"
+    else
+        svc="${YELLOW}○ 未运行${RESET}"
+    fi
+    ui_kv "服务状态" "$svc"
+    ui_kv "节点数量" "$n"
+    ui_kv "内核版本" "$ver"
+
+    # ---------- 本地代理 ----------
+    echo >&2
+    printf "  ${CYAN}本地代理${RESET}\n" >&2
+
     local eff_mixed eff_bind eff_ctrl
     eff_mixed=$(eff_cfg mixed-port)
     eff_bind=$(eff_cfg bind-address)
     eff_ctrl=$(eff_cfg external-controller)
-
-    # 配置还没生成 / 字段缺失 -> 退回面板设置值, 但**不假装它是生效值**
     local from_conf=1
     [[ "$eff_mixed" =~ ^[0-9]+$ ]] || { eff_mixed="$PORT_MIXED"; from_conf=0; }
     [[ -n "$eff_bind" ]] || eff_bind="$BIND_ADDR"
 
-    # 控制面板地址以配置为准 (可能是 "0.0.0.0:9090" 这种 host:port 形式)
     local ctrl_host="${eff_ctrl%:*}" ctrl_port="${eff_ctrl##*:}"
     [[ -n "$ctrl_host" ]] || ctrl_host="$eff_bind"
     [[ "$ctrl_port" =~ ^[0-9]+$ ]] || ctrl_port="$PORT_CTRL"
 
-    # 0.0.0.0 不是能连上的地址, 显示前解析成真实 LAN IP
+    # 0.0.0.0 / * 不是能连上的地址, 显示前解析成真实 LAN IP
     local show_bind; show_bind=$(host_addr "$eff_bind")
 
     if [[ "$eff_mixed" == "0" ]]; then
-        # mixed-port: 0 = 内核**不监听**代理端口。这是全新安装、还没生成过配置的
-        # 正常状态, 不是错误 —— 但必须说清楚, 否则用户会以为"代理开着"。
-        printf "  HTTP/SOCKS: %s\n" \
-            "未启用 (内核没监听代理端口, 先「1) 初始化基础配置」)" >&2
+        # mixed-port: 0 = 内核**不监听**代理端口 (全新安装未生成配置的正常状态)
+        ui_kv_i "代理端口" "${YELLOW}未启用${RESET} (先「1) 初始化基础配置」)"
     else
-        printf "  HTTP/SOCKS: %s:%s   控制面板: http://%s:%s/ui/\n" \
-            "$show_bind" "$eff_mixed" "$(host_addr "$ctrl_host")" "$ctrl_port" >&2
+        # 标清这是 mixed-port: HTTP 与 SOCKS5 **共用这一个端口**, 不是两个端口。
+        ui_kv_i "代理端口" "${show_bind}:${eff_mixed}  ${DIM}(HTTP + SOCKS5 共用)${RESET}"
+    fi
+    ui_kv_i "控制面板" "http://$(host_addr "$ctrl_host"):${ctrl_port}/ui/"
+
+    # 面板密钥: 控制面板没密钥就等于局域网里任何设备都能改配置、换节点。
+    # 显示在面板上是刻意的 —— 这台机器只自己在局域网内用。真正的防护是
+    # bind-address 不对公网开放, 而不是把字符串藏起来。
+    local sec; sec=$(cat "$CLI_ROOT/.secret" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$sec" ]]; then
+        ui_kv_i "面板密钥" "$sec"
+    else
+        ui_kv_i "面板密钥" "${RED}未设置 — 局域网内任何设备都能改配置${RESET}"
     fi
 
-    # 只在真的"设了一个端口但配置里是另一个"时才提"改了没重启"。
-    #
-    # mixed-port: 0 是个特例 —— 它**不是"另一个端口"**, 而是"内核根本不监听代理
-    # 端口"。这时说"面板设置 7890 但配置里写的是 0"会让人以为端口冲突了, 而正确
-    # 的下一步是去生成配置。所以单独处理。
-    if (( from_conf )) && [[ "$eff_mixed" == "0" ]]; then
-        :   # 上面那行"未启用"已经说清楚了, 不再重复
-    elif (( from_conf )) && [[ "$eff_mixed" != "$PORT_MIXED" ]]; then
-        print_info "面板设置端口 $PORT_MIXED, 但配置里写的是 $eff_mixed"
-        print_info "改端口后需「8) 启动/停止/重启服务 → 重启」才会生效"
+    if (( from_conf )) && [[ "$eff_mixed" != "0" && "$eff_mixed" != "$PORT_MIXED" ]]; then
+        print_info "面板设置端口 $PORT_MIXED, 但配置里写的是 $eff_mixed (改端口需重启)"
     elif (( ! from_conf )); then
         print_info "还没生成配置文件, 端口按面板设置显示 (先「1) 初始化基础配置」)"
     fi
@@ -1134,7 +1132,9 @@ client_dns_menu() {
 client_menu() {
     local c
     while true; do
-        print_title "Mihomo 客户端面板"
+        ui_rule
+        printf "  ${CYAN}${BOLD}Mihomo 客户端${RESET}\n" >&2
+        ui_rule
         status_block
         echo >&2
         ui_sec "节点"

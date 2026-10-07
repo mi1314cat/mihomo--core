@@ -92,6 +92,19 @@ ui_title() {
 ui_kv()       { printf "  %s   %s\n" "$1" "$2" >&2; }
 ui_kv_ascii() { printf "    %-12s : %s\n" "$1" "$2" >&2; }
 
+# 状态块的对齐键值。键按显示宽度补齐 (中文算 2 列), 否则 "服务" 和 "内核版本"
+# 这种长短不一的键会错开, 竖着看对不齐。
+# printf 的 %-Ns 按**字节**补齐, 中文 3 字节, 所以自己算显示宽度。
+_ui_pad() { local t="$1" w=0 i ch
+    for (( i=0; i<${#t}; i++ )); do
+        ch="${t:i:1}"
+        if [[ "$ch" == [$'一'-$'鿿'] ]]; then w=$((w+2)); else w=$((w+1)); fi
+    done
+    printf '%s%*s' "$t" $(( $2 - w )) ""
+}
+ui_kv()     { printf "  %s   %s\n" "$(_ui_pad "$1" 10)" "$2" >&2; }
+ui_kv_i()   { printf "    %s   %s\n" "$(_ui_pad "$1" 12)" "$2" >&2; }
+
 ui_clear() { clear 2>/dev/null || printf '\033[H\033[2J\033[3J'; }
 
 # ---------- 菜单项 ----------
