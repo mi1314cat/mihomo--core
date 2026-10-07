@@ -1143,6 +1143,8 @@ client_menu() {
         ui_menu 4  "查看节点"
         ui_menu 5  "更新订阅节点"
         ui_menu 6  "删除节点 / 整组"
+        ui_menu 21 "节点改写 (指纹 / 连接地址)"
+        ui_menu 22 "导出全部 (节点链接 + 订阅短链)"
         ui_menu 20 "重命名节点组"
         ui_menu 7  "域名分流 (域名 -> 节点/组)"
         ui_rule
@@ -1171,6 +1173,8 @@ client_menu() {
             5)  node_update ;;
             6)  node_delete ;;
             20) node_rename ;;
+        21) node_rewrite_menu ;;
+        22) export_all_menu ;;
             7)  rules_menu ;;
             8)  svc_menu ;;
             9)  check_menu ;;
@@ -1313,6 +1317,225 @@ EOF
 }
 
 # =============================================================
+# ================================================================
+# 节点改写 (指纹 / 连接地址) —— 只改客户端产物, 服务端不动
+# ================================================================
+node_rewrite_menu() {
+    while true; do
+        print_title "节点改写 (只影响本机连服务端的节点)"
+        echo >&2
+        ui_kv_ascii "当前指纹"   "$(m_fp_get)"
+        ui_kv_ascii "当前地址族" "$( [[ "$(m_addr_family_get)" == v6 ]] && echo IPv6 || echo IPv4 )"
+        echo "  连接地址是**服务端**的地址, 不是本机的。" >&2
+        ui_kv_ascii "订阅里的服务端地址" "$(m_server_hosts_in "$(node_files|head -1)" 2>/dev/null|head -1 || echo '(暂无节点)')"
+        echo >&2
+        ui_menu 1 "改指纹"
+        ui_menu 2 "改连接地址族 (IPv4 / IPv6)"
+        ui_menu 3 "立即按当前设置重写全部节点"
+        ui_menu 0 "返回"
+        printf "请选择: " >&2
+        local c; read -r c || return 0
+        c=$(clean_input "${c:-}")
+        case "$c" in
+            1) rewrite_pick_fp ;;
+            2) rewrite_pick_family ;;
+            3) rewrite_apply_all ;;
+            0) return 0 ;;
+            *) ui_invalid "$c" ;;
+        esac
+    done
+}
+
+rewrite_pick_fp() {
+    print_title "TLS 客户端指纹 (抗 JA3/JA4 识别)"
+    local i=1 k cur
+    cur=$(m_fp_get)
+    for k in "${M_UTLS_FINGERPRINTS[@]}"; do
+        printf '  %s%2d%s) %-12s %s\n' "${CYAN}" "$i" "${RESET}" "$k" \
+            "$( [[ "$k" == "$cur" ]] && echo "← 当前" )" >&2
+        i=$((i+1))
+    done
+    printf '\n请选择 [默认 1]: ' >&2
+    local n; read -r n; n=$(clean_input "${n:-1}")
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#M_UTLS_FINGERPRINTS[@]} )) || n=1
+    local pick="${M_UTLS_FINGERPRINTS[$((n-1))]}"
+    m_fp_set "$pick" || { print_error "非法指纹: $pick"; return 1; }
+    print_ok "指纹已设为 $pick"
+    rewrite_apply_all
+}
+
+rewrite_pick_family() {
+    print_title "连接地址族"
+    echo >&2
+    ui_kv_ascii "IPv4" "$(m_addr4_real 2>/dev/null || echo '(本机无真实 IPv4)')"
+    ui_kv_ascii "IPv6" "$(m_addr6_real  2>/dev/null || echo '(本机无真实 IPv6, 隧道地址已排除)')"
+    echo >&2
+    printf "  %s1%s) IPv4\n  %s2%s) IPv6\n" "${CYAN}" "${RESET}" "${CYAN}" "${RESET}" >&2
+    printf '请选择 [默认 1]: ' >&2
+    local n; read -r n; n=$(clean_input "${n:-1}")
+    case "$n" in
+        2) m_addr_family_set v6 ;;
+        *) m_addr_family_set v4 ;;
+    esac
+    # 选了 v6 但本机没有真实 v6 时要说清楚, 不能默默给一个连不上的地址
+    if [[ "$(m_addr_family_get)" == "v6" ]] && [[ -z "$(m_addr6_real 2>/dev/null)" ]]; then
+        print_warn "本机没有可用的真实 IPv6, 实际仍会用 IPv4 地址"
+    fi
+    print_ok "连接地址族已设为 $( [[ "$(m_addr_family_get)" == v6 ]] && echo IPv6 || echo IPv4 )"
+    rewrite_apply_all
+}
+
+rewrite_apply_all() {
+    local fs; fs=$(node_files)
+    [[ -n "$fs" ]] || { print_warn "还没有节点"; return 1; }
+    print_title "按当前设置重写节点"
+    echo "  指纹 $(m_fp_get) / 地址族 $( [[ "$(m_addr_family_get)" == v6 ]] && echo IPv6 || echo IPv4 )" >&2
+    echo >&2
+    local f rc=0
+    while read -r f; do
+        [[ -f "$f" ]] || continue
+        m_rewrite_provider "$f"; rc=$?
+    done <<<"$fs"
+    if (( rc == 2 )); then
+        _ask_server_v6 || return 1
+        while read -r f; do
+            [[ -f "$f" ]] || continue
+            m_rewrite_provider "$f"
+        done <<<"$fs"
+    fi
+    print_ok "已重写, 重启服务后生效"
+    svc_active && { printf '立即重启服务? [Y/n]: ' >&2; local a; read -r a
+        case "$(clean_input "${a:-y}")" in n|N) return 0 ;; esac; }
+    apply_change
+}
+
+# 订阅里只有服务端的一个地址, 换地址族需要知道服务端的另一个。
+# 这里问一次并记下来 (.addr-map), 之后不用再问。
+_ask_server_v6() {
+    print_warn "订阅里只带了服务端的一个地址, 换成 IPv6 需要填服务端的 IPv6"
+    local cur; cur=$(m_server_hosts_in "$(node_files | head -1)" | head -1)
+    echo "  订阅里的服务端地址: ${cur:-未知}" >&2
+    printf "服务端 IPv6 (留空则放弃切换): " >&2
+    local a; read -r a; a=$(clean_input "${a:-}")
+    if [[ -z "$a" ]]; then print_info "已放弃切换地址族"; return 1; fi
+    # 必须是真 IPv6 字面量。WARP 隧道地址格式上也是合法 v6, 靠格式挡不住 ——
+    # 所以这里明确告诉用户"要服务端的地址, 不是本机或 WARP 的地址"。
+    if ! printf '%s' "$a" | grep -qE '^[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}$'; then
+        print_error "不像 IPv6 地址: $a"; return 1
+    fi
+    [[ -z "$cur" ]] && { print_error "认不出订阅里的服务端地址, 无法建立映射"; return 1; }
+    m_addr_map_put "$cur" "$a" || { print_error "映射保存失败"; return 1; }
+    print_ok "已记住: $cur ↔ $a"
+}
+
+# ================================================================
+# 导出汇总: 全部节点链接 + 订阅短链, 拼成一个文件方便复制
+# ================================================================
+export_all_menu() {
+    print_title "导出全部 (节点链接 + 订阅短链)"
+    local dir="$CLI_ROOT/out"
+    mkdir -p "$dir"
+    local stamp file
+    stamp=$(date +%Y%m%d-%H%M%S)
+    file="$dir/all-nodes-$stamp.txt"
+
+    local total=0
+    {
+        echo "# mihomo--core 导出汇总"
+        echo "# 生成时间: $(date '+%F %T')"
+        echo
+    } > "$file"
+
+    # ---- 1. 每个 provider 一段: 订阅短链 + 全部节点链接 ----
+    local f name cnt=0
+    while read -r f; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f" .yaml)
+        echo "## $name" >> "$file"
+        # 短链 (订阅地址): 供其它客户端直接拉取
+        local short="$dir/share_tag-$name.txt"
+        if [[ -f "$short" ]]; then
+            echo "" >> "$file"
+            echo "# 订阅地址 (其它客户端直接用这个)" >> "$file"
+            sed 's|^|# |' "$short" >> "$file"
+        fi
+        # 节点链接
+        local links
+        links=$(m_provider_links "$f")
+        if [[ -n "$links" ]]; then
+            echo "" >> "$file"
+            echo "$links" >> "$file"
+            cnt=$((cnt + $(printf '%s\n' "$links" | grep -c .)))
+        fi
+        echo "" >> "$file"
+        total=$((total+1))
+    done < <(node_files)
+
+    print_ok "已导出到: $file"
+    echo "  组数: $total    节点链接数: $cnt" >&2
+    echo >&2
+    printf '显示内容? [Y/n]: ' >&2
+    local a; read -r a
+    case "$(clean_input "${a:-y}")" in
+        n|N) return 0 ;;
+    esac
+    echo >&2
+    cat "$file"
+    printf '\n按回车继续...' >&2; read -r
+}
+
+# 从 provider 文件里把节点还原成分享链接
+m_provider_links() { # <provider.yaml>
+    [[ -f "${1:-}" ]] || return 0
+    python3 - "$1" <<'PY'
+import sys, base64, json, yaml
+d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(d, dict):          # 坏文件可能是 str/list, 直接 .get() 会抛
+    sys.exit(0)
+out = []
+for p in (d.get("proxies") or []):
+    try:
+        t = p.get("type"); s = p.get("server"); pr = p.get("port")
+        u = p.get("username") or p.get("uuid") or ""
+        sni = p.get("sni") or p.get("servername") or ""
+        fp = p.get("client-fingerprint") or ""
+        rk = p.get("reality-opts") or {}
+        pb = rk.get("public-key", "")
+        sid = (rk.get("short-id") or [""])[0] if isinstance(rk.get("short-id"), list) else rk.get("short-id","")
+        if t == "ss":
+            pw = p.get("password","")
+            out.append(f"ss://{base64.urlsafe_b64encode(f'{pw}'.encode()).decode().rstrip('=')}@{s}:{pr}#{p.get('name','')}")
+        elif t == "vless" and pb:
+            q = (f"encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pb}&sid={sid}"
+                 f"&type={p.get('network','tcp')}&flow={p.get('flow','')}")
+            out.append(f"vless://{u}@{s}:{pr}?{q}#{p.get('name','')}")
+        elif t == "vless":
+            q = (f"encryption=none&security={'tls' if p.get('tls') else 'none'}&sni={sni}&fp={fp}"
+                 f"&type={p.get('network','tcp')}")
+            out.append(f"vless://{u}@{s}:{pr}?{q}#{p.get('name','')}")
+        elif t == "vmess":
+            j = {"v":"2","ps":p.get("name",""),"add":s,"port":str(pr),
+                 "id":u,"aid":"0","scy":"auto","net":p.get("network","tcp"),"tls":p.get("tls","") and "tls" or ""}
+            if sni: j["sni"] = sni
+            if fp: j["fp"] = fp
+            b = base64.b64encode(json.dumps(j).encode()).decode()
+            out.append(f"vmess://{b}")
+        elif t in ("trojan","hysteria2","tuic","anytls","snell","socks5","http","wireguard"):
+            pw = p.get("password","")
+            q = f"security=tls&sni={sni}&fp={fp}&type={p.get('network','tcp')}"
+            if t == "trojan":  out.append(f"trojan://{pw}@{s}:{pr}?{q}#{p.get('name','')}")
+            elif t == "hysteria2": out.append(f"hysteria2://{pw}@{s}:{pr}?sni={sni}#{p.get('name','')}")
+            elif t == "tuic":  out.append(f"tuic://{u}:{pw}@{s}:{pr}?congestion_control=bbr#{p.get('name','')}")
+            elif t == "anytls": out.append(f"anytls://{pw}@{s}:{pr}?sni={sni}#{p.get('name','')}")
+            elif t == "snell": out.append(f"snell://{pw}@{s}:{pr}?psk={p.get('psk','')}#{p.get('name','')}")
+            elif t == "socks5": out.append(f"socks5://{u}:{pw}@{s}:{pr}#{p.get('name','')}")
+            else: out.append(f"# {p.get('name','')}: {t} {s}:{pr} (该协议无通用链接格式)")
+    except Exception:
+        pass
+for o in out: print(o)
+PY
+}
+
 # 分享订阅
 #
 # 把本机已经导入的节点 (proxy-providers) 生成带 token 的分享链接,

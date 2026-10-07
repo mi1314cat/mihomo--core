@@ -549,6 +549,91 @@ REALITY_DESTS_BAD=("oracle.com")
 # 即走 random_website() 现场优选。抽函数执行而不整份跑, 是为了避开它开头
 # 对 update_env.sh / load_env.sh 的 source 依赖, 以及写盘副作用。
 
+# 把 provider 文件里的节点按当前设置改写 (指纹 / 连接地址)。
+#
+# 改写发生在**客户端本地**: 订阅拉回来的原始节点里带的是服务端生成时的
+# server 地址和指纹, 客户端想换就换 —— 服务端监听不受影响, 也不用回服务端
+# 重新生成。订阅下次更新会覆盖, 所以每次 update 后都要再改写一次。
+# 把 provider 文件里的节点按当前设置改写 (指纹 / 连接地址)。
+#
+# ⚠ 连接地址改写的是**服务端**的地址, 不是本机的 —— 节点要连的是服务端,
+#   写成 m_addr_current (本机地址) 会把节点指向客户端自己。
+#   订阅里只有服务端的一个地址, 所以换地址族靠映射表:
+#       .addr-map 里存 "<服务端v4> <服务端v6>"
+#   用户选 IPv6 而映射里没有对应记录时, 菜单里问一次并存下来。
+#   订阅更新会覆盖文件, 所以每次更新后都要再改写一次。
+m_addr_map_file() { printf '%s' "${CLI_ROOT:-${SRV_ROOT:-/root/catmi/mihomo}}/.addr-map"; }
+
+m_addr_map_get() { # <服务端v4> → 服务端v6 (无则空)
+    local f; f=$(m_addr_map_file)
+    [[ -f "$f" ]] || return 1
+    awk -v k="$1" '$1==k{print $2; exit}' "$f" 2>/dev/null
+}
+
+m_addr_map_put() { # <服务端v4> <服务端v6>
+    local f; f=$(m_addr_map_file)
+    mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+    { [[ -f "$f" ]] && grep -v "^$1[[:space:]]" "$f"
+      printf '%s %s\n' "$1" "$2"; } > "$f.tmp" 2>/dev/null || return 1
+    mv -f "$f.tmp" "$f"
+}
+
+# 从订阅里认出服务端当前用的地址 (各节点 server 字段的众数)
+m_server_hosts_in() { # <provider.yaml>
+    [[ -f "${1:-}" ]] || return 1
+    python3 - "$1" <<'PY2'
+import sys, yaml, collections
+d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(d, dict):
+    sys.exit(0)
+c = collections.Counter()
+for p in (d.get("proxies") or []):
+    if isinstance(p, dict) and p.get("server"):
+        c[str(p["server"])] += 1
+for h, _ in c.most_common():
+    print(h)
+PY2
+}
+
+m_rewrite_provider() { # <provider.yaml>
+    local f="${1:-}"
+    [[ -f "$f" ]] || return 1
+    local fp fam
+    fp=$(m_fp_get)
+    fam=$(m_addr_family_get)
+    local map4="" map6=""
+    if [[ "$fam" == "v6" ]]; then
+        # 订阅里的地址就是服务端 v4, 换取它对应的 v6
+        map4=$(m_server_hosts_in "$f" | head -1)
+        map6=$(m_addr_map_get "$map4")
+        [[ -n "$map6" ]] || return 2      # 2 = 需要用户补映射
+    fi
+    M_REWRITE_FP="$fp" M_REWRITE_MAP4="$map4" M_REWRITE_MAP6="$map6" \
+    python3 - "$f" <<'PY'
+import os, sys, yaml
+path = sys.argv[1]
+fp   = os.environ.get("M_REWRITE_FP", "")
+map4 = os.environ.get("M_REWRITE_MAP4", "")
+map6 = os.environ.get("M_REWRITE_MAP6", "")
+d = yaml.safe_load(open(path, encoding="utf-8"))
+if not isinstance(d, dict):
+    sys.exit(0)
+ps = d.get("proxies") or []
+n_fp = n_ad = 0
+for p in ps:
+    if not isinstance(p, dict):
+        continue
+    if fp and "client-fingerprint" in p and p["client-fingerprint"] != fp:
+        p["client-fingerprint"] = fp; n_fp += 1
+    if map4 and map6 and p.get("server") == map4:
+        p["server"] = map6; n_ad += 1
+if n_fp or n_ad:
+    with open(path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(d, fh, allow_unicode=True, sort_keys=False, width=4096)
+    print(f"  {os.path.basename(path)}: 指纹 {n_fp} 个, 地址 {n_ad} 个 → {map6}")
+PY
+}
+
 # 拉取文本到 stdout (只读, 不落盘不执行)。
 # 与 fetch_script 的区别: 后者是为了执行才落盘, 这里只需解析文本。
 fetch_text() { # <url>
@@ -590,6 +675,105 @@ m_auto_website() {   # <尝试次数-默认 3>  → stdout: 一个域名; 失败
     d=$(clean_input "$d" | tr '[:upper:]' '[:lower:]' | sed 's|^[a-z]*://||; s|/.*$||')
     [[ "$d" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || { print_warn "domains.sh 返回的域名不合法: ${d:-空}"; return 1; }
     echo "$d"
+}
+
+# =============================================================
+# 客户端节点改写: 指纹 / 连接地址
+#
+# 这两项都只影响**客户端产物里连向服务端的那个节点**, 服务端监听不受影响,
+# 所以放在客户端改就够, 不必回服务端重生成。
+#
+# 指纹: 对齐 SB 的 SB_UTLS_FINGERPRINTS。⚠ 未知值在 mihomo 里只 log.Warnln
+#   后**静默降级成原生 TLS** (utls.go:56-59) —— 抗识别最差, 所以只认枚举内的值。
+#   'none'/空 = 关闭 uTLS, 不进菜单 (utls.go:43-45)。
+# =============================================================
+M_UTLS_FINGERPRINTS=(chrome firefox edge safari 360 qq ios android random randomized)
+M_DEFAULT_FP="chrome"
+
+m_fp_state_file() { printf '%s' "${CLI_ROOT:-${SRV_ROOT:-/root/catmi/mihomo}}/.fp"; }
+m_fp_get() {
+    local v=""; [[ -f "$(m_fp_state_file)" ]] && v=$(head -1 "$(m_fp_state_file)" 2>/dev/null | tr -d '[:space:]')
+    local k; for k in "${M_UTLS_FINGERPRINTS[@]}"; do [[ "$v" == "$k" ]] && { printf '%s' "$k"; return 0; }; done
+    printf '%s' "$M_DEFAULT_FP"
+}
+m_fp_set() {
+    local k; for k in "${M_UTLS_FINGERPRINTS[@]}"; do
+        [[ "$1" == "$k" ]] && { printf '%s\n' "$k" > "$(m_fp_state_file)"; return 0; }
+    done
+    return 1
+}
+
+# ---------- 地址族 ----------
+#
+# ⚠ WARP 陷阱: 套了 WARP 时**绝不能**用外部 API 问出口 IP —— 那条查询本身
+#   就走 WARP, 返回的是 WARP 地址, 客户端拿去直连必然失败。所以这里只读网卡,
+#   并排除隧道/虚拟接口上的地址 (M_TUNNEL_IFACE_RE)。
+#   同理, 客户端产物里写 WARP 的 v6 等于把所有流量绕进 WARP, 不是服务器地址。
+#
+# 另外: 服务端**监听地址**和**产物里写哪个地址**是两件事 —— 双栈监听(::)但
+#   产物里写死 IPv4 的话, IPv6 客户端照样连不上。两边都要能选。
+
+m_addr4_real() {
+    local dev cidr
+    while read -r dev cidr; do
+        [[ -n "$dev" && -n "$cidr" ]] || continue
+        [[ "$dev" =~ $M_TUNNEL_IFACE_RE ]] && continue
+        m_is_private_addr "$cidr" && continue
+        case "$cidr" in *:*) continue ;; esac
+        printf '%s' "$cidr"; return 0
+    done < <(ip -o addr show scope global 2>/dev/null | awk '{print $2, $4}' | sed 's|/[0-9]*$||')
+    return 1
+}
+
+m_addr6_real() {
+    local dev cidr
+    while read -r dev cidr; do
+        [[ -n "$dev" && -n "$cidr" ]] || continue
+        [[ "$dev" =~ $M_TUNNEL_IFACE_RE ]] && continue
+        case "$cidr" in *:*) printf '%s' "$cidr"; return 0 ;; esac
+    done < <(ip -o addr show scope global 2>/dev/null | awk '{print $2, $4}' | sed 's|/[0-9]*$||')
+    return 1
+}
+
+m_warp_active() {
+    ip -o addr show scope global 2>/dev/null | awk '{print $2}' | grep -qE "$M_TUNNEL_IFACE_RE"
+}
+
+m_addr_family_get() {
+    local v=""; [[ -f "$(m_addr_state_file)" ]] && v=$(head -1 "$(m_addr_state_file)" 2>/dev/null | tr -d '[:space:]')
+    [[ "$v" == "v6" ]] && { printf 'v6'; return 0; }
+    printf 'v4'
+}
+m_addr_state_file() { printf '%s' "${CLI_ROOT:-${SRV_ROOT:-/root/catmi/mihomo}}/.addr-family"; }
+m_addr_family_set() { printf '%s\n' "$1" > "$(m_addr_state_file)"; }
+
+# 当前地址族对应的地址。选了 v6 但本机没有真实 v6 时**如实告知并回退**,
+# 不能悄悄给一个连不上的地址。
+m_addr_current() {
+    if [[ "$(m_addr_family_get)" == "v6" ]]; then
+        local a; a=$(m_addr6_real 2>/dev/null)
+        if [[ -n "$a" ]]; then printf '%s' "$a"; return 0; fi
+        print_warn "本机没有可用的真实 IPv6 (WARP 隧道地址已排除), 回退 IPv4"
+    fi
+    m_addr4_real 2>/dev/null || m_server_ip
+}
+
+# 服务端自身的真实 v4 / v6 (排除 WARP 等隧道接口), 写进 install_info.env,
+# 方便客户端切换地址族时直接取, 不用手打。
+m_publish_addrs() {
+    local v4 v6
+    v4=$(m_addr4_real 2>/dev/null) || v4=""
+    v6=$(m_addr6_real  2>/dev/null) || v6=""
+    local f="${SRV_ENV:-$SRV_ROOT/install_info.env}"
+    [[ -f "$f" ]] || return 1
+    sed -i '/^server_ipv4=/d;/^server_ipv6=/d' "$f" 2>/dev/null
+    {
+        [[ -n "$v4" ]] && printf 'server_ipv4="%s"
+' "$v4"
+        [[ -n "$v6" ]] && printf 'server_ipv6="%s"
+' "$v6"
+    } >> "$f" 2>/dev/null
+    m_warp_active && print_info "检测到 WARP/隧道接口, 其上的地址未纳入 server_ipv4/ipv6" >&2
 }
 
 REALITY_DESTS=(

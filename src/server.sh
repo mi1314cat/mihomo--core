@@ -229,6 +229,7 @@ add_node() {
         print_info "生成 ${BATCH_PROTO_LABELS[$bi]} (走 all.sh --only ${BATCH_PROTO_ONLY[$bi]})"
         _all_run --only "${BATCH_PROTO_ONLY[$bi]}"
         fw_after_node_change
+        declare -F m_publish_addrs >/dev/null 2>&1 && m_publish_addrs
         return
     fi
 
@@ -240,6 +241,7 @@ add_node() {
     # 一路回车时那些回车全被二级菜单吃掉成「无效选项:」, 结果节点数仍是 0。
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script" add
     fw_after_node_change
+    declare -F m_publish_addrs >/dev/null 2>&1 && m_publish_addrs
 }
 
 # all.sh 的菜单外壳。
@@ -365,6 +367,7 @@ manage_node() {
     [[ -f "$script" ]] || { print_error "脚本缺失: $script"; return 1; }
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script"
     fw_after_node_change
+    declare -F m_publish_addrs >/dev/null 2>&1 && m_publish_addrs
 }
 
 # 清空全部节点 (保留服务、证书、out/)
