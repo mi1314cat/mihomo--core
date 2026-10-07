@@ -409,7 +409,9 @@ m_fetch_any() {      # $1=相对路径  $2=落地文件
     fi
     while IFS= read -r base; do
         [[ -n "$base" ]] || continue
-        code=$(curl -fsSL --max-time 45 "${extra[@]}" "$base/$rel" -o "$out" 2>/dev/null && echo ok || echo fail)
+        # no-cache: GitHub raw 在推送后几分钟内会返回缓存副本, 于是"更新成功"
+        # 装的却是刚推上去之前的旧代码 —— 而且界面上看不出任何异常。
+        code=$(curl -fsSL --max-time 45 -H 'Cache-Control: no-cache' "${extra[@]}" "$base/$rel" -o "$out" 2>/dev/null && echo ok || echo fail)
         [[ "$code" == "ok" && -s "$out" ]] && return 0
     done < <(m_repo_mirrors)
     return 1

@@ -250,14 +250,14 @@ fetch() {  # fetch <远端相对路径> <本地路径>
     }
     # 下载超时 90 秒: 内核解压脚本之类的文件在慢网线上确实要这个量级
     for base in "$_SRC"; do
-        if curl -fsSL --max-time 90 $(_cargs) "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+        if curl -fsSL --max-time 90 -H 'Cache-Control: no-cache' $(_cargs) "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
             return 0
         fi
     done
     # 选中的源中途挂了, 换一个再来
     _SRC=""
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
-        if curl -fsSL --max-time 90 $(_cargs) "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
+        if curl -fsSL --max-time 90 -H 'Cache-Control: no-cache' $(_cargs) "$base/$rel" -o "$dst" 2>/dev/null && [[ -s "$dst" ]]; then
             _SRC="$base"
             [[ "$base" == "$REPO_RAW" ]] || say "切换到镜像: $(echo "$base" | cut -d/ -f3)"
             return 0
