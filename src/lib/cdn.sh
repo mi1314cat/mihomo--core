@@ -161,48 +161,55 @@ cdn_bind_add() { # <tag> <域名> <站点文件> <传输> <路径> <端口>
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tag" "$dom" "$site" "$tr" "$path" "$port" >> "$CDN_BIND_FILE"
 }
 
-# 剔除**孤儿绑定** —— tag 在绑定表里, 但 conf/config.d/<tag>.yaml 已不存在。
+# 剔除**孤儿绑定** —— 绑定表里的行已经对不上它所指向的那个节点。
 #
 # ★ 为什么必须有 (2026-10-07 新增)
 #
-#   绑定表原本只增不减: `all.sh --force` 重建时节点可能从 vless-01 挪到
-#   vless-03, 但 vless-01 那一行还留在 cdn_bindings.tsv 里。于是 nginx 里留下
-#   一条 `location <旧路径>` → `grpc_pass grpc://127.0.0.1:<旧端口>`, 而那个
-#   端口**已经没有节点在监听**。
+#   绑定表原本只增不减。`all.sh --force` 重建时, 同一个 tag (如 vless-01) 会被
+#   复用给**另一个档位** —— 原来它是 CDN 节点, 重建后变成普通 WS 节点。绑定表
+#   里那一行的路径/端口还指着旧的 CDN 节点, nginx 里也随之留下一条
+#   `location <旧路径>` → `grpc_pass ...:<旧端口>`, 而那个端口**已经没人监听**。
 #
 #   当下无害 (回源直接失败)。但端口号会被后续节点复用 —— 一旦复用, 这条残留
 #   location 就会把流量转给**另一个节点**, 且没有任何报错。这正是用户担心的
 #   "会不会删错"的一个真实变体。
 #
-#   实测: 全量重建后绑定表里 vless-01 (端口 20000) 与 vless-03 (端口 20011)
-#   并存, 而 20000 已无监听。
+#   ⚠ 判据**不能只看片段文件在不在**:
+#     单纯判 `conf/config.d/<tag>.yaml` 存在是不够的 —— 全量重建会生成
+#     vless-01..vless-05 一整套 VLESS 片段, 其中 vless-01 可能已经是普通 WS
+#     节点了, 文件确实在, 但绑定指向的路径/端口与它毫无关系。
+#     实测踩过: 绑定表里 vless-01(/xhc-79ab26fa/20000) 的片段存在却不是
+#     CDN 节点, 端口 20000 无人监听, 而 nginx 里多了一条死 location。
 #
-#   判据用**片段文件是否存在**, 不用"端口是否在监听" —— 端口可能被别的协议
-#   正常占用, 那样反而会误判成"还活着"。
-#
-#   纯 bash 实现: 每个绑定 fork 一次 `test -f`, 绑定数是几十量级, 开销可忽略;
-#   但为了避免 N 次 fork, 先把目录列出来再比对。
+#   正确判据: ① 片段不存在, 或 ② 片段实际声明的 (路径, 端口) 与绑定行不符。
+#   两者任一成立即判为孤儿。
 cdn_bind_prune_orphan() { # [片段目录] -> 打印被剔除的 tag (每行一个)
     cdn_bind_init
     local dir="${1:-$CONF_DIR}"
     [[ -d "$dir" && -s "$CDN_BIND_FILE" ]] || return 0
-    local -a have=() tag
-    while IFS= read -r f; do have+=("$(basename "$f" .yaml)"); done < <(
-        find "$dir" -maxdepth 1 -name '*.yaml' -type f 2>/dev/null)
-    (( ${#have[@]} > 0 )) || return 0
-    # 打成 "tag\n" 的查找串, 用 grep -qxF 精确整行匹配 (避免 vless-1 命中 vless-11)
-    local needle; needle=$(printf '%s\n' "${have[@]}")
+    declare -F cdn_node_meta_from_fragment >/dev/null 2>&1 || return 0
+
     local tmp; tmp=$(mktemp)
     local -a gone=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        tag="${line%%$'\t'*}"
-        if ! printf '%s\n' "$needle" | grep -qxF -- "$tag"; then
-            gone+=("$tag")
-        else
-            printf '%s\n' "$line" >> "$tmp"
+    local line tag f meta tr path bport
+    while IFS=$'\t' read -r tag _dom _site btr bpath bport _rest; do
+        [[ -n "${tag:-}" ]] || continue
+        f="$dir/$tag.yaml"
+        if [[ ! -f "$f" ]]; then
+            gone+=("$tag"); continue
         fi
+        meta=$(cdn_node_meta_from_fragment "$f"); tr="${meta%%|*}"; path="${meta##*|}"
+        # 片段里没有可用传输, 或路径/端口与绑定行对不上 -> 该绑定已失效
+        if [[ -z "$tr" || "$path" != "$bpath" ]]; then
+            gone+=("$tag"); continue
+        fi
+        local aport
+        aport=$(awk '/^[[:space:]]*port:[[:space:]]*/{print $2; exit}' "$f")
+        [[ -n "$aport" && "$aport" == "$bport" ]] || { gone+=("$tag"); continue; }
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$tag" "${_dom:-}" "${_site:-}" "$btr" "$bpath" "$bport" >> "$tmp"
     done < "$CDN_BIND_FILE"
+
     if (( ${#gone[@]} > 0 )); then
         mv "$tmp" "$CDN_BIND_FILE"
         printf '%s\n' "${gone[@]}"
