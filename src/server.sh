@@ -430,6 +430,14 @@ wipe_all_nodes() {
     cp -a "$SRV_CONFIGD"/*.yaml "$bak"/ 2>/dev/null
     print_ok "已备份 $n 个节点到: $bak"
 
+    # 先摘 Nginx 上的回源片段, 再删片段。
+    # 反过来的话绑定表先没了, 就再也看不出这些节点当初挂在哪个域名下,
+    # 站点里那段 location 会永远留着 (指向早已没人监听的端口)。
+    declare -F cdn_wipe_all >/dev/null 2>&1 && {
+        print_info "清理 Nginx 上的 CDN 回源配置..."
+        cdn_wipe_all
+    }
+
     rm -f "$SRV_CONFIGD"/*.yaml
 
     # 重新合并 + 校验。**顺序很重要**: token 吊销放在校验通过之后 ——
@@ -715,9 +723,10 @@ EOF
            print_info "配置与数据已保留在 $SRV_ROOT" ;;
         2) [[ -n "$svc" ]]   && _uninstall_unit "$svc"
            [[ -n "$shsvc" ]] && _uninstall_unit "$shsvc"
+           declare -F cdn_wipe_all >/dev/null 2>&1 && cdn_wipe_all
            rm -f "$SRV_CONFIGD"/*.yaml
            python3 "$M_LIB/merge.py" --conf "$SRV_CONF" >/dev/null 2>&1 || true
-           print_ok "节点配置已删除"
+           print_ok "节点配置已删除 (Nginx 回源片段同步清理)"
            print_info "证书/out/分享记录已保留在 $SRV_ROOT" ;;
         3) _uninstall_all "$svc" "$shsvc" ;;
         "") print_info "已取消" ;;

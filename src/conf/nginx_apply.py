@@ -55,6 +55,13 @@ import tempfile
 MARK = "mihomo-core-cdn"
 TAG_RE = re.compile(rf"#\s*(>>>|<<<)\s*{re.escape(MARK)}.*?(\S+)\s*(>>>|<<<)\s*$")
 
+# server{} 指令段用的是 `===` 而不是 `>>>`, 是**另一套标记**。
+# ⚠ 早先这里让 existing_dirs_span 复用 TAG_RE, 而 TAG_RE 只认 >>>/<<<,
+#   于是 kind 永远取不到 "===", 整段代码是死的 —— 后果是删掉全部节点后,
+#   站点里那段 `client_max_body_size 100m` 之类的补入指令会永远留着。
+DIRS_RE = re.compile(
+    rf"#\s*===\s*{re.escape(MARK)}\s+(BEGIN|END)\s+(\S+?)\s*(?:\(server 指令\))?\s*===\s*$")
+
 # 已知的配置根。顺序即优先级 —— 先命中先用。
 HOST_ROOTS = [
     "/etc/nginx/conf.d",
@@ -253,15 +260,15 @@ def existing_dirs_span(lines, domain):
     """找出本工具上次**自动补入的 server{} 指令段**, 没有则返回 None。"""
     start = None
     for i, ln in enumerate(lines):
-        m = TAG_RE.search(ln)
+        m = DIRS_RE.search(ln)
         if not m:
             continue
         kind, dom = m.group(1), m.group(2)
         if dom != domain:
             continue
-        if kind == "===":
+        if kind == "BEGIN":
             start = i
-        elif kind == "<<<" and start is not None:
+        elif kind == "END" and start is not None:
             return start, i
     return None
 

@@ -564,6 +564,39 @@ cdn_node_unregister() { # <tag>
     fi
 }
 
+# 清空全部节点时的批量清理。
+#
+# ★ 为什么必须单独写一个: 原来批量删除只做了 `rm -f conf/config.d/*.yaml`,
+#   于是站点文件里那段 mihomo-core-cdn 区块**原封不动留着** —— 里面是一堆
+#   location { proxy_pass 127.0.0.1:21847; }, 而 21847 上早已没有节点在听。
+#   用户看到的现象就是"节点删了, Nginx 配置还粘在上面"。
+#   绑定表同样不清, 于是下次重建时又按那 14 行把老端口写回去。
+#
+# ★ 绝不误伤别的内核: 只调 cdn_remove_domain, 它走 nginx_apply.py --remove,
+#   而那边按 `# >>> mihomo-core-cdn BEGIN <域名> >>>` 配对的 END 定位,
+#   匹配的是**我们自己的标记**。同一站点里 SB-Panel 写的
+#   `# >>> SB-Panel CDN BEGIN ... >>>` 走的是另一套标记, 一行都不会碰到。
+cdn_wipe_all() { # 无参: 按绑定表里出现过的所有域名逐一清理
+    cdn_bind_init
+    [[ -s "$CDN_BIND_FILE" ]] || return 0
+    declare -F cdn_remove_domain >/dev/null 2>&1 || return 0
+
+    # 一个域名一行 (同一域名可能绑了十几个节点), 避免重复清理
+    local -A seen=()
+    local tag dom site
+    while IFS=$'\t' read -r tag dom site _ _ _; do
+        [[ -n "${dom:-}" ]] || continue
+        [[ -n "${seen[$dom]:-}" ]] && continue
+        seen["$dom"]=1
+        printf '  %s\n' "$dom" >&2
+        cdn_remove_domain "$dom" "$site" >/dev/null 2>&1 \
+            || print_warn "  $dom 移除失败, 请手工检查 ${site:-站点文件}"
+    done < "$CDN_BIND_FILE"
+
+    : > "$CDN_BIND_FILE"
+    print_ok "绑定表已清空"
+}
+
 # =============================================================
 # 五之二、节点生命周期钩子
 #
