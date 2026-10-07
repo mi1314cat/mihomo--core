@@ -1161,27 +1161,37 @@ main_menu() {
         # 进菜单前就知道里面有什么, 不用靠记忆或试错。
         #
         # 原来我们 15 项里只有 4 项有说明。
+        ui_sec "节点"
         ui_menu  1 "添加节点 (单协议 · 或全协议一键生成)"
-        ui_menu  2 "管理节点 (查看/删除/改端口)"
-        ui_menu  3 "安装 / 内核管理 (版本/更新/脚本)"
-        ui_menu  4 "防火墙 (放行/孤儿清理/SSH 保护)"
-        ui_menu  5 "CDN 回源 (Nginx 自动插入/证书/残留检查)"
-        ui_menu  6 "DNS 管理 (解析/加密/防泄露)"
-        ui_rule
-        ui_menu  7 "生成分享链接 (单节点/全部)"
-        ui_menu  8 "拉取节点 (从订阅导入)"
-        ui_menu  9 "校验配置 + 重载 (合并/字段/内核三道关)"
-        ui_menu 10 "服务管理 (启动/停止/重启)"
-        ui_menu 11 "查看当前节点"
-        ui_menu 12 "查看已拉取订阅"
-        ui_menu 13 "查看日志"
+        ui_menu  2 "拉取节点 (从订阅导入)"
+        ui_menu  3 "管理节点 (查看/删除/改端口)"
+        echo >&2
+        ui_sec "服务与内核"
+        ui_menu  4 "安装 / 内核管理 (版本/更新/脚本)"
+        ui_menu  5 "服务管理 (启动/停止/重启)"
+        ui_menu  6 "校验配置 + 重载 (合并/字段/内核三道关)"
+        echo >&2
+        ui_sec "网络"
+        ui_menu  7 "防火墙 (放行/孤儿清理/SSH 保护)"
+        ui_menu  8 "CDN 回源 (Nginx 自动插入/证书/残留检查)"
+        ui_menu  9 "DNS 管理 (解析/加密/防泄露)"
+        ui_menu 10 "出站 / 规则集 / 端口转发"
+        ui_menu 11 "SOCKS 入站 (自己 / 内网用)"
+        echo >&2
+        ui_sec "分享与分发"
+        ui_menu 12 "生成分享链接 (单节点/全部)"
+        ui_menu 13 "客户端产物设置 (指纹 / IP 地址)"
         ui_menu 14 "查看节点分享内容"
-        ui_menu 15 "系统信息 (端口/IP/资源)"
-        ui_menu 16 "卸载服务端"
-        ui_menu 17 "切换到客户端面板 (装/进另一端)"
-        ui_menu 18 "出站 / 规则集 / 端口转发"
-        ui_menu 19 "SOCKS 入站 (自己 / 内网用)"
-        ui_menu 20 "客户端产物设置 (指纹 / IP 地址)"
+        echo >&2
+        ui_sec "查看"
+        ui_menu 15 "查看当前节点"
+        ui_menu 16 "查看已拉取订阅"
+        ui_menu 17 "查看日志"
+        ui_menu 18 "系统信息 (端口/IP/资源)"
+        echo >&2
+        ui_sec "其他"
+        ui_menu 19 "卸载服务端"
+        ui_menu 20 "切换到客户端面板 (装/进另一端)"
         ui_menu  0 "退出"
         echo >&2
         ui_rule
@@ -1198,25 +1208,25 @@ main_menu() {
         c=$(clean_input "$c")
         case "$c" in
             1)  add_node ;;
-            2)  manage_node ;;
-            3)  core_menu "$SRV_ROOT" "$SRV_SERVICE" ;;
-            4)  fw_menu ;;
-            5)  cdn_menu ;;
-            6)  dns_menu ;;
-            7)  install_share ;;
-            8)  pull_node ;;
-            9)  update_config ;;
-            10) svc_menu ;;
-            11) list_nodes ;;
-            12) list_imported ;;
-            13) log_menu ;;
+            2)  pull_node ;;
+            3)  manage_node ;;
+            4)  core_menu "$SRV_ROOT" "$SRV_SERVICE" ;;
+            5)  svc_menu ;;
+            6)  update_config ;;
+            7)  fw_menu ;;
+            8)  cdn_menu ;;
+            9)  dns_menu ;;
+            10) extra_menu ;;
+            11) socks_menu ;;
+            12) install_share ;;
+        13) client_artifact_menu ;;
             14) show_client_files ;;
-            15) sys_info ;;
-            16) uninstall_service ;;
-            17) switch_side "$SRV_ROOT" ;;
-            18) extra_menu ;;
-            19) socks_menu ;;
-        20) client_artifact_menu ;;
+            15) list_nodes ;;
+            16) list_imported ;;
+            17) log_menu ;;
+            18) sys_info ;;
+            19) uninstall_service ;;
+            20) switch_side "$SRV_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

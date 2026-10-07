@@ -1137,25 +1137,29 @@ client_menu() {
         print_title "Mihomo 客户端面板"
         status_block
         echo >&2
+        ui_sec "节点"
         ui_menu 1  "初始化基础配置"
         ui_menu 2  "添加节点 (分享链接 / 订阅 / 本地文件)"
         ui_menu 3  "添加简易 HTTP/SOCKS 节点 (接其它内核)"
         ui_menu 4  "查看节点"
         ui_menu 5  "更新订阅节点"
         ui_menu 6  "删除节点 / 整组"
-        ui_menu 20 "重命名节点组"
-        ui_menu 7  "域名分流 (域名 -> 节点/组)"
-        ui_rule
-        ui_menu 8  "启动 / 停止 / 重启服务"
-        ui_menu 9  "配置检查"
-        ui_menu 10 "节点测速"
-        ui_menu 11 "客户端设置 (端口 / 绑定 / Web UI / 面板密钥)"
-        ui_menu 12 "Web UI / 仪表盘"
+        ui_menu 7  "重命名节点组"
+        ui_menu 8  "节点测速"
+        ui_menu 9  "域名分流 (域名 -> 节点/组)"
+        echo >&2
+        ui_sec "服务"
+        ui_menu 10 "启动 / 停止 / 重启服务"
+        ui_menu 11 "配置检查"
+        ui_menu 12 "局域网配置分发 (URL 拉取)"
         ui_menu 13 "下载通道 (订阅/内核/UI 走不走代理)"
-        ui_menu 14 "局域网配置分发 (URL 拉取)"
-        ui_menu 15 "安装 / 内核管理 (版本/更新/脚本)"
-        ui_menu 17 "卸载客户端"
-        ui_menu 18 "DNS 管理 (fake-ip / 防泄露 / 解析策略)"
+        echo >&2
+        ui_sec "配置"
+        ui_menu 14 "客户端设置 (端口 / 绑定 / Web UI / 面板密钥)"
+        ui_menu 15 "Web UI / 仪表盘"
+        ui_menu 16 "DNS 管理 (fake-ip / 防泄露 / 解析策略)"
+        ui_menu 17 "安装 / 内核管理 (版本/更新/脚本)"
+        ui_menu 18 "卸载客户端"
         ui_menu 19 "切换到服务端面板 (装/进另一端)"
         ui_menu 0  "退出"
         echo >&2
@@ -1169,18 +1173,18 @@ client_menu() {
             4)  node_list ;;
             5)  node_update ;;
             6)  node_delete ;;
-            20) node_rename ;;
-            7)  rules_menu ;;
-            8)  svc_menu ;;
-            9)  check_menu ;;
-            10) node_test ;;
-            11) settings_menu ;;
-            12) webui_menu ;;
+            7)  node_rename ;;
+            8)  node_test ;;
+            9)  rules_menu ;;
+            10) svc_menu ;;
+            11) check_menu ;;
+            12) lan_dispatch_menu ;;
             13) dl_route_menu ;;
-            14) lan_dispatch_menu ;;
-            15) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
-            17|d|D) cli_uninstall ;;
-            18) client_dns_menu ;;
+            14) settings_menu ;;
+            15) webui_menu ;;
+            16) client_dns_menu ;;
+            17) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
+            18|d|D) cli_uninstall ;;
             19) switch_side "$CLI_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;

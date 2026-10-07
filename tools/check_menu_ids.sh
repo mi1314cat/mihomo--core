@@ -273,6 +273,49 @@ else
     fail=1
 fi
 
+# ---------- 主菜单编号连续性 ----------
+#
+# 删掉一个菜单项后忘了重排, 就会出现 "15 → 17" 这种洞。功能没问题 (case 分支
+# 和标签仍然一一对应), 所以上面那道关卡查不出来 —— 但用户看着就是"面板坏了"。
+# 这道只查**主菜单** (client_menu / main_menu) 的 1..N 是否连续。
+cont_menu_ids() {
+    python3 - <<'PY'
+import io, re, sys
+targets = {"src/client.sh": "client_menu", "src/server.sh": "main_menu"}
+bad = 0
+for path, fn in targets.items():
+    try:
+        src = io.open(path, encoding="utf-8").read()
+    except Exception:
+        continue
+    # 取函数体 (从函数名到下一个顶格 })
+    m = re.search(r"^%s\(\) \{" % fn, src, re.M)
+    if not m:
+        continue
+    rest = src[m.end():]
+    end = re.search(r"^\}", rest, re.M)
+    body = rest[:end.start()] if end else rest
+    ids = sorted({int(x) for x in re.findall(r"ui_menu\s+(\d+)", body)} - {0})
+    if not ids:
+        continue
+    want = list(range(1, max(ids) + 1))
+    missing = [i for i in want if i not in ids]
+    if missing:
+        bad = 1
+        print(f"  ❌ {path} 的 {fn}() 编号不连续, 缺 {missing} (1..{max(ids)})")
+    else:
+        print(f"  ✅ {path} 的 {fn}() 编号 1..{max(ids)} 连续")
+sys.exit(bad)
+PY
+}
+cont_out=$(cont_menu_ids 2>&1); cont_rc=$?
+if (( cont_rc == 0 )); then
+    ok "$cont_out"
+else
+    printf '%s\n' "$cont_out" | sed 's/^/  /'
+    fail=1
+fi
+
 printf "\n"
 if (( fail )); then
     printf "${RED}═══ 有编号错位, 请修 ═══${RESET}\n\n"
