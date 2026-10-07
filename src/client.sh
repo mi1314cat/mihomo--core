@@ -666,8 +666,33 @@ node_add() {
 
     local name; name=$(printf '%s' "${src##*/}" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-40)
     [[ -z "$name" || "$name" == "share" ]] && name="sub$(date +%H%M%S)"
-    local n=1 base="$name"
-    while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${base}_$n"; n=$((n+1)); done
+
+    # ⚠ 重名处理原先是**自动加 _1 / _2**, 用户根本不知道 sub_mixed_yaml 和
+    #   sub_mixed_yaml_1 分别是哪两台服务器 —— 这是在掩盖问题, 不是在解决问题
+    #   同理, 对标实现的注释里也是这个结论。两台服务器同名是**常态**, 不是异常。
+    # 现在让用户自己起名, 并把已有的组列出来当提示; 一路回车才退回自动名。
+    if [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; then
+        print_warn "已经有同名的组: $name"
+        printf '  现有组:\n' >&2
+        local _pf
+        for _pf in "$CLI_PROVIDERS"/*.yaml; do
+            [[ -f "$_pf" ]] || continue
+            printf '    - %s\n' "$(basename "$_pf" .yaml)" >&2
+        done
+        printf '  新组叫什么? (两台服务器同名时建议用地区/线路区分, 如 美国RN / 香港备用): ' >&2
+        local _nn; read -r _nn || _nn=""
+        _nn=${_nn// /}
+        if [[ -n "$_nn" ]] && ! printf '%s' "$_nn" | grep -q '[/\\:*?"<>|[:space:]]'; then
+            if [[ -f "$CLI_PROVIDERS/$_nn.yaml" ]]; then
+                print_error "已经有这个组了: $_nn"; rm -rf "$tmp"; return 1
+            fi
+            name="$_nn"
+        else
+            local _n=1 _base="$name"
+            while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$n"; _n=$((_n+1)); done
+        fi
+        print_ok "新组名: $name"
+    fi
 
     if ! _add_from_file "$body" "$name"; then rm -rf "$tmp"; return 1; fi
     printf '%s\n' "$src" > "$CLI_NODES/$name.txt"
@@ -718,6 +743,17 @@ print(len(d.get('proxies') or []))" "$f" 2>/dev/null || echo "?")
     [[ $found -eq 0 ]] && print_info "还没有任何节点, 请先「添加节点」"
 }
 
+# 终端里中文占 2 列, 但 bash 的 %-Ns 按**字节**算 —— printf "%-40s" "美国RN"
+# 实际只补了 36 个空格, 表会歪。宽度差 = (字节数 - 列数) / 2。
+_disp_pad() { # <文本> <目标列宽>
+    local t="$1" w="$2" bytes cols
+    bytes=${#t}
+    cols=$(printf '%s' "$t" | wc -m)
+    local pad=$(( w - cols ))
+    (( pad < 1 )) && pad=1
+    printf '%s%*s' "$t" "$pad" ''
+}
+
 # 列出所有"订阅/组" (一个 provider 文件 = 一组节点)
 _sub_groups() {
     local f
@@ -746,8 +782,9 @@ node_delete() {
     print_title "选择要删除的组 (整个组一起删)"
     local i
     for (( i=0; i<${#gn[@]}; i++ )); do
-        printf '    %b%2d)%b %-40s %b(%s 个节点)%b\n' \
-            "${CYAN:-}" "$((i+1))" "${RESET:-}" "${gn[$i]}" "${DIM:-}" "${gc[$i]}" "${RESET:-}" >&2
+        printf '    %b%2d)%b %s %b(%s 个节点)%b\n' \
+            "${CYAN:-}" "$((i+1))" "${RESET:-}" "$(_disp_pad "${gn[$i]}" 38)" \
+            "${DIM:-}" "${gc[$i]}" "${RESET:-}" >&2
     done
     printf '  %b%s%b\n' "${DIM:-}" "(删一个组 = 删掉它带进来的全部节点)" "${RESET:-}" >&2
     local c; printf '  请选择 [回车取消]: ' >&2
@@ -778,7 +815,7 @@ node_rename() {
     if (( ${#gn[@]} == 0 )); then print_info "还没有任何节点组"; return 0; fi
     local i
     for (( i=0; i<${#gn[@]}; i++ )); do
-        printf '    %b%2d)%b %s\n' "${CYAN:-}" "$((i+1))" "${RESET:-}" "${gn[$i]}" >&2
+        printf '    %b%2d)%b %s\n' "${CYAN:-}" "$((i+1))" "${RESET:-}" "$(_disp_pad "${gn[$i]}" 38)" >&2
     done
     local c; printf '  选择要改名的组: ' >&2
     read -r c || return 0

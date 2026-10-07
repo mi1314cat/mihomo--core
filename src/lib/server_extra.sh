@@ -167,14 +167,39 @@ _extra_apply() {
 #
 # 内核实测: outbounds 段写 type: direct / reject / socks5 / http 均通过 -t。
 _extra_ask_outbound_type() {
+    # 之前只有 direct/reject/socks5/http 四项, 是**我们菜单窄**, 不是内核不支持。
+    # mihomo 的 outbound/ 下实际实现了 16 种 (validate.py OUTBOUND_TYPES 与
+    # 内核二进制 strings 双向核对过), 其中 ss/vmess/vless/trojan/hysteria2/
+    # tuic/anytls/shadow-tls/wireguard 都能当出站用 —— 也就是**链路套娃**:
+    # 这台服务器的流量经由另一台服务器的节点出去。
+    #
+    # 列出的是"能连到别的服务器"的那几种; pass/compatible/reject-drop 属于
+    # 内核内部控制流, 开放给用户没意义, 不列。
     printf '\n  出站类型:\n' >&2
     printf '    1) direct  直连 (本机自己出去)\n' >&2
     printf '    2) reject  拒绝\n' >&2
     printf '    3) socks5  转发给另一个 SOCKS 代理\n' >&2
     printf '    4) http    转发给一个 HTTP 代理\n' >&2
+    ui_rule
+    printf '    --- 转发到另一台服务器的节点 (链路套娃) ---\n' >&2
+    printf '    5) ss        Shadowsocks\n' >&2
+    printf '    6) vmess     VMess\n' >&2
+    printf '    7) vless     VLESS\n' >&2
+    printf '    8) trojan    Trojan\n' >&2
+    printf '    9) hysteria2 Hysteria2\n' >&2
+    printf '   10) tuic      TUIC\n' >&2
+    printf '   11) anytls    AnyTLS\n' >&2
+    printf '   12) snell     Snell\n' >&2
+    printf '   13) wireguard WireGuard\n' >&2
     printf '  请选择 [1]: ' >&2
     local c; read -r c || return 1
-    case "$c" in 2) printf 'reject' ;; 3) printf 'socks5' ;; 4) printf 'http' ;; *) printf 'direct' ;; esac
+    case "$c" in
+        2) printf 'reject' ;; 3) printf 'socks5' ;; 4) printf 'http' ;;
+        5) printf 'ss' ;; 6) printf 'vmess' ;; 7) printf 'vless' ;;
+        8) printf 'trojan' ;; 9) printf 'hysteria2' ;; 10) printf 'tuic' ;;
+        11) printf 'anytls' ;; 12) printf 'snell' ;; 13) printf 'wireguard' ;;
+        *) printf 'direct' ;;
+    esac
 }
 
 outbound_add() {
@@ -213,14 +238,86 @@ PY
     fi
 
     local extra=""
-    case "$t" in
-        socks5|http)
-            printf '  上游地址 (如 127.0.0.1:1080): ' >&2
-            local up; read -r up || return 1
-            [[ -n "$up" ]] || { print_error "地址不能为空"; return 1; }
-            extra="$up"
-            ;;
-    esac
+    # 除 direct/reject 外都要问连接参数。按协议各自的必填项来问, 不做
+    # "一律问地址端口再靠猜" —— 那会让 trojan 少个密码也能生成, 到运行时
+    # 才报连不上。
+    if [[ "$t" != "direct" && "$t" != "reject" ]]; then
+        printf '  上游服务器地址 (域名或 IP): ' >&2
+        local up; read -r up || return 1
+        up=$(clean_input "$up")
+        [[ -n "$up" ]] || { print_error "地址不能为空"; return 1; }
+        printf '  上游端口: ' >&2
+        local up_port; read -r up_port || return 1
+        up_port=$(clean_input "$up_port")
+        if [[ ! "$up_port" =~ ^[0-9]{1,5}$ ]] || (( up_port < 1 || up_port > 65535 )); then
+            print_error "端口必须是 1-65535"; return 1
+        fi
+        extra="$up:$up_port"
+        local cred
+        case "$t" in
+            ss)
+                printf '  加密方式 (aes-256-gcm / aes-128-gcm / chacha20-ietf-poly1305): ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred"); cred="${cred:-aes-256-gcm}"
+                extra="$extra|$cred"
+                printf '  密码: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "密码不能为空"; return 1; }
+                extra="$extra|$cred" ;;
+            vmess|vless)
+                printf '  UUID: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "UUID 不能为空"; return 1; }
+                extra="$extra|$cred"
+                printf '  传输方式 ws / grpc / h2 / tcp [ws]: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred"); cred="${cred:-ws}"
+                extra="$extra|$cred" ;;
+            trojan)
+                printf '  密码: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "密码不能为空"; return 1; }
+                extra="$extra|$cred" ;;
+            hysteria2)
+                printf '  密码: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "密码不能为空"; return 1; }
+                extra="$extra|$cred" ;;
+            tuic)
+                printf '  UUID: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "UUID 不能为空"; return 1; }
+                extra="$extra|$cred"
+                printf '  密码: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "密码不能为空"; return 1; }
+                extra="$extra|$cred" ;;
+            anytls)
+                printf '  密码: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "密码不能为空"; return 1; }
+                extra="$extra|$cred" ;;
+            snell)
+                printf '  密钥 (psk): ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] || { print_error "密钥不能为空"; return 1; }
+                extra="$extra|$cred"
+                printf '  版本 (1-5) [3]: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred"); cred="${cred:-3}"
+                extra="$extra|$cred" ;;
+            socks5|http)
+                printf '  用户名 (可留空): ' >&2
+                read -r cred || return 1; extra="$extra|$(clean_input "$cred")"
+                printf '  密码 (可留空): ' >&2
+                read -r cred || return 1; extra="$extra|$(clean_input "$cred")" ;;
+            wireguard)
+                printf '  公钥 (peer public key): ' >&2
+                read -r cred || return 1; extra="$extra|$(clean_input "$cred")"
+                printf '  本机私钥 (可留空, 留空则内核自动生成): ' >&2
+                read -r cred || return 1; extra="$extra|$(clean_input "$cred")"
+                printf '  本机地址 如 10.0.0.2/32 [回车自动]: ' >&2
+                read -r cred || return 1; cred=$(clean_input "$cred")
+                [[ -n "$cred" ]] && extra="$extra|$cred" ;;
+        esac
+    fi
 
     local idx
     idx=$(_extra_next_index outbound)
@@ -228,19 +325,47 @@ PY
     f=$(printf '%s/outbound-%s.yaml' "$(_extra_dir)" "$idx")
 
     python3 - "$f" "$name" "$t" "$extra" <<'PY'
-import sys
+import sys, re
 path, name, t, extra = sys.argv[1:5]
+Q = lambda v: '"%s"' % str(v).replace("\\", "\\\\").replace('"', '\\"')
 L = [f"# 服务端出站 · {name} ({t}) —— 由面板生成, 删除请用面板菜单"]
-if t == "socks5":
-    h, _, p = extra.rpartition(":")
-    L += ["outbounds:", f"  - name: {name}", "    type: socks5",
-          f"    server: {h or extra}", f"    port: {int(p) if p.isdigit() else 1080}"]
-elif t == "http":
-    h, _, p = extra.rpartition(":")
-    L += ["outbounds:", f"  - name: {name}", "    type: http",
-          f"    server: {h or extra}", f"    port: {int(p) if p.isdigit() else 8080}"]
-else:
+if t in ("direct", "reject"):
     L += ["outbounds:", f"  - name: {name}", f"    type: {t}"]
+else:
+    parts = extra.split("|")
+    host, _, port = parts[0].rpartition(":")
+    host = host or parts[0]
+    L += ["outbounds:", f"  - name: {name}", f"    type: {t}",
+          f"    server: {Q(host)}", f"    port: {int(port)}"]
+    cred = parts[1:]
+    if t == "ss":
+        L += [f"    cipher: {Q(cred[0])}", f"    password: {Q(cred[1])}"]
+    elif t in ("vmess", "vless"):
+        L += [f"    uuid: {Q(cred[0])}"]
+        net = cred[1] if len(cred) > 1 else "ws"
+        L += [f"    network: {net}"]
+        if net in ("ws", "grpc"):
+            L += [f"    {net}-opts:", f"      path: /{name}"]
+        L += ["    tls: true", "    udp: true"]
+    elif t in ("trojan", "hysteria2", "anytls"):
+        L += [f"    password: {Q(cred[0])}", "    tls: true", "    udp: true"]
+    elif t == "tuic":
+        L += [f"    uuid: {Q(cred[0])}", f"    password: {Q(cred[1])}",
+              "    congestion-controller: bbr", "    tls: true", "    udp: true"]
+    elif t == "snell":
+        L += [f"    psk: {Q(cred[0])}", f"    version: {int(cred[1]) if len(cred) > 1 else 3}"]
+    elif t in ("socks5", "http"):
+        if cred and cred[0]:
+            L += ["    username: " + Q(cred[0])]
+        if len(cred) > 1 and cred[1]:
+            L += ["    password: " + Q(cred[1])]
+    elif t == "wireguard":
+        L += ["    private-key: " + Q(cred[1] if len(cred) > 1 and cred[1] else ""),
+              "    peer-public-key: " + Q(cred[0] if cred else ""),
+              "    ip: " + Q("172.16.0.2/32"),
+              "    reserved: [1, 2, 3]"]
+        if len(cred) > 2 and cred[2]:
+            L[-1] = f"    ip: {Q(cred[2])}"
 open(path, "w", encoding="utf-8").write("\n".join(L) + "\n")
 PY
 
