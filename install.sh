@@ -392,10 +392,119 @@ menu() {
 # 为什么放在 install.sh 而不是 core_install.sh: 面板脚本 (server.sh /
 # client.sh) 是 core_install **之后**才下载的, 从 core_install 里拉会找不到
 # 文件 —— 那正是最容易在旧机器上踩到的顺序问题。
+# ==================== 进面板前的自动更新 ====================
+#
+# 目标: 每次 `bash <(curl .../install.sh)` 进面板时自动比对 GitHub, 有新版就
+#       静默更新, 不用再手动去菜单里找「更新脚本」。
+#
+# ★ 铁律: **任何情况下都不能把人挡在面板外面。**
+#   fetch() 网络失败会 die 直接退出整个脚本 —— 自动更新绝不能走那条路:
+#   GitHub 连不上只是"这次没更新成", 用本地版本继续才是对的。
+#   状态码: 0=已更新  10=已是最新  2=取不到(网络/仓库)  3=取到了但落地失败
+#
+# ★ 为什么放在 install.sh 而不是 server.sh/client.sh 里:
+#   进入面板前更新完, 紧接着执行的 `bash src/server.sh` 拿到的**就是新代码**。
+#   若放在面板自己里面, bash 早已把脚本读进内存, 更新完界面上仍毫无变化 ——
+#   用户会判定成"更新没用"。实测就是这个症状。
+
+# 取新版到临时目录, 只返回状态码, 从不退出。
+fetch_soft() {
+    local tmp; tmp="$(mktemp -d)" || return 2
+    local f n=0
+    local mf="$tmp/manifest.txt"
+    if ! fetch "src/manifest.txt" "$mf" 2>/dev/null; then
+        rm -rf "$tmp"; return 2
+    fi
+    local files=() line
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | tr -d '[:space:]')"
+        [[ -n "$line" ]] && files+=("$line")
+    done < "$mf"
+    (( ${#files[@]} > 0 )) || { rm -rf "$tmp"; return 2; }
+
+    for f in "${files[@]}"; do
+        mkdir -p "$tmp/$(dirname "$f")"
+        fetch "$f" "$tmp/$f" >/dev/null 2>&1 || { rm -rf "$tmp"; return 3; }
+        n=$((n+1))
+    done
+    printf '%s\n' "$tmp"
+    return 0
+}
+
+# 更新前备份。静默改自己的代码必须留退路 —— 万一新版有问题, 没有备份就只能
+# 靠用户手工抢救。
+backup_scripts() {
+    local root="$1"
+    local b="$root/backup/scripts-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$b" 2>/dev/null || { printf ''; return 1; }
+    cp -rf "$root/src" "$b/" 2>/dev/null
+    printf '%s' "$b"
+}
+
+restore_scripts() {
+    local b="$1" root="$2"
+    [[ -n "$b" && -d "$b/src" ]] || return 1
+    cp -rf "$b/src/." "$root/src/" 2>/dev/null || return 1
+    return 0
+}
+
+# 更新后的脚本必须全部通过语法检查, 否则立刻回滚。
+# 有语法错误的面板会直接起不来, 而用户此刻正要进面板 —— 那等于把门锁死了。
+scripts_sane() {
+    local root="$1" f
+    for f in "$root"/src/*.sh "$root"/src/conf/*.sh "$root"/src/lib/*.sh; do
+        [[ -f "$f" ]] || continue
+        bash -n "$f" 2>/dev/null || return 1
+    done
+    local py
+    for py in "$root"/src/lib/*.py "$root"/src/conf/*.py "$root"/src/share/*.py; do
+        [[ -f "$py" ]] || continue
+        python3 -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$py" 2>/dev/null || return 1
+    done
+    return 0
+}
+
+# 自动更新。0=已更新  10=已是最新  其它=没更新成 (调用方照常进面板)
+auto_update() {
+    local root="$1" rc=0 t0=$SECONDS tmp
+    [[ -d "$root/src" ]] || return 2
+    tmp=$(fetch_soft) || rc=$?
+    case $rc in
+        2) warn "暂时连不上 GitHub, 这次跳过更新 (不影响使用)"; return 2 ;;
+        3) warn "新版文件没取全, 已保留本地版本"; return 1 ;;
+    esac
+    [[ -d "$tmp" ]] || { warn "更新失败, 已保留本地版本"; return 1; }
+
+    # 内容一致就别白覆盖一遍 (每次进面板都重写文件会让人以为在改动)
+    if diff -rq "$tmp/src" "$root/src" >/dev/null 2>&1; then
+        rm -rf "$tmp"; return 10
+    fi
+
+    local bak; bak=$(backup_scripts "$root")
+    [[ -n "$bak" ]] || warn "备份目录创建失败, 继续更新 (出问题请手动回滚)"
+
+    cp -rf "$tmp/src/." "$root/src/" || { rm -rf "$tmp"; warn "覆盖失败, 已保留本地版本"; return 1; }
+    chmod +x "$root"/src/*.sh "$root"/src/conf/*.sh "$root"/src/lib/*.sh 2>/dev/null
+    rm -rf "$tmp"
+
+    if ! scripts_sane "$root"; then
+        warn "新版脚本没通过语法检查, 已自动回滚"
+        restore_scripts "$bak" "$root" && ok "已回滚到更新前的版本"
+        return 1
+    fi
+    ok "已自动更新到最新版本  [$((SECONDS - t0))s]"
+    [[ -n "$bak" ]] && say "旧版本备份: $bak"
+    return 0
+}
+
 enter_panel() {
     local root="$1" script="$2"
     [[ -f "$root/src/$script" ]] || { err "面板未就绪, 请手动运行 $root/src/$script"; return 0; }
     printf '\n'
+    # 进面板前先自动更新 —— 这样紧接着执行的 server.sh/client.sh 拿到的
+    # 就是新代码, 当场生效 (见 auto_update 上面的说明)。
+    auto_update "$root" || true
     bash "$root/src/$script"
 }
 

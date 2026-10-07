@@ -40,4 +40,3 @@ src/share/share_server.py
 src/core_install.sh
 src/server.sh
 src/client.sh
-src/VERSION

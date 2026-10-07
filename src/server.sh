@@ -1173,9 +1173,6 @@ extra_menu() {
 
 main_menu() {
     local c
-    # 进面板先比一次版本 —— 用户是从这里知道有新版本的, 顺带就能更新。
-    declare -F m_check_panel_update >/dev/null 2>&1 && \
-        m_check_panel_update "$SRV_ROOT" "$(basename "$0")"
     while true; do
         ui_rule
         printf "  ${CYAN}${BOLD}Mihomo 服务端${RESET}\n" >&2

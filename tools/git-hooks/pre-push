@@ -61,33 +61,4 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 done
 
-# ---------- 写 src/VERSION ----------
-#
-# 取**面板文件内容的哈希**, 不取提交号。两个原因:
-#
-#   1. 提交前算不出自己的 SHA —— 提交 f06765e 里装的必然是上一个提交的号,
-#      永远差一格。
-#   2. 更要紧的是: 用提交号的话**每次提交都会触发一次更新提示**, 哪怕这次
-#      只改了 README。面板版本号的用处是"我这台机器的脚本是不是最新的",
-#      所以它必须只反映脚本本身的变化。
-#
-# VERSION 自身在清单里, 算哈希时必须排除, 否则自引用。
-#
-# 先算好再决定推不推: 闸门拒绝时不能留下"版本已更新但没推上去"的 VERSION,
-# 否则面板会显示"永远有新版"。
-if [ "$status" -eq 0 ]; then
-    _v=$(while read -r f; do
-            case "$f" in ''|'#'*) continue ;; src/VERSION) continue ;; esac
-            cat "$f" 2>/dev/null
-        done < src/manifest.txt | sha1sum 2>/dev/null | cut -c1-12)
-    if [ -n "$_v" ]; then
-        _cur=$(head -1 src/VERSION 2>/dev/null | tr -d '[:space:]')
-        if [ "$_cur" != "$_v" ]; then
-            printf '%s\n' "$_v" > src/VERSION
-            git add src/VERSION 2>/dev/null || true
-            echo "  已更新 src/VERSION -> $_v" >&2
-        fi
-    fi
-fi
-
 exit $status

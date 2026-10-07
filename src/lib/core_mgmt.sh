@@ -137,53 +137,6 @@ core_do_uninstall() {
 
 # ---------- 面板脚本自更新 ----------
 
-# ---------- 面板版本 ----------
-#
-# src/VERSION 存的是**面板文件内容的哈希**, 由 pre-push 钩子写入 —— 不是提交号:
-# 用提交号的话每次提交 (哪怕只改 README) 都会触发一次更新提示, 而版本号的用处
-# 恰恰是回答"我这台机器的脚本是不是最新的"。远端那份随清单一起被拉下来,
-# 所以"本地的"和"GitHub 上的"都能用同一条镜像链取到, 不需要额外的 API 通道
-# (api.github.com 在国内常常连不上, 而"连不上"正是最需要这个功能的场景)。
-m_local_version() {   # 本机已安装的版本; 装得太老、没有这个文件时返回空
-    local v=""
-    [[ -f "$1/src/VERSION" ]] && v=$(head -1 "$1/src/VERSION" 2>/dev/null | tr -d '[:space:]')
-    printf '%s' "$v"
-}
-
-m_remote_version() {  # GitHub main 上的版本; 取不到返回空
-    local t; t=$(mktemp) || return 1
-    if m_fetch_any "src/VERSION" "$t" 2>/dev/null; then
-        tr -d '[:space:]' < "$t"; rm -f "$t"; return 0
-    fi
-    rm -f "$t"; return 1
-}
-
-# 进面板时比对: 不一致就问要不要更新。
-# 为什么放在**进面板时**而不是只在菜单里: 用户是从浏览器/面板知道有新版本的,
-# 他重新打开脚本时才是最该被提醒的时刻 —— 菜单里那个"更新脚本"项他未必会点。
-m_check_panel_update() {
-    local root="$1" entry="$2" cur rem
-    cur=$(m_local_version "$root")
-    rem=$(m_remote_version) || { return 0; }       # 取不到就安静退出, 不打扰
-    [[ -n "$rem" ]] || return 0
-    [[ "$rem" == "$cur" ]] && return 0
-
-    echo >&2
-    print_warn "面板有新版本: 本机 ${cur:-未知} → 最新 ${rem}"
-    print_info "  改完后重新进入面板才会生效 (当前进程跑的是旧代码)"
-    echo >&2
-    printf "  ${CYAN}现在更新? [Y/n]: ${RESET}" >&2
-    local a; read -r a
-    case "$(clean_input "${a:-y}")" in
-        n|N) return 0 ;;
-    esac
-    core_update_scripts "$root" || return 1
-    # 更新完立刻重载, 否则用户看到的就是"更新了但界面一点没变" ——
-    # bash 在启动时就把脚本读进内存了, 磁盘上换了文件, 当前进程不会重读。
-    print_ok "已更新, 正在重新载入面板"
-    exec bash "$root/src/$entry"
-}
-
 # 从 GitHub 重新拉一遍面板文件。
 #
 # 不走 git: 现场安装的机器大多没有 .git (install.sh 是 curl 下来解包的),
@@ -228,7 +181,7 @@ core_update_scripts() {
             "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
             "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"
             "src/share/share.sh" "src/share/share_server.py" "src/share/build_sub.py"
-            "src/core_install.sh" "src/server.sh" "src/client.sh" "src/VERSION"
+            "src/core_install.sh" "src/server.sh" "src/client.sh"
         )
     fi
 
