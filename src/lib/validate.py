@@ -379,9 +379,19 @@ class Report:
 REMOVED_EXEMPT = {("openvpn", "ca")}
 
 
+# allowed 集合的归一化缓存。
+# 键用 id(allowed) 而不是集合本身 —— PROXY/TRANSPORT_OPTS 这些表是**模块级
+# 常量**, id 稳定; 而 check_keys 也允许传临时集合, 那种情况下算完就用完,
+# 不会无限增长 (每个临时集合最多留一条, 随临时对象一起失去引用)。
+_ALLOWED_NORM: dict = {}
+
+
 def check_keys(d, allowed, where, r: Report, ctx="", owner=""):
     if not isinstance(d, dict):
         return
+    _key = id(allowed)
+    if _key not in _ALLOWED_NORM:
+        _ALLOWED_NORM[_key] = frozenset(_norm_key(x) for x in allowed)
     for k, v in d.items():
         nk = _norm_key(k)
         if nk in REMOVED and (owner, nk) not in REMOVED_EXEMPT:
@@ -393,7 +403,13 @@ def check_keys(d, allowed, where, r: Report, ctx="", owner=""):
             ver, note, alt = REMOVED_IN_GROUP[nk]
             r.err(where, f"分组上的 `{k}` 不可用 ({ver}) — {note}")
             continue
-        if nk in allowed:
+        # ★ allowed 必须先归一化再比。
+        #   下面 nk 是 _norm_key(k) 的结果 (全小写), 而 allowed 是原文集合,
+        #   里面混着 `alterId` 这种驼峰键 —— `nk in allowed` 于是恒为 False,
+        #   每一个 vmess 节点都会被误报「未知键 alterId」, 而它给出的建议
+        #   还是「是否想写 alterId?」(建议与原键相同, 等于没有建议)。
+        #   这类误报比不报更糟: 用户会以为自己的配置真的有问题。
+        if nk in _ALLOWED_NORM.get(id(allowed), frozenset()) or nk in allowed:
             continue
         near = _closest(k, allowed)
         r.warn(where, f"未知键 `{k}`（内核会静默忽略）"

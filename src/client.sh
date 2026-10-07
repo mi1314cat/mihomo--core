@@ -546,19 +546,74 @@ PYGEN
 # =============================================================
 _add_from_file() {  # <文件> <名字>  —— 校验后落盘
     local src="$1" name="$2"
-    python3 - "$src" "$CLI_PROVIDERS/$name.yaml" <<'PYIMP'
+    # 第 3 个参数传 validate.py 的目录: 这段 python 是从 **stdin** 读的,
+    # __file__ 不存在, 只能由调用方给路径。
+    python3 - "$src" "$CLI_PROVIDERS/$name.yaml" "$CLI_LIB" <<'PYIMP'
 import sys, yaml, os, tempfile
 src, dst = sys.argv[1], sys.argv[2]
+_mlib = sys.argv[3] if len(sys.argv) > 3 else ""
 d = yaml.safe_load(open(src, encoding="utf-8"))
 if not isinstance(d, dict) or not isinstance(d.get("proxies"), list) or not d["proxies"]:
     print("[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)", file=sys.stderr)
     sys.exit(1)
-bad = [p.get("name") for p in d["proxies"]
-       if not isinstance(p, dict) or not p.get("name") or not p.get("type")
-       or "server" not in p or "port" not in p]
-if bad:
-    print(f"[ERR] 以下节点缺少必要字段: {bad}", file=sys.stderr)
+
+# ---- 剔除 mihomo 核心不认识的节点 (2026-10-07 新增) ----
+#
+# 为什么不直接照单全收:
+#   之前的校验只要求每个节点有 name/type/server/port, 于是**任何** type 都能
+#   被写进 provider。mihomo 核心遇到不认识的协议类型不会报错, 只是把这个
+#   节点**静默丢弃** —— 用户看到的是"订阅里有这个节点, 但怎么都连不上",
+#   没有任何一条错误指向真正的原因。
+#
+#   典型来源: 从 sing-box 内核那边导出的订阅。sing-box 的 outbound 类型
+#   (naive / remote / fakeip / mixed / block …) 与 mihomo 的 proxy 类型
+#   不是一套命名, 直接导入会带进来一堆死节点。
+#
+# 判据从哪来: **validate.py 自己的 PROXY 表**, 不另抄一份清单 ——
+#   抄一份就等于两份真源, 以后加了新协议这里必然忘记同步, 于是过滤会
+#   把**合法的**节点也剔掉, 比不过滤还糟。
+sys.path.insert(0, _mlib)
+_mihomo_types = None
+try:
+    import validate as _v
+    _mihomo_types = set(_v.PROXY_TYPES)
+except Exception as _e:
+    print(f"[WARN] 读不到内核协议表 ({_e}), 跳过协议过滤", file=sys.stderr)
+
+# ★ 原来这里是**硬失败**: 只要有任一节点缺 server/port 就整体退出。
+#   问题是外部订阅里混几个"根本不是代理"的东西太正常了 —— sing-box 的
+#   block/dns/selector 这类 outbound 本来就没有 server/port, 它们是配置
+#   结构的一部分, 不是节点。结果一份 90% 能用的订阅会因为 4 个附带条目
+#   整个导不进来。现在两类问题都只是**剔除**, 只有"一个都不剩"才报错。
+kept, dropped, malformed = [], [], []
+for p in d["proxies"]:
+    if (not isinstance(p, dict) or not p.get("name") or not p.get("type")
+            or "server" not in p or "port" not in p):
+        malformed.append(p.get("name", "(无名)") if isinstance(p, dict) else "(格式错误)")
+        continue
+    t = str(p.get("type", "")).lower()
+    if _mihomo_types and t not in _mihomo_types:
+        dropped.append((p.get("name", "?"), t))
+    else:
+        kept.append(p)
+
+if malformed:
+    show = ", ".join(malformed[:5]) + (f" 等 {len(malformed)} 个" if len(malformed) > 5 else "")
+    print(f"[过滤] 不是合法代理条目 (缺 name/type/server/port), 已剔除 {len(malformed)} 个 —— {show}",
+          file=sys.stderr)
+if dropped:
+    # 按类型汇总, 避免 30 个节点刷 30 行
+    by_t = {}
+    for nm, t in dropped:
+        by_t.setdefault(t, []).append(nm)
+    for t, names in sorted(by_t.items()):
+        show = ", ".join(names[:3]) + (f" 等 {len(names)} 个" if len(names) > 3 else "")
+        print(f"[过滤] {t}: mihomo 核心不支持该协议, 已剔除 {len(names)} 个 —— {show}",
+              file=sys.stderr)
+if not kept:
+    print("[ERR] 剔除后一个可用节点都不剩 —— 这份订阅与 mihomo 不兼容", file=sys.stderr)
     sys.exit(1)
+d["proxies"] = kept
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
 os.close(fd)
@@ -567,7 +622,9 @@ with open(tmp, "w", encoding="utf-8") as fh:
     yaml.safe_dump({"proxies": d["proxies"]}, fh, sort_keys=False,
                    allow_unicode=True, default_flow_style=False)
 os.replace(tmp, dst)
-print(f"[OK] 已写入 {dst} ({len(d['proxies'])} 个节点)", file=sys.stderr)
+print(f"[OK] 已写入 {dst} ({len(d['proxies'])} 个节点"
+      + (f", 已剔除 {len(dropped) + len(malformed)} 个不兼容" if (dropped or malformed) else "")
+      + ")", file=sys.stderr)
 PYIMP
 }
 
@@ -908,6 +965,26 @@ PYTEST
 # =============================================================
 # 菜单
 # =============================================================
+# =============================================================
+# 客户端 DNS 管理
+#
+# 为什么要单独包一层, 而不是直接调 dns_menu:
+#   dns.sh 里的读写走 $SRV_CONF / m_sync_reload / $SRV_SERVICE, 都是服务端的
+#   名字。客户端的配置在 $CLI_CONF、服务叫 mihomo-client。这里把变量名对齐
+#   再交给 dns_menu, 复用同一套菜单/预设/回滚逻辑, 不复制第二份。
+#
+# DNS_MODE=client 让 dns_menu 选客户端安全默认 (fake-ip + fake-ip-filter),
+# 而不是服务端那套 normal 模式。
+# =============================================================
+client_dns_menu() {
+    local _r="$SRV_ROOT" _c="$SRV_CONF" _s="$SRV_SERVICE"
+    export SRV_ROOT="$CLI_ROOT" SRV_CONF="$CLI_CONF" SRV_SERVICE="$CLI_SERVICE"
+    export DNS_MODE=client
+    dns_menu
+    unset DNS_MODE
+    export SRV_ROOT="$_r" SRV_CONF="$_c" SRV_SERVICE="$_s"
+}
+
 client_menu() {
     local c
     while true; do
@@ -932,7 +1009,8 @@ client_menu() {
         ui_menu 15 "安装 / 内核管理 (版本/更新/脚本)"
         ui_menu 16 "分享订阅 (把我的节点发给别人)"
         ui_menu 17 "卸载客户端"
-        ui_menu 18 "切换到服务端面板 (装/进另一端)"
+        ui_menu 18 "DNS 管理 (fake-ip / 防泄露 / 解析策略)"
+        ui_menu 19 "切换到服务端面板 (装/进另一端)"
         ui_menu 0  "退出"
         echo >&2
         printf "  ${CYAN}请选择${RESET}: " >&2
@@ -956,7 +1034,8 @@ client_menu() {
             15) core_menu "$CLI_ROOT" "$CLI_SERVICE" ;;
             16) cli_share_menu ;;
             17|d|D) cli_uninstall ;;
-            18) switch_side "$CLI_ROOT" ;;
+            18) client_dns_menu ;;
+            19) switch_side "$CLI_ROOT" ;;
             0|q|Q) exit 0 ;;
             *)  ui_invalid "$c" ;;
         esac

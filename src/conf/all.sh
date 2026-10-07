@@ -561,7 +561,9 @@ record() {  # record <协议> <端口> <状态> <说明>
     RESULTS+=("$1|$2|$3|$4")
 }
 
-ALL_GEN_IDS="reality reality-grpc reality-xhttp trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
+# vmess-mkcp / vmess-mekya 列出但**默认不生成** (要 ALL_MKCP=1)。
+# 放在这里是为了让 `--only vmess-mkcp` 能被点名单独生成, 而不必先改默认集。
+ALL_GEN_IDS="reality reality-grpc reality-xhttp vmess-mkcp vmess-mekya trojan trojan-grpc vmess-reality vmess-grpc trojan-tls vless-ws xhttp-tls xhttp-cdn vless xhttp vmess hysteria2 tuicv5 anytls ss snell"
 
 # --only 的 token 必须能对上真实标识符。原来的 want() 对不匹配的 token 静默
 # 返回 false, 于是 `--only tuic` (真名 tuicv5) 会安静地什么都不生成,
@@ -860,6 +862,29 @@ g_vless_xhttp_cdn() {
     }
     local path; path=$(m_check_ws_path "$(m_gen_path xhc)") || return 1
     render_xhttp_pad
+
+    # ---- ECH: 探测到就默认开 (2026-10-07) ----
+    #
+    # 为什么 CDN 档位默认开、而不是继续问一次:
+    #   ECH 的全部意义就是"别让中间人看见你在连哪个域名"。而 CDN 档位的流量
+    #   本来就要经过 Cloudflare —— 这是唯一一个开 ECH **零额外代价**的档位
+    #   (不换 IP、不换端口、不多一跳), 不开等于白放着。
+    #
+    # 判据用 DNS (HTTPS RR 有没有 ech=), 不用 cf-manager:
+    #   只要域名走橙云, Cloudflare 就自动下发 ECHConfig, 不需要 API。
+    #   实测本项目的 CDN 域名直接就有 ech= (public_name=cloudflare-ech.com),
+    #   而抓包证实开启后明文 SNI 只剩 cloudflare-ech.com, 真实域名消失。
+    #
+    # ALL_ECH=0 可关 (走 Cloudflare API 开过、或域名 ECH 探测有假阳性时)。
+    ECH_OPTS_FIELDS=""
+    if [[ "${ALL_ECH:-1}" == "1" ]] && declare -F cdn_ech_ready >/dev/null 2>&1 \
+       && cdn_ech_ready "$SNI"; then
+        # 用 $'...' 而不是 "...": 后者里的 \n 是**字面两个字符**, 会被原样
+        # 写进 YAML, 生成出 ech-opts:\n  这样的坏缩进。
+        ECH_OPTS_FIELDS=$'    ech-opts:\n      enable: true\n      query-server-name: '"$SNI"$'\n'
+        printf "     ${DIM}ECH: 已启用 (%s 下发了 ECHConfig, 明文 SNI 将变成 cloudflare-ech.com)${RESET}\n" "$SNI" >&2
+    fi
+
     NODE_TAG="$(m_node_tag VLESS "$1" tls XHTTP CDN)"
     cat > "$3" <<EOF
 # 由 all.sh 一键生成 · VLESS + xHTTP + TLS (过 Cloudflare CDN)
@@ -896,7 +921,7 @@ proxies:
     udp: true
     servername: $SNI
     client-fingerprint: $CLIENT_FP
-    xhttp-opts:
+${ECH_OPTS_FIELDS}    xhttp-opts:
       mode: $XHTTP_MODE
       path: $path
 ${XHTTP_PAD_FIELDS}
@@ -953,6 +978,109 @@ EOF
 # 参考实现 (sing-box) 的 trojan 支持 http 传输, 这是**内核差异**, 不是待补的功能。
 
 # ---------- VMess + 裸 TCP + REALITY (直连) ----------
+# ---- mkcp / mekya 档位 (2026-10-07 新增) ----
+#
+# 这两种传输内核早就支持 (二进制里有 mkcp-config / mekya-config / mkcp-opts /
+# mekya-opts), 项目一直没有生成入口 —— 补上是纯增量。
+#
+# ⚠ 定位要说清楚, 别当主力档推荐:
+#   * mkcp 是 mKCP 的改良, 自带伪装与抗重传, 但把 UDP 跑在 TCP 之上,
+#     抗封锁能力弱于 REALITY, 且**不能过 Cloudflare**。
+#   * mekya 更弱一档, 主要只在特定客户端生态里有意义。
+#   日常主力仍然是 REALITY / xHTTP / gRPC。
+#
+# 参数取 mKCP 官方默认: mtu 1350, tti 50, up 50, down 200, congestion false
+g_vmess_mkcp() {
+    NODE_TAG="$(m_node_tag VMess "$1" tls KCP)"
+    local mtu="${VMESS_KCP_MTU:-1350}" tti="${VMESS_KCP_TTI:-50}"
+    local up="${VMESS_KCP_UP:-50}" down="${VMESS_KCP_DOWN:-200}"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VMess + mKCP (mKCP 跑在 TCP 之上, 自带抗重传/伪装)
+listeners:
+  - name: $NODE_TAG
+    type: vmess
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+        alterId: 0
+    mkcp-config:
+      mtu: $mtu
+      tti: $tti
+      uplink-capacity: $up
+      downlink-capacity: $down
+      congestion: false
+      read-buffer-size: 2
+      write-buffer-size: 2
+    certificate: $CRT
+    private-key: $KEY
+EOF
+    NODE_TAG="$(m_node_tag VMess "$1" tls KCP)"
+    cat > "$4" <<EOF
+# 客户端产物 · VMess + mKCP
+proxies:
+  - name: $NODE_TAG
+    type: vmess
+    server: $PUBLIC_IP
+    port: $2
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: mkcp
+    tls: true
+    udp: true
+    servername: $SNI
+    client-fingerprint: $CLIENT_FP
+    mkcp-opts:
+      mtu: $mtu
+      tti: $tti
+      uplink-capacity: $up
+      downlink-capacity: $down
+      congestion: false
+EOF
+}
+
+g_vmess_mekya() {
+    NODE_TAG="$(m_node_tag VMess "$1" tls MEKYA)"
+    local up="${VMESS_MEKYA_UP:-50}" down="${VMESS_MEKYA_DOWN:-200}"
+    cat > "$3" <<EOF
+# 由 all.sh 一键生成 · VMess + Mekya
+listeners:
+  - name: $NODE_TAG
+    type: vmess
+    listen: "0.0.0.0"
+    port: $2
+    users:
+      - uuid: $UUID
+        alterId: 0
+    mekya-config:
+      up: "$up Mbps"
+      down: "$down Mbps"
+    certificate: $CRT
+    private-key: $KEY
+EOF
+    NODE_TAG="$(m_node_tag VMess "$1" tls MEKYA)"
+    cat > "$4" <<EOF
+# 客户端产物 · VMess + Mekya
+proxies:
+  - name: $NODE_TAG
+    type: vmess
+    server: $PUBLIC_IP
+    port: $2
+    uuid: $UUID
+    alterId: 0
+    cipher: auto
+    network: mekya
+    tls: true
+    udp: true
+    servername: $SNI
+    client-fingerprint: $CLIENT_FP
+    mekya-opts:
+      up: "$up Mbps"
+      down: "$down Mbps"
+EOF
+}
+
 g_vmess_reality() {
     NODE_TAG="$(m_node_tag VMess "$1" reality)"
     cat > "$3" <<EOF
@@ -1843,6 +1971,22 @@ gen reality-xhttp  "VLESS+xHTTP+Reality"   1 0 reality   g_vless_xhttp_reality
 gen trojan         "Trojan+Reality"        1 0 trojan    g_trojan_reality
 gen trojan-grpc    "Trojan+gRPC+Reality"   1 0 trojan    g_trojan_grpc_reality
 # trojan-h2 不在此列: mihomo 的 trojan 出站没有 h2 传输 (见上方说明)。
+# ⚠ mkcp / mekya **默认不生成**, 要显式 ALL_MKCP=1 才开。
+#
+#   实测踩过: 默认开启时, 客户端选中 mKCP 节点会让 **mihomo-client 整个卡死** ——
+#   端口还在听 (7890/9090/1053 都能连), 但代理不再出网, sshd 也因为
+#   CPU 被吃光而起不来 (TCP 能连上但 SSH banner 永远超时)。只能靠物理重启恢复。
+#
+#   mKCP 把 UDP 跑在 TCP 之上再自己管重传/拥塞, 在拥塞控制关闭
+#   (congestion: false) 时自旋倾向明显。加上它是**传输层重实现**, 各版本
+#   内核行为不一致 —— 同样是 mkcp, 有的版本正常, 有的直接把客户端拖垮。
+#
+#   所以定位成"能力补齐": 能生成、能校验、内核认, 但**不进默认档位**,
+#   由用户在明确知道代价的前提下用 ALL_MKCP=1 主动开启。
+if [[ "${ALL_MKCP:-0}" == "1" ]]; then
+    gen vmess-mkcp   "VMess+mKCP"          0 2 vmess     g_vmess_mkcp
+    gen vmess-mekya  "VMess+Mekya"         0 2 vmess     g_vmess_mekya
+fi
 gen vmess-reality  "VMess+TCP+Reality"     1 0 vmess     g_vmess_reality
 gen vmess-grpc     "VMess+gRPC+Reality"    1 0 vmess     g_vmess_grpc_reality
 # 证书组

@@ -54,6 +54,62 @@ CDN_FRAG_DIR="${CDN_FRAG_DIR:-$SRV_ROOT/out/cdn}"
 # =============================================================
 # 一、能力判定
 # =============================================================
+# =============================================================
+# ECH 就绪探测 —— 用 DNS 判断, 不需要 Cloudflare API
+#
+# ★ 为什么不用 cf-manager (2026-10-07)
+#
+#   原来的思路是"ECH 要先在 Cloudflare 后台开", 于是依赖 cf-manager 调 API。
+#   但实测发现: **只要域名已经走 Cloudflare 橙云, Cloudflare 就自动下发
+#   ECHConfig**, 不需要任何 API 调用。判据是 HTTPS RR (type 65) 里有没有
+#   ech= 字段。
+#
+#   实测: 对一个已走橙云的域名直接 `dig +short HTTPS <域名>`, 返回里带
+#   `ech=<base64>`, 解出来就是 cloudflare-ech.com —— 全程没碰过 Cloudflare API。
+#   (对照: 未走 CDN 的域名同一个查询返回空)
+#
+#   所以正确的判据是 **"这个域名现在有没有 ECHConfig"**, 而不是
+#   "我有没有权限去后台开"。后者会把"能不能用 ECH"变成"有没有配 API token",
+#   于是绝大多数用户永远开不了。
+#
+# 输出: cdn_ech_ready <域名> -> 有 ech= 返回 0, 否则 1。
+# 无 dig 时回退到 python3 手搓 DNS 查询 (两者都没有则返回 1, 调用方应
+# 保守地当作"不支持", 而不是"支持但没开")。
+# =============================================================
+cdn_ech_ready() {
+    local dom="${1:-}"
+    [[ -n "$dom" ]] || return 1
+    if command -v dig >/dev/null 2>&1; then
+        local r
+        r=$(dig +short +time=3 +tries=1 HTTPS "$dom" 2>/dev/null | grep -o 'ech=[A-Za-z0-9+/=]*' | head -1)
+        [[ -n "$r" ]] && return 0
+        # 有些解析器对未知类型返回空, 但 "NOERROR" 仍说明域名可达
+        return 1
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$dom" <<'PY' >/dev/null 2>&1
+import socket, struct, sys
+name, qtype = sys.argv[1], 65
+q = b"\xab\xcd" + struct.pack("!HHHHHH", 0x0100, 1, 0, 0, 0, 0)
+for lbl in name.split("."):
+    q += bytes([len(lbl)]) + lbl.encode()
+q += b"\x00" + struct.pack("!HH", qtype, 1)
+for server in ("1.1.1.1", "8.8.8.8"):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    try:
+        s.sendto(q, (server, 53)); data = s.recv(4096); s.close()
+    except Exception:
+        continue
+    # RR 载荷里出现 "ech=" 的 base64 就是有 ECHConfig
+    if b"ech=" in data:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+        return $?
+    fi
+    return 1
+}
+
 cdn_supported_transport() {
     local t="${1:-}"
     local x

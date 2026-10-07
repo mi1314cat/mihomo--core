@@ -175,6 +175,61 @@ dns_preset_safe() {
 JSON
 }
 
+# 客户端安全默认 (2026-10-07 新增)
+#
+# 与服务端的差别不是"随便换一套", 而是**客户端才需要的四样东西**:
+#   1. fake-ip —— 客户端拿到的应该是 198.18.x.x 假地址, 真实 IP 只在 mihomo
+#      内部使用。没有它, 应用层拿到真实 IP 就可能绕过代理 (QUIC、STUN 打洞
+#      尤其明显)。
+#   2. fake-ip-filter —— **没有它 fake-ip 会坏事**, 而且症状极具误导性:
+#      QUIC/STUN 打洞失败、NTP 校时卡住、iCloud 中继连不上。用户看到这些
+#      第一反应是"关掉 fake-ip", 于是反而引入了真实 DNS 泄露。
+#      这是本模板里最不能省的一行。
+#   3. nameserver / fallback 带 #PROXY —— 让 DNS 流量自己走代理。
+#      不带的话加密 DNS 是**直连**出去的, 等于换了个协议的泄露。
+#   4. proxy-server-nameserver —— 解析代理节点自身域名必须**直连**,
+#      否则第一次启动时还没有可用链路, 会死循环。
+#
+# listen 跟随 bind 地址 (不是硬编码 0.0.0.0): 开了局域网访问时 DNS 口跟着
+# 对外开是合理的 (给局域网设备用), 但**默认不开放**。
+dns_preset_client() {
+    cat <<'JSON'
+{
+  "enable": true,
+  "listen": "127.0.0.1:1053",
+  "ipv6": false,
+  "use-hosts": true,
+  "enhanced-mode": "fake-ip",
+  "fake-ip-range": "198.18.0.1/16",
+  "fake-ip-filter": [
+    "*.lan", "localhost", "*.local", "+.msftconnecttest.com",
+    "+.stun.*", "+.stun.*.*", "time.*", "+.pool.ntp.org",
+    "+.apple.com", "+.icloud.com", "+.icloud-content.com"
+  ],
+  "default-nameserver": ["223.5.5.5", "119.29.29.29"],
+  "nameserver": ["https://dns.alidns.com/dns-query#PROXY",
+                 "https://doh.pub/dns-query#PROXY"],
+  "proxy-server-nameserver": ["https://dns.alidns.com/dns-query"],
+  "fallback": ["https://1.0.0.1/dns-query#PROXY", "tls://dns.google#PROXY"],
+  "fallback-lazy-query": true,
+  "fallback-filter": {"geoip": true, "geoip-code": "CN"},
+  "respect-rules": true,
+  "cache-algorithm": "arc",
+  "cache-max-size": 4096
+}
+JSON
+}
+
+# 套用哪一个: DNS_MODE=client 时用客户端模板。
+# 不用"看有没有 CLI_CONF"来判断 —— 分享功能也会 export SRV_CONF,
+# 那时候我们仍然在服务端上下文里。
+_dns_preset_pick() {
+    case "${DNS_MODE:-server}" in
+        client) dns_preset_client ;;
+        *)      dns_preset_safe ;;
+    esac
+}
+
 _dns_apply_preset() {
     print_info "将套用安全默认:"
     printf "     %b·%b listen 只绑 127.0.0.1:1053 (不做开放解析器)\n" "${DIM:-}" "${RESET:-}" >&2
@@ -187,7 +242,12 @@ _dns_apply_preset() {
     case "$(clean_input "${a:-}")" in
         n|N|no|NO) print_info "已取消"; return 0 ;;
     esac
-    dns_write "$(dns_preset_safe | tr -d '\n')"
+    if [[ "${DNS_MODE:-server}" == "client" ]]; then
+        printf "     %b·%b fake-ip + fake-ip-filter (后者不能省, 否则 QUIC/STUN/NTP 会坏)\n" "${DIM:-}" "${RESET:-}" >&2
+        printf "     %b·%b nameserver/fallback 带 #PROXY —— DNS 自己也走代理, 不直连泄露\n" "${DIM:-}" "${RESET:-}" >&2
+        printf "     %b·%b proxy-server-nameserver 直连解析节点域名, 避免首次启动死循环\n" "${DIM:-}" "${RESET:-}" >&2
+    fi
+    dns_write "$(_dns_preset_pick | tr -d '\n')"
 }
 
 # ---------- 单项设置 ----------
@@ -341,14 +401,19 @@ _dns_disable() {
 dns_menu() {
     local c
     while true; do
-        print_title "DNS 管理 (服务端)"
-        ui_hint "解析不了 = 全机节点连不上上游。改动都会先过三道校验, 不过就自动回滚。"
+        if [[ "${DNS_MODE:-server}" == "client" ]]; then
+            print_title "DNS 管理 (客户端)"
+            ui_hint "客户端默认用 fake-ip。fake-ip-filter 不能删 —— 少了它 QUIC/STUN/NTP 会坏, 而用户常误以为要关 fake-ip。"
+        else
+            print_title "DNS 管理 (服务端)"
+            ui_hint "解析不了 = 全机节点连不上上游。改动都会先过三道校验, 不过就自动回滚。"
+        fi
         ui_menu 1 "查看当前 DNS 配置"
         ui_menu 2 "套用安全默认 (推荐)"
         ui_menu 3 "设置主解析 (加密 DoH/DoT)"
         ui_menu 4 "设置引导解析 (明文)"
         ui_menu 5 "设置境外解析 fallback"
-        ui_menu 6 "开关 fake-ip (服务端建议关)"
+        ui_menu 6 "开关 fake-ip (服务端建议关 / 客户端建议开)"
         ui_menu 7 "设置域名解析策略 (防泄露)"
         ui_menu 8 "开关 respect-rules"
         ui_rule

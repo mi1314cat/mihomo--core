@@ -129,11 +129,34 @@ import io, os, re, sys
 files = [os.path.join(r, f) for r, _, fs in os.walk('src') for f in fs if f.endswith('.sh')]
 files.append('install.sh')
 defined = set()
+def _strip_heredocs(text):
+    """把 <<'TAG' ... TAG 的**内容**整段去掉。
+
+    为什么必须去: 内嵌的 python 里 `_mlib = sys.argv[3]` 这种赋值长得和
+    shell 的函数调用一模一样 (行首一个下划线开头的标识符), 会被幽灵函数扫描
+    误判成"引用了一个不存在的函数"。而heredoc 内容根本不是 shell 代码 ——
+    把它当 shell 去扫, 报出来的"幽灵函数"全是假的。
+    实测踩过: 导入器里内嵌的 python 变量 _mlib / _mihomo_types 被报成幽灵函数。
+    """
+    out, lines, i = [], text.split('\n'), 0
+    while i < len(lines):
+        m = re.search(r"<<-?\s*'?\"?([A-Za-z_][A-Za-z0-9_]*)'?\"?", lines[i])
+        if m:
+            tag = m.group(1)
+            out.append(re.sub(r"<<-?\s*'?\"?[A-Za-z_][A-Za-z0-9_]*'?\"?", '', lines[i]))
+            i += 1
+            while i < len(lines) and not re.match(rf'^\s*{re.escape(tag)}\s*$', lines[i]):
+                i += 1
+            i += 1
+            continue
+        out.append(lines[i]); i += 1
+    return '\n'.join(out)
+
 for p in files:
-    defined |= set(re.findall(r'^\s*([_a-zA-Z]\w*)\(\)\s*\{', io.open(p, encoding='utf-8').read(), re.M))
+    defined |= set(re.findall(r'^\s*([_a-zA-Z]\w*)\(\)\s*\{', _strip_heredocs(io.open(p, encoding='utf-8').read()), re.M))
 miss = {}
 for p in files:
-    for i, l in enumerate(io.open(p, encoding='utf-8').read().split('\n'), 1):
+    for i, l in enumerate(_strip_heredocs(io.open(p, encoding='utf-8').read()).split('\n'), 1):
         c = l.split('#')[0]
         c = re.sub(r'\$\{[^}]*\}', ' ', c)
         c = re.sub(r'\$\w+', ' ', c)
