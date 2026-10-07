@@ -789,7 +789,7 @@ cdn_check_residue() {
     if (( bad == 0 )); then
         print_ok "三处状态一致, 没有残留"
     else
-        print_warn "共发现 $bad 处不一致。用 9) 移除配置 或 7) 重新应用全部绑定 处理。"
+        print_warn "共发现 $bad 处不一致。处理: 9) 移除配置 (可直接输域名或 a 清一整片) 或 7) 重新应用全部绑定"
     fi
 }
 
@@ -997,19 +997,62 @@ cdn_menu() {
                     printf '  %2d) %-22s %s\n' "$n" "$t" "$d" >&2
                 done < "$CDN_BIND_FILE"
                 if (( n == 0 )); then print_info "暂无绑定, 无需移除"; pause; continue; fi
-                local pick
-                pick=$(safe_read "要移除的编号 (留空取消)" "")
-                [[ -n "$pick" ]] || continue
-                local i=0
-                while IFS=$'\t' read -r t d s tr p pt; do
-                    [[ -n "$t" ]] || continue
-                    i=$((i + 1))
-                    if [[ "$i" == "$pick" ]]; then
-                        cdn_node_unregister "$t"
-                        print_ok "已移除 $t 的回源配置"
-                        break
-                    fi
+                # 按域名分组 —— 绑在同一个站点上的节点往往有十几个 (一台机器
+                # 一个批量就是二十来个), 逐条删要删二十几次。列出域名让用户
+                # 一次清掉一整个站点, 想精确到单节点再用编号。
+                local -A dcount=()
+                local dd
+                while IFS=$'\t' read -r t dd _ _ _ _; do
+                    [[ -n "${dd:-}" ]] && dcount["$dd"]=$(( ${dcount[$dd]:-0} + 1 ))
                 done < "$CDN_BIND_FILE"
+                printf '\n  按域名一次清掉:\n' >&2
+                local k=0
+                for dd in "${!dcount[@]}"; do
+                    k=$((k + 1))
+                    printf '    ${CYAN}%s${RESET}) %s %s(${dcount[$dd]} 个绑定)${RESET}\n' "$k" "$dd" "${DIM}" "${RESET}" >&2
+                done
+                printf '\n  ${DIM}输入域名直接清该站点, 输入 a 清空全部, 输入编号只删那一条${RESET}\n' >&2
+                local pick
+                pick=$(safe_read "移除哪个 (回车取消)" "")
+                [[ -n "$pick" ]] || continue
+                case "$pick" in
+                    a|A|all|全部)
+                        print_warn "将移除全部 $n 条绑定, 并从 Nginx 摘掉对应站点的回源片段"
+                        printf "  ${CYAN}确认? [y/N]: ${RESET}" >&2
+                        local ya; read -r ya
+                        [[ "$ya" =~ ^[yY]$ ]] || { print_info "已取消"; pause; continue; }
+                        cdn_wipe_all ;;
+                    *)
+                        # ⚠ 必须先把绑定表读进数组再处理。
+                        #   cdn_node_unregister → cdn_bind_del 会
+                        #   `: > "$CDN_BIND_FILE"` 清空后重写, 而循环正从同一个
+                        #   文件读 —— 边读边写会让第一行之后就读到空, 结果只删掉
+                        #   第一条, 剩下的原封不动 (实测 4 条只少了 1 条)。
+                        # 先快照再处理, 循环期间文件怎么改都不影响。
+                        local matched=0
+                        local -a _rows=()
+                        local _line
+                        while IFS= read -r _line; do _rows+=("$_line"); done < "$CDN_BIND_FILE"
+                        for _line in "${_rows[@]}"; do
+                            IFS=$'\t' read -r t dd ss tr p pt <<< "$_line"
+                            [[ -n "${dd:-}" && "$dd" == "$pick" ]] || continue
+                            cdn_node_unregister "$t" && matched=1
+                        done
+                        if (( matched )); then
+                            print_ok "已清理域名 $pick 的全部回源配置"
+                            pause; continue
+                        fi
+                        local i=0
+                        while IFS=$'\t' read -r t d s tr p pt; do
+                            [[ -n "$t" ]] || continue
+                            i=$((i + 1))
+                            if [[ "$i" == "$pick" ]]; then
+                                cdn_node_unregister "$t"
+                                print_ok "已移除 $t 的回源配置"
+                                break
+                            fi
+                        done < "$CDN_BIND_FILE" ;;
+                esac
                 pause ;;
             10) cdn_probe 2>&1 | sed 's/^/  /' >&2; pause ;;
             11) ui_clear; ui_title "CDN 接入说明"; cdn_help; pause ;;
