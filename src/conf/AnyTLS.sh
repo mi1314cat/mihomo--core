@@ -148,6 +148,14 @@ _validate_padding_scheme() {
 
 ask_padding() {
     PADDING_BLOCK=""
+    # 推荐配置带了 pad → 直接套内核默认方案并跳过提问。
+    # 显式写出来而不是"不写"是有意的: 内置默认只有一份, 写出来之后用户能
+    # 看见、也能改; 将来内核改了默认而我们没跟, 差异一眼可见。
+    if [[ "${M_PRESET_APPLIED:-0}" == "1" && "${M_PRESET_PAD:-0}" == "1" ]]; then
+        PADDING_BLOCK="$(render_padding_block "$ANYTLS_PADDING_DEFAULT")"
+        print_info "padding-scheme: 已按推荐配置写入内核默认抗探测方案"
+        return 0
+    fi
     echo "  抗主动探测填充 padding-scheme (服务端侧选配):" >&2
     echo "  ⚠ 只有 listener 能配这个字段; 客户端走内置默认, 真实方案由服务端协议帧下发。" >&2
     echo "    (依据: listener/inbound/anytls.go:24 有; adapter/outbound/anytls.go:27-51 没有)" >&2
@@ -225,6 +233,19 @@ IDLE_TIMEOUT="30"
 
 ask_idle() {
     IDLE_CHECK="30"; IDLE_TIMEOUT="30"
+    # 推荐档的空闲回收值由 preset 决定 (标准 30 / 强化 15 / 性能 60)。
+    # 30s 就是内核默认值, 写出来是为了让配置可读, 不是为了改行为。
+    if [[ "${M_PRESET_APPLIED:-0}" == "1" ]]; then
+        # 预置 id 来自 src/lib/preset.sh 的 anytls 三档:
+        #   tls-self (自签+pin) / tls-real (真证书) / tls-pad (真证书+padding)
+        # 三档的空闲回收都保持内核默认 30s —— 30s 是 mihomo 的默认值, 改小
+        # 会让长连接被频繁重建 (视频/下载场景反而更卡), 改大则空闲会话占着
+        # 内存不放。**这里刻意不做"每档一个不同值"的差异化**: 那只会让用户
+        # 以为自己选到了更优解, 实际是随手定的数。
+        # 真正按档位变化的只有 padding (tls-pad 才开), 见 ask_padding。
+        IDLE_CHECK="30"; IDLE_TIMEOUT="30"
+        print_info "空闲会话回收: 30s (内核默认, ${M_PRESET_ID:-标准档})"
+    fi
     while true; do
         printf "  空闲会话检查间隔 idle-session-check-interval 秒 (默认 30, 最小 6): " >&2
         local v=""
@@ -422,6 +443,12 @@ add_config() {
     else
         LINK_IP="$SERVER_IP"
     fi
+
+    # 6.5 推荐配置。
+    #    AnyTLS 的参数是"不调就明显不对"的那一类: padding 不开就没有抗主动
+    #    探测能力, 空闲回收不设就用内核默认。这些不是可有可无的装饰项,
+    #    所以推荐档把它们一次配齐 —— 用户一路回车就能拿到合理值。
+    preset_ask anytls "AnyTLS 推荐配置"
 
     # 7. 询问可选特性 (mTLS / smux / 指纹 / 空闲会话 / 服务端 padding)
     ask_features

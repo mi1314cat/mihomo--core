@@ -471,6 +471,12 @@ ask_features() {
     ECH_ENABLED=false
     BRUTAL_ENABLED=false
 
+    # ★ 预置已套用时不再问传输 —— 问了就等于把用户刚选的推荐方案覆盖掉,
+    #   那还不如不给预置。M_PRESET_APPLIED 由 preset_apply 置位。
+    if [[ "${M_PRESET_APPLIED:-0}" == "1" && -n "${M_PRESET_TR:-}" ]]; then
+        VLESS_TRANSPORT="$M_PRESET_TR"
+        print_info "传输方式 (来自推荐配置): $VLESS_TRANSPORT"
+    else
     echo "  传输方式:" >&2
     echo "  1) WS (WebSocket, CDN 最兼容, 推荐)" >&2
     echo "  2) XHTTP (XHTTP+CDN, 抗识别更强, 需 Cloudflare 支持)" >&2
@@ -486,9 +492,23 @@ ask_features() {
         5) VLESS_TRANSPORT="tcp" ;;
         *) VLESS_TRANSPORT="ws" ;;
     esac
+    fi   # ← 预置分支结束
 
     if [[ "$VLESS_TRANSPORT" = "xhttp" ]]; then
         ask_xhttp_level
+    fi
+
+    # smux 档位也由推荐配置给 (网页党/视频党), 没给才问
+    if [[ "${M_PRESET_APPLIED:-0}" == "1" && -n "${M_PRESET_MUX:-}" ]]; then
+        SMUX_PROFILE="$M_PRESET_MUX"
+        print_info "smux 档位 (来自推荐配置): $SMUX_PROFILE"
+    fi
+
+    # ECH: 推荐配置里带了 ech 就直接开, 不再单独问一遍
+    if [[ "${M_PRESET_ECH:-0}" == "1" ]]; then
+        ECH_ENABLED=true
+        MTLS_ENABLED=false      # ECH 与 mTLS 冲突, 与原有分支保持一致
+        print_info "ECH: 已按推荐配置启用 (mTLS 自动跳过)"
     fi
 
     ask_client_fp
@@ -1073,8 +1093,17 @@ add_config() {
         LINK_IP="$SERVER_IP"
     fi
 
+    # 4.5 先问"要哪种推荐配置" —— 一路回车 = ① 推荐档 (抗 DPI 最强那档)。
+    #     不设这个的话, 后面全是逐项提问, 默认值拼出来的东西能用但称不上好。
+    preset_ask vless "VLESS 推荐配置"
+
     # 5. 询问特性 (传输五选一 / xhttp 档位 / 指纹 / smux / mTLS / ECH)
+    #    ⚠ 这里**不能**提前 preset_reset —— 它会把 M_PRESET_APPLIED 和
+    #    M_PRESET_TR 一并清掉, 而 ask_features 正是靠这两个值跳过提问的。
+    #    早清一次的表现是"菜单里选了推荐档, 结果传输还是问了一遍" ——
+    #    预置形同虚设, 而且不报任何错。
     ask_features
+    preset_reset   # ← 消费完才清, 下一个节点才不会继承上一个的选择
 
     # 6. TLS 证书来源 (VLESS 恒 TLS, 无 Reality 分支)
     ask_cert

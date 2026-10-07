@@ -617,6 +617,8 @@ add_config() {
     ask_port_hopping_mode "$port" || return 1
 
     # ---- 选配: obfs 混淆 (服务端/客户端对称) ----
+    # 推荐配置: 默认档 = salamander 混淆 + 内核原生端口跳跃 (不动防火墙)
+    preset_ask hysteria2 "Hysteria2 推荐配置"
     ask_obfs || return 1
 
     # ---- 选配: masquerade 伪装站 ----

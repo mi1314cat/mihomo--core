@@ -443,6 +443,11 @@ m_node_tag() {
     case "$form" in
         reality) base="REALITY" ;;
         tls)     base="TLS" ;;
+        # ⚠ 这一档原先没有分支, 于是传 "cdn" 的节点**回落到 plain**,
+        #   节点名显示成 "mTrojan04-plain-WS"。但它是过 Cloudflare 的节点,
+        #   连的是边缘 443, 不是源站端口 —— 名字写成 plain 会让人以为它是
+        #   直连裸节点, 排查 CDN 问题时先被名字带偏。
+        cdn)     base="CDN" ;;
         *)       base="plain" ;;
     esac
     # 形态已经表达过的词, 标签里不要重复, 否则拼出 "-REALITY-REALITY"。
@@ -1048,6 +1053,7 @@ _m_libdir="$(dirname "${BASH_SOURCE[0]}")"
 # 放最后 —— 里面的辅助函数 (_extra_*) 名字已加前缀, 不与其它 lib 撞名。
 # shellcheck source=/dev/null
 [[ -f "$_m_libdir/server_extra.sh" ]] && source "$_m_libdir/server_extra.sh"
+
 
 # 删除某个节点的客户端产物 —— 删节点路径共用。
 #

@@ -297,8 +297,13 @@ add_config() {
     uuid=$(uuidgen)
     pass=$(openssl rand -hex 12)
 
+    # ---- 先问推荐配置: 默认档就是 bbr + native, 而 bbr 正是内核 listener
+    #      的默认值, 两侧不一致会连不通 —— 所以推荐档等于"不会配错"。
+    preset_ask tuic "TUIC 推荐配置"
+
     # ---- 选配: 拥塞控制 / UDP 中继 / 0-RTT / 心跳 ----
     ask_tuic_opts
+    preset_reset
 
     IN_FILE="$CONF_DIR/${PROTO}-$index.yaml"
     OUT_FILE="$OUT_DIR/${PROTO}_client-$index.yaml"

@@ -223,3 +223,39 @@ bash src/conf/VLESS.sh
 - 客户端: **25/25 节点连通**, 其中 **CDN 档 7/7 全通** (174–429 ms)
 - 双端证据链: <CLIENT_ALIAS> 无直连 → 经代理出口 = <SERVER_ALIAS> 同目标出口 ✅, DNS 返回 fake-ip `198.18.0.4` ✅
 - ECH: 抓包带对照组验证 —— 开: 明文 SNI 仅 `cloudflare-ech.com`; 关: 真实域名暴露 ✅
+---
+
+## 六、推荐配置 (presets) —— 每个协议菜单开头都有
+
+进入任一协议的交互菜单，**第一件事**就是问「要哪种推荐配置」，**一路回车 = ① 推荐档**。
+
+| 协议 | 预置数 | ① 推荐档 |
+|------|:-----:|---------|
+| VLESS | 9 | 隐匿优先 · REALITY（裸 TCP + XTLS Vision，抗 DPI 最强） |
+| VMess | 6 | 隐匿优先 · REALITY（裸 TCP，无 Web 特征） |
+| Trojan | 7 | 隐匿优先 · REALITY |
+| AnyTLS | 3 | 自签 + 钉扎（一路回车即可建，无需先备 crt/key） |
+| Hysteria2 | 2 | 推荐默认（salamander 混淆 + 内核原生端口跳跃） |
+| TUIC | 2 | 推荐默认 · BBR（拥塞控制两侧必须一致） |
+
+CDN 相关档位（VLESS/VMess/Trojan 的 ws / gRPC / xHTTP）全部带 **ECH**。
+
+### 为什么预置里刻意**没有**的组合
+
+| 组合 | 原因 |
+|------|------|
+| REALITY + WS | 实测 mihomo 0/3~0/5 稳定失败（裸 TCP/gRPC/h2 全通过） |
+| AnyTLS + REALITY | 实测 0/5；SB 的表里也注明「仅 sing-box 客户端」 |
+| VLESS + h2 | mihomo 的 vless listener 结构性不支持 h2（`listener/sing_vless/server.go`） |
+
+这些是**实测结论**，不是保守起见 —— 写进预置表就是避免用户配出连不上的节点。
+
+### 预置是真生效的，不是只显示菜单
+
+已用「有预置 / 无预置」对照组验证：
+- 选 AnyTLS ③（真证书+padding）→ `padding-scheme` 实际写入配置；
+  不选预置 → `PADDING_BLOCK` 为空。
+- 选 VLESS ③（gRPC）→ 传输被定死为 `grpc`、smux 取 `video`，**不再重复提问**。
+
+实现位置：`src/lib/preset.sh`（预置表 + `preset_ask`/`preset_apply`），
+各协议脚本在问特性之前先调 `preset_ask`，消费完再 `preset_reset`。

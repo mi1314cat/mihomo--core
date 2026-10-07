@@ -589,8 +589,12 @@ add_config() {
         LINK_IP="$SERVER_IP"
     fi
 
+    # 4.5 推荐配置 (一路回车 = ① 隐匿优先 REALITY)
+    preset_ask trojan "Trojan 推荐配置"
+
     # 5. 询问特性 (模式/smux/mTLS)
     ask_features
+    preset_reset   # 消费完才清
 
     # 6. 按模式准备安全参数
     if [[ "$TROJAN_MODE" = "reality" ]]; then
