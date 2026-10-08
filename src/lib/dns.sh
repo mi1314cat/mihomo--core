@@ -192,6 +192,28 @@ JSON
 #
 # listen 跟随 bind 地址 (不是硬编码 0.0.0.0): 开了局域网访问时 DNS 口跟着
 # 对外开是合理的 (给局域网设备用), 但**默认不开放**。
+# ★ 这份预设里三处曾经让 ECH 整体失效, 已改:
+#
+#   nameserver 的 #PROXY  →  解析域名要先连代理, 而代理节点地址本身是域名,
+#                           又要解析。循环依赖。mihomo 遇到死锁不报错, 只是
+#                           静默丢掉查询 —— 丢的不只是 A 记录, HTTPS/SVCB
+#                           (type 65) 一条也没要到, 而 Cloudflare 的
+#                           ECHConfig 就装在那条记录里。
+#   fallback-filter      →  走 CDN 的域名解析出来是 Cloudflare 的境外 IP,
+#                           geoip 判为非 CN, 查询被改派给 fallback 组
+#                           (1.0.0.1 / dns.google), 这两个国内不可达。
+#                           换成国内 DoH 也没用: 只要它开着就会重路由。
+#   respect-rules        →  另一个让 DNS 走代理的开关, 同样造成循环依赖。
+#
+# 实测 (同一批带 ech-opts 的 CDN 节点, 同一台客户端, 只差 fallback-filter):
+#     无 fallback-filter   7 / 7 可用
+#     有 fallback-filter   0 / 7 可用
+#
+# 代价只是少了境外 DNS 分流。国内 DoH 本来就该处理国内域名, 实际没有损失,
+# 顺带省掉"一个域名发给 4 家解析器"。
+#
+# ⚠ 注释必须留在 heredoc **外面**。放进去就成了 JSON 的一部分,
+#   dns_write 解析时直接报错 —— 菜单 16 会整个不可用。
 dns_preset_client() {
     cat <<'JSON'
 {
@@ -207,13 +229,10 @@ dns_preset_client() {
     "+.apple.com", "+.icloud.com", "+.icloud-content.com"
   ],
   "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-  "nameserver": ["https://dns.alidns.com/dns-query#PROXY",
-                 "https://doh.pub/dns-query#PROXY"],
+  "nameserver": ["https://dns.alidns.com/dns-query",
+                 "https://doh.pub/dns-query"],
   "proxy-server-nameserver": ["https://dns.alidns.com/dns-query"],
-  "fallback": ["https://1.0.0.1/dns-query#PROXY", "tls://dns.google#PROXY"],
-  "fallback-lazy-query": true,
-  "fallback-filter": {"geoip": true, "geoip-code": "CN"},
-  "respect-rules": true,
+  "respect-rules": false,
   "cache-algorithm": "arc",
   "cache-max-size": 4096
 }
@@ -244,7 +263,8 @@ _dns_apply_preset() {
     esac
     if [[ "${DNS_MODE:-server}" == "client" ]]; then
         printf "     %b·%b fake-ip + fake-ip-filter (后者不能省, 否则 QUIC/STUN/NTP 会坏)\n" "${DIM:-}" "${RESET:-}" >&2
-        printf "     %b·%b nameserver/fallback 带 #PROXY —— DNS 自己也走代理, 不直连泄露\n" "${DIM:-}" "${RESET:-}" >&2
+        printf "     %b·%b 主解析直连国内 DoH —— 不能带 #PROXY, 否则解析要先连代理, 而代理地址本身是域名, 又要解析\n" "${DIM:-}" "${RESET:-}" >&2
+        printf "     %b·%b 不设 fallback/filter —— 有它会让 ECH 失效 (境外域名被改派给不可达的解析器)\n" "${DIM:-}" "${RESET:-}" >&2
         printf "     %b·%b proxy-server-nameserver 直连解析节点域名, 避免首次启动死循环\n" "${DIM:-}" "${RESET:-}" >&2
     fi
     dns_write "$(_dns_preset_pick | tr -d '\n')"
