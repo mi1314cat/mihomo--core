@@ -2180,8 +2180,19 @@ if [[ "${ALL_MKCP:-0}" == "1" ]]; then
     gen vmess-mkcp   "VMess+mKCP"          0 2 vmess     g_vmess_mkcp
     gen vmess-mekya  "VMess+Mekya"         0 2 vmess     g_vmess_mekya
 fi
-gen vmess-reality  "VMess+TCP+Reality"     1 0 vmess     g_vmess_reality
-gen vmess-grpc     "VMess+gRPC+Reality"    1 0 vmess     g_vmess_grpc_reality
+# VMess 整体不进默认档位 (实测决策), 但**没有删掉**, 需要时显式开启:
+#   ALL_VMESS=1 bash src/conf/all.sh
+#
+# 为什么移出默认:
+#   * 特征明显, 主动探测成本低 —— 同样的伪装需求 REALITY 和 TLS 都能满足,
+#     而且做得好得多 (见 E-2)。VLESS-REALITY 全套可用, 没有非用 VMess 不可。
+#   * 同样一批节点里, VMess-CDN 的两个 (mVMess03-CDN-WS / mVMess04-CDN-gRPC)
+#     实测连不上, 而同源的 VLESS-CDN 两个都通。
+#   * 性能不如 VLESS, 没有独有优势。
+if [[ "${ALL_VMESS:-0}" == "1" ]]; then
+    gen vmess-reality  "VMess+TCP+Reality"     1 0 vmess     g_vmess_reality
+    gen vmess-grpc     "VMess+gRPC+Reality"    1 0 vmess     g_vmess_grpc_reality
+fi
 # 证书组
 gen trojan-tls     "Trojan+TLS"            0 1 trojan    g_trojan_tls
 gen vless-ws       "VLESS+WS+TLS"          0 1 vless     g_vless_ws_tls
@@ -2213,10 +2224,12 @@ gen xhttp-cdn      "VLESS+XHTTP+CDN"       0 2 vless     g_vless_xhttp_cdn
 # Cloudflare 不转发, 给了也是连不上的死节点。
 gen cdn-v-ws       "CDN: VLESS+WS"         0 2 vless     g_cdn_tier vless ws
 gen cdn-v-grpc     "CDN: VLESS+gRPC"       0 2 vless     g_cdn_tier vless grpc
-gen cdn-m-ws       "CDN: VMess+WS"         0 2 vmess     g_cdn_tier vmess ws
-gen cdn-m-grpc     "CDN: VMess+gRPC"       0 2 vmess     g_cdn_tier vmess grpc
 gen cdn-t-ws       "CDN: Trojan+WS"        0 2 trojan    g_cdn_tier trojan ws
 gen cdn-t-grpc     "CDN: Trojan+gRPC"      0 2 trojan    g_cdn_tier trojan grpc
+if [[ "${ALL_VMESS:-0}" == "1" ]]; then
+    gen cdn-m-ws       "CDN: VMess+WS"         0 2 vmess     g_cdn_tier vmess ws
+    gen cdn-m-grpc     "CDN: VMess+gRPC"       0 2 vmess     g_cdn_tier vmess grpc
+fi
 # 明文档 (无 TLS)
 
 
@@ -2224,8 +2237,16 @@ gen cdn-t-grpc     "CDN: Trojan+gRPC"      0 2 trojan    g_cdn_tier trojan grpc
 gen hysteria2      "Hysteria2"      0 1 hysteria2 g_hysteria2
 gen tuicv5         "TUIC v5"        0 1 tuicv5    g_tuicv5
 gen anytls         "AnyTLS"         0 1 anytls    g_anytls
-gen ss             "Shadowsocks"    0 0 ss        g_shadowsocks
-gen snell          "Snell"          0 0 snell     g_snell
+# Shadowsocks / Snell 不进默认档位 —— 两个都是**无加密**。
+#
+# 已经有 REALITY 和 TLS 的时候, 明文协议没有任何存在理由: 它不会比加密的更
+# 难被封 (一样是已知协议的已知特征), 却把所有流量暴露在链路上。
+# Snell 还有一层问题: 协议本身早已停止维护。
+# 需要时显式开启: ALL_PLAIN=1 bash src/conf/all.sh
+if [[ "${ALL_PLAIN:-0}" == "1" ]]; then
+    gen ss             "Shadowsocks"    0 0 ss        g_shadowsocks
+    gen snell          "Snell"          0 0 snell     g_snell
+fi
 
 # ---------- 汇总 ----------
 printf "\n${BOLD}生成结果${RESET}\n"
