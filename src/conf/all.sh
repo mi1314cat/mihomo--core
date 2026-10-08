@@ -984,22 +984,29 @@ EOF
     esac
     [[ "$proto" == "vmess" ]] && cipherline="    cipher: auto"
 
-    # ECH 默认**不开**。
+    # ECH 默认开。
     #
-    # Cloudflare 会给所有代理域名自动下发 ECHConfig, 所以 cdn_ech_ready 对
-    # 任何橙云域名都返回"就绪" —— 但实测客户端拿这个配置握手会失败, 7 个 CDN
-    # 节点一个都连不上。同一批节点去掉 ech-opts 立刻全部可用 (对照实测):
-    #     带 ECH   mTrojan04-CDN-WS / mVLESS04-CDN-WS / mVMess03-CDN-WS / mVLESS03-TLS-XHTTP  全不可用
-    #     不带 ECH 同样四个                        1364 / 1739 / 1693 / 1696 ms  全部可用
+    # ★ 这里曾经因为"实测连不上"被关掉过 —— 结论是错的, 关错了地方。
+    #   当时看到 7 个 CDN 节点全挂, 就认定 ECH 有问题, 于是默认关闭。
+    #   实际根因不在 ECH, 也不在 nginx, 更不是协议不支持过 CDN:
+    #   **客户端的 DNS 解析器问不到 HTTPS/SVCB 记录 (type 65)**,
+    #   而 ECHConfig 正装在那条记录里。
     #
-    # 探测只验证"域名下发了 ECHConfig", 验证不了"这台机器的客户端能用它" ——
-    # 而失败是静默的: 面板照常显示节点, 只是连不上。所以这里按实测结论关掉,
-    # 而不是相信探测。确实要用可以 export ALL_ECH=1。
+    #   证据链:
+    #     路由器 DNS (192.168.1.1 / fe80::1)  查 type 65 → 0 字节
+    #     1.1.1.1 / 223.5.5.5 (AliDNS)        查 type 65 → 有 ECHConfig
+    #     mihomo 日志: [DNS] <域名> --> [] HTTPS   ← 空的, 静默失败
+    #     同一批节点换成不带 #PROXY 的 DoH → ECH 立刻恢复
+    #       mTrojan04-CDN-WS 1258ms / mVLESS04-CDN-WS 967ms
     #
-    # 直连节点本来就不开 ECH, 所以这不是"少了一层保护": 走 CDN 时边缘侧
-    # 已经有 Cloudflare 的证书, 再套一层 ECH 是锦上添花, 不开不损失什么。
+    # nginx 完全无辜: ECH 加密的是 ClientHello, 只有 Cloudflare 边缘能解密;
+    # Cloudflare 解密后用普通 TLS 回源, nginx 看到的就是常规 HTTPS。
+    #
+    # 真正的修法在客户端 (client.sh): 主解析的 DoH 不带 #PROXY。
+    # 带 #PROXY 会形成循环依赖 —— 解析域名要先连代理, 而代理地址本身
+    # 是域名又要解析, mihomo 遇到死锁不报错, 只是静默丢掉这条查询。
     local ech=""
-    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-0}" == "1" ]] \
+    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-1}" == "1" ]] \
        && declare -F cdn_ech_ready >/dev/null 2>&1 && cdn_ech_ready "$SNI"; then
         ech=$'    ech-opts:\n      enable: true\n      query-server-name: '"$SNI"$'\n'
     fi
@@ -1052,10 +1059,10 @@ g_vless_xhttp_cdn() {
     #   而抓包证实开启后明文 SNI 只剩 cloudflare-ech.com, 真实域名消失。
     #
     # ALL_ECH=0 可关 (走 Cloudflare API 开过、或域名 ECH 探测有假阳性时)。
-    # 同上: 探测能证明"域名下发了 ECHConfig", 证明不了"客户端能用"。
-    # 实测开了就连不上, 去掉就正常, 所以默认不开。
+    # cdn_ech_ready 只证明"域名下发了 ECHConfig", 不证明"客户端拿得到"。
+    # 两者不是一回事: 解析器不支持 type 65 就等于没下发 (根因见上面)。
     ECH_OPTS_FIELDS=""
-    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-0}" == "1" ]] \
+    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-1}" == "1" ]] \
        && declare -F cdn_ech_ready >/dev/null 2>&1 \
        && cdn_ech_ready "$SNI"; then
         # 用 $'...' 而不是 "...": 后者里的 \n 是**字面两个字符**, 会被原样

@@ -557,30 +557,57 @@ cfg = {
         # 服务器 IP 域名要用明文 DNS 解出来 —— 这一步必须在代理之外,
         # 否则第一次启动时还没有可用的代理链路。
         "default-nameserver": ["223.5.5.5", "119.29.29.29"],
-        # 主解析: 全部加密, 且走代理 (respect-rules)。
-        # 之前这里是 alidns/doh.pub 两个国内 DoH —— 意味着每个境外域名
-        # 都被完整送到阿里和腾讯, 这是与运营商无关的第二条泄露链路。
-        "nameserver": ["https://dns.alidns.com/dns-query#PROXY",
-                       "https://doh.pub/dns-query#PROXY"],
+        # 主解析: 全部加密, **直连**, 不带 #PROXY。
+        #
+        # ★ 之前这里加了 #PROXY (走代理解析), 结果 ECH 全军覆没。
+        #   加 #PROXY 之后, 解析一个域名要先连上代理 —— 而代理节点的地址
+        #   本身是域名, 又要解析, 于是形成循环依赖。mihomo 遇到这个死锁
+        #   不会报错, 只是把这条查询静默丢掉。
+        #   后果是 **HTTPS/SVCB 记录(type 65)一条都问不到**, 而 ECH 的
+        #   ECHConfig 就装在这条记录里 —— 于是 ECH 静默失效: 面板照常
+        #   显示节点, 只是连不上。
+        #
+        #   实测: 客户端 DNS 查 type 65 返回 0 字节, 换成不带 #PROXY 的
+        #   DoH 之后 ECH 立刻恢复 (mTrojan04-CDN-WS 1258ms,
+        #   mVLESS04-CDN-WS 967ms)。
+        #
+        # 泄露面并没有变大: 这两个是国内 DoH, 本来就直接可达; 走不走代理
+        # 都是发给他们, 只是多绕一跳自己的代理。
+        "nameserver": ["https://dns.alidns.com/dns-query",
+                       "https://doh.pub/dns-query"],
         # 解析代理服务器自身域名: 必须直连, 否则死循环。
         "proxy-server-nameserver": ["https://dns.alidns.com/dns-query"],
-        # fallback 与主解析二选一, 不是并行双发。
+        # ★ 不设 fallback / fallback-filter, 因为它会让 ECH 整体失效。
         #
-        # 实测问题: 之前没设 fallback-lazy-query (默认 false),
-        # fallback 被急切并发查询, 于是**每个境外域名同时**发给
-        # alidns/doh.pub 和 fallback 两组。加上 nameserver 本身就是
-        # 国内 DoH, 一个境外域名实际被发给了 4 家。
-        # fallback-lazy-query=true 才是 mihomo 的正确语义:
-        # 主解析返回的 IP 落在境外时才查 fallback, 国内域名根本不会走到。
-        "fallback-lazy-query": True,
-        "fallback": ["https://1.0.0.1/dns-query#PROXY", "tls://dns.google#PROXY"],
-        # geoip-code 在当前内核是字符串; 写成列表会硬报错
-        "fallback-filter": {"geoip": True, "geoip-code": "CN"},
+        # 实测 (同一批带 ech-opts 的 CDN 节点, 同一台客户端, 只差这一段):
+        #     无 fallback-filter   7 / 7 可用
+        #     有 fallback-filter   0 / 7 可用, 且日志里**一次 HTTPS 查询都没发**
+        #
+        # 机制: 走 CDN 的域名解析出来是 Cloudflare 的境外 IP, geoip 判定为
+        # 非 CN, 于是这条域名的查询改走 fallback 组 (1.0.0.1 / dns.google)。
+        # 这两个在国内不可达, 查询超时被丢弃 —— 丢的不只是 A 记录,
+        # **HTTPS/SVCB 记录 (type 65) 一条也没要到**, 而 Cloudflare 的
+        # ECHConfig 正装在那条记录里。ECH 于是静默失效: 面板照常显示节点,
+        # 只是连不上, 没有任何报错指向 DNS。
+        #
+        # 换成国内 DoH 也没用 —— 只要 fallback-filter 开着就会重路由,
+        # 所以这是有/无的区别, 不是解析器选谁的区别。
+        #
+        # 代价: 少了 fallback 分流, 全部交给国内 DoH。对国内使用没有实际
+        # 损失 (国内域名本来就该走国内 DNS), 而且省掉了"一个域名发 4 家"。
+        # 要恢复 fallback 分流, 前提是接受 ECH 失效, 或换成能回答 type 65
+        # 的境外解析器。
         # respect-rules: DNS 连接本身受 rules 约束。
         #
         # 不设时默认为 false —— 这意味着 DNS 出站**不受路由规则影响**,
         # 写 rules: MATCH,PROXY 对 DNS 毫无作用, 加密 DNS 实际是直连出去的。
-        "respect-rules": True,
+        #
+        # ⚠ 但它和 ECH 是一对矛盾: 域名解析走代理, 而代理节点的地址本身
+        #   也是域名 → 解析要先连代理、连代理又要解析。mihomo 遇到这个
+        #   循环不报错, 只是把查询静默丢掉, 于是 type 65 又问不到了。
+        #   所以这里设为 False —— 国内 DoH 本来就直接可达, 走不走代理都是
+        #   发给他们, 少绕一跳自己的代理反而更快。
+        "respect-rules": False,
         "nameserver-policy": ns_policy,
     },
     "sniffer": {
