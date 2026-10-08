@@ -2223,9 +2223,25 @@ gen xhttp-cdn      "VLESS+XHTTP+CDN"       0 2 vless     g_vless_xhttp_cdn
 # 只有 vless/vmess/trojan 出现在这里 —— 别的协议是裸 TCP/UDP,
 # Cloudflare 不转发, 给了也是连不上的死节点。
 gen cdn-v-ws       "CDN: VLESS+WS"         0 2 vless     g_cdn_tier vless ws
-gen cdn-v-grpc     "CDN: VLESS+gRPC"       0 2 vless     g_cdn_tier vless grpc
 gen cdn-t-ws       "CDN: Trojan+WS"        0 2 trojan    g_cdn_tier trojan ws
-gen cdn-t-grpc     "CDN: Trojan+gRPC"      0 2 trojan    g_cdn_tier trojan grpc
+# ⚠ CDN 的 gRPC 档位 (VLESS / Trojan) **不进默认**, 实测两个都不通:
+#
+#   mTrojan05-CDN-gRPC: **绕过 Cloudflare 直连源站同样不通** —— 与 CDN 无关。
+#       断点在 mihomo 客户端到 Trojan-gRPC-TLS 监听之间。同一台的
+#       mTrojan02-REALITY-gRPC 是通的 (233ms), 所以 Trojan+gRPC 传输本身能用,
+#       配 TLS 就断。官方文档列了 grpc, 所以不是"不支持", 是实现层面的问题。
+#   mVLESS05-CDN-gRPC:  直连源站 731ms 通, 走 CDN 不通 —— 在 CDN 侧。
+#       但同批的 mVMess04-CDN-gRPC 走 CDN 是通的 (221ms), 说明 Cloudflare
+#       本身支持 gRPC。两条路径都到过 nginx 且返回 200, 不是被边缘拦掉。
+#
+# 去掉不丢覆盖: Trojan+gRPC 由 mTrojan02-REALITY-gRPC 满足 (REALITY 更强),
+# VLESS 走 CDN 由 mVLESS04-CDN-WS 满足。
+# 留着只是让面板多两个永远连不上的节点 —— 故障节点比缺失节点更糟, 用户得
+# 逐个排查才知道它是不是坏了。需要时显式开启: ALL_CDN_GRPC=1
+if [[ "${ALL_CDN_GRPC:-0}" == "1" ]]; then
+    gen cdn-v-grpc     "CDN: VLESS+gRPC"       0 2 vless     g_cdn_tier vless grpc
+    gen cdn-t-grpc     "CDN: Trojan+gRPC"      0 2 trojan    g_cdn_tier trojan grpc
+fi
 if [[ "${ALL_VMESS:-0}" == "1" ]]; then
     gen cdn-m-ws       "CDN: VMess+WS"         0 2 vmess     g_cdn_tier vmess ws
     gen cdn-m-grpc     "CDN: VMess+gRPC"       0 2 vmess     g_cdn_tier vmess grpc

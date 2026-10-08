@@ -211,6 +211,62 @@ json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 PY
 }
 
+# 给某条订阅下的所有节点名加来源前缀。
+#
+# 为什么需要: 同一个客户端常常同时拉好几台服务器的订阅, 而它们是同一套脚本
+# 生成的, 节点名**完全撞车** —— 两台都叫 mVLESS01-REALITY / mTrojan03-TLS。
+# 面板里两个组长得一模一样, 连测速都分不清测的是哪台, 用户只能一个个点开
+# 看端口猜来源。组名虽然能分开, 节点名不分开就等于没分开。
+#
+# 前缀取组名, 所以用户给组起名的那一刻就顺手解决了 —— 不再单独问一次前缀。
+#
+# 只改 provider 文件里的 proxies[].name:
+#   客户端的 config.yaml 里所有组都是 `use: <provider>` 引用 provider,
+#   **没有一处按节点名引用**, 所以改名不会产生悬空引用。
+#   如果哪天有人在 config.yaml 里硬写了某个节点名, 这里会把它改坏 ——
+#   所以下面保留了旧名到新名的映射, 供后续需要时使用。
+#
+# 已经带过前缀的不重复加 —— 更新订阅会重新下载原始文件, 所以每次下载后
+# 都要重新应用一遍, 必须幂等。
+node_prefix_names() {   # <provider 文件> <前缀>
+    local f="$1" tag="$2"
+    [[ -f "$f" && -n "$tag" ]] || return 0
+    python3 - "$f" "$tag" <<'PY'
+import sys, yaml
+path, tag = sys.argv[1], sys.argv[2]
+try:
+    d = yaml.safe_load(open(path, encoding="utf-8")) or {}
+except Exception:
+    sys.exit(0)
+ps = d.get("proxies")
+if not isinstance(ps, list):
+    sys.exit(0)
+changed = 0
+for p in ps:
+    if not isinstance(p, dict):
+        continue
+    n = p.get("name")
+    if not isinstance(n, str) or not n or n.startswith(tag + "-"):
+        continue
+    p["name"] = "%s-%s" % (tag, n)
+    changed += 1
+if changed:
+    yaml.safe_dump(d, open(path, "w", encoding="utf-8"),
+                   allow_unicode=True, sort_keys=False)
+print(changed)
+PY
+}
+
+# 从组名推出一个短前缀: 取第一段 (空格/下划线/连字符前), 最多 6 个字符。
+# "<SERVER_ALIAS> 自建节点" -> <SERVER_ALIAS>,  "香港01" -> 香港01,  "两字母-中文" -> 两字母
+node_tag_from_name() {
+    local n; n=$(printf '%s' "${1:-}" | tr -d '[:space:]')
+    n="${n%%[-_ ]*}"
+    n="${n:0:6}"
+    # 只保留字母数字和中文; 其余会让 YAML 的 name 字段出问题
+    printf '%s' "$n" | tr -cd '[:alnum:]' | head -c 6
+}
+
 subs_put() {   # upsert
     python3 - "$CLI_SUBS" "$1" <<'PY'
 import json, os, sys, tempfile
@@ -859,6 +915,13 @@ print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
         if [[ -n "$want" ]]; then
             subs_set_name "$name" "$want"
         fi
+        # 组名同步到组内节点名 —— 多台服务器的订阅拉进同一个客户端时,
+        # 否则两边节点名完全撞车, 面板和测速都分不清来源
+        local _t; _t=$(node_tag_from_name "${want:-$name}")
+        if [[ -n "$_t" ]]; then
+            local _c; _c=$(node_prefix_names "$CLI_PROVIDERS/$name.yaml" "$_t")
+            [[ "${_c:-0}" -gt 0 ]] && print_ok "已给 $_c 个节点加上前缀 [$_t-]"
+        fi
         if [[ "$kind" == "http-auto" ]]; then
             print_ok "已设为自动更新, 需重新生成配置后生效"
         fi
@@ -1030,6 +1093,14 @@ node_update() {
         fi
         local bak=""; [[ -f "$CLI_PROVIDERS/$pre.yaml" ]] && bak=$(mktemp) && cp -f "$CLI_PROVIDERS/$pre.yaml" "$bak"
         if _add_from_file "$tmp/sub.yaml" "$pre"; then
+            # 重新下载会覆盖掉之前加的前缀, 所以每次更新后都要重新应用。
+            # 不补的话, 更新一次订阅就会让这组的节点名退回和别台机器撞车的状态
+            # —— 而用户刚更新完, 不会再去怀疑名字又变了。
+            local _t; _t=$(node_tag_from_name "$(subs_get "$pre" | python3 -c '
+import json,sys
+try: print(json.load(sys.stdin).get("name",""))
+except Exception: print("")' 2>/dev/null)")
+            [[ -n "$_t" ]] && node_prefix_names "$CLI_PROVIDERS/$pre.yaml" "$_t" >/dev/null
             print_ok "  $pre 已更新"
             [[ -n "$bak" ]] && rm -f "$bak"
         else
