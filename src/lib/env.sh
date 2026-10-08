@@ -1534,3 +1534,38 @@ m_artifacts_apply_addr() { # <新IP> <旧IP> [1=不交互]
     shopt -u nullglob
     printf '%s' "$n"
 }
+
+# 清理孤儿产物 —— out/ 里已经找不到对应节点的客户端产物。
+#
+# 这些文件的来历: 节点删了, 但产物没跟着删 (批量清空那会儿就漏了, 上一版才
+# 补上)。单个删节点走的是 m_out_rm_artifacts, 正常情况下不会留下孤儿, 所以
+# 积下来的基本都是历史批量留下的。
+#
+# 为什么不能靠文件名猜: 产物叫 `<协议>_<变体>_client-<编号>.yaml`, 而节点片段
+# 叫 `<协议>-<编号>.yaml` —— 变体部分 (cdn-v-grpc / reality / tls…) 不参与
+# 对应。所以按 "<协议> + 编号" 反查片段, 抽不出来就是孤儿。
+#
+# ★ 只删**确实没有对应片段**的产物。宁可少删: 误删一个还在用的产物, 用户
+#   要重新生成才能拿回来; 留下一个孤儿只是下次还能再清一次。
+m_artifacts_clean_orphan() { # [1=只报告不删]
+    local dry="${1:-}" n=0 del=0 f b m i
+    shopt -s nullglob
+    for f in "$SRV_OUT"/*_client-*.yaml; do
+        b=$(basename "$f")
+        m="${b%%_*}"                                  # <协议>
+        i="${b##*_client-}"; i="${i%.yaml}"          # <编号>
+        [[ -n "$m" && -n "$i" ]] || continue
+        [[ -f "$SRV_CONFIGD/$m-$i.yaml" ]] && continue # 节点还在, 保留
+        n=$((n + 1))
+        [[ "$dry" == "1" ]] && continue
+        rm -f "$f" 2>/dev/null || continue
+        [[ -f "$f" ]] && continue
+        del=$((del + 1))
+        # 分享链接是同一节点的另两份产物, 一并清掉 —— 留着等于发一个连不上的链接
+        for g in "$SRV_OUT/$m"_*"_share-$i.txt" "$SRV_OUT/$m"_share-$i.txt; do
+            [[ -f "$g" ]] && rm -f "$g" 2>/dev/null
+        done
+    done
+    shopt -u nullglob
+    printf '%s %s' "$n" "$del"
+}

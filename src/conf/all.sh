@@ -2305,9 +2305,42 @@ _all_cdn_wire() {
     return 0
 }
 
+# ---------- 绑定兜底: 配置校验通过 ≠ 端口真的绑上了 ----------
+#
+# mihomo 的 SAFE_PATHS 只允许读工作目录内的证书; 引用 /etc/letsencrypt 下的
+# 证书时 `mihomo -t` **照样通过** (那只验语法), 真正 bind 的那一刻才报
+# "parse certificate failed", 而那个 error 只进日志 —— 面板这边是
+# "成功 N · 失败 0", 用户拿到一批连不上的节点, 却没有任何提示。
+#
+# 这不是证书独有的: 端口冲突、协议不被内核支持, 都是同一个形状。所以不针对
+# 具体原因, 直接核对"片段里写的端口, 重载后到底有没有在监听"。
+m_verify_bound() {
+    local f p bad=0 tot=0 ss_dump
+    ss_dump=$(ss -tuln 2>/dev/null)
+    [[ -n "$ss_dump" ]] || { printf "     ${DIM}(读不到 ss 输出, 跳过绑定核对)${RESET}\n"; return 0; }
+    local -a badlist=()
+    for f in "$CONF_DIR"/*.yaml; do
+        [[ -f "$f" ]] || continue
+        p=$(grep -m1 -oE "port:[[:space:]]*[0-9]+" "$f" 2>/dev/null | grep -oE "[0-9]+")
+        [[ -n "$p" ]] || continue
+        tot=$((tot + 1))
+        grep -qE "[:.]${p}[[:space:]]" <<< "$ss_dump" || { bad=$((bad + 1)); badlist+=("$(basename "$f" .yaml):$p"); }
+    done
+    (( bad == 0 )) && return 0
+    printf "\n     ${RED}${BOLD}%d 个节点的端口没有绑上${RESET} ${DIM}(共 %d 个)${RESET}\n" "$bad" "$tot"
+    printf "     ${DIM}%s${RESET}\n" "${badlist[*]}"
+    # 把内核真实报错翻出来, 别让用户自己去翻 journal
+    local err
+    err=$(timeout 12 "$SRV_BIN" -d "$SRV_CONF" 2>&1 | grep -m3 -iE "listen err" | head -3)
+    [[ -n "$err" ]] && printf "     ${DIM}内核报错: %s${RESET}\n" "$err"
+    printf "     ${YELLOW}这些节点在订阅里, 但连不上 —— 内核只把 bind 失败写进日志, 面板看不出区别${RESET}\n"
+    return 1
+}
+
 if m_sync_reload; then
     # 重建成功 → 暂存区里的旧文件正式作废
     rebuild_commit
+    m_verify_bound
     if [[ "$local_fail" -eq 0 ]]; then
         printf "\n${GREEN}${BOLD}全协议节点已生成并生效${RESET}\n"
     else

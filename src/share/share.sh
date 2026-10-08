@@ -253,6 +253,24 @@ PY
     printf '  有效期至: %s\n' "$([[ "$expires" == "0" ]] && echo '永久' || date -d "@$expires" '+%Y-%m-%d %H:%M')"
     printf '\n  链接:\n    \033[1mhttp://%s:%s/share/%s\033[0m\n\n' "$(_share_host "$addr")" "$SHARE_PORT" "$token"
 
+    # ★ 链接打印出来了, 但**没人保证它真的能访问**。
+    #   安装分享服务是**另一个菜单项** (share_service_install), 用户完全可以
+    #   只生成链接就走 —— 于是拿到一个永远拉不动的 URL: token 文件确实建好了,
+    #   但端口上没有任何进程监听, 客户端那边只有 "Connection refused",
+    #   而面板这边显示一切正常。实测踩过: 客户端拉取报 Connection refused,
+    #   而同一台机器上另一个分享服务的端口却能秒连 —— 网络完全正常, 是服务
+    #   压根没起。两处信息对不上, 排查方向很容易被带偏到防火墙上去。
+    #
+    #   宁可当场说"服务没起", 也不要给一个注定连不上的链接 —— 后者会让人
+    #   以为是网络问题、去查防火墙、去换客户端, 方向完全错了。
+    if ! systemctl is-active --quiet "$SHARE_SERVICE" 2>/dev/null; then
+        print_warn "分享服务 ($SHARE_SERVICE) 没有在运行, 这个链接现在拉不动"
+        print_error "原因: 生成链接和启动服务是两个独立步骤, 生成链接不会自动启动服务"
+        printf '  启动命令: \033[1msystemctl enable --now %s\033[0m\n' "$SHARE_SERVICE"
+        printf '  或在面板里执行「分享 → 安装分享服务」\n'
+        print_info "已生成 $SHARES/$token.json, 服务起来之后这个链接立即可用, 不用重新生成"
+    fi
+
     if [[ "$TAG" == "all" ]] && python3 - "$SRV_OUT" <<'PY' 2>/dev/null | grep -q yes; then
 import glob, sys, yaml
 for f in glob.glob(sys.argv[1] + "/*_client-*.yaml"):

@@ -1126,6 +1126,32 @@ export_all_nodes() {
     printf '\n按回车继续...' >&2; read -r
 }
 
+# 顶部显示一下产物规模 —— 不然用户不知道"已有产物"到底指多少个,
+# 也看不出清理残留有没有生效 (上一版显示 61 个节点, 实际早就清空了)。
+_ca_show_artifact_count() {
+    local na ns; na=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    ns=$(ls "$SRV_OUT"/*_share-*.txt 2>/dev/null | wc -l | tr -d ' ')
+    ui_kv_ascii "已有产物" "${na:-0} 个客户端配置 / ${ns:-0} 条分享链接"
+}
+
+_ca_clean_orphan() {
+    ui_clear; print_title "清理无对应节点的残留产物"
+    local r n del; r=$(m_artifacts_clean_orphan 1); n=${r%% *}; del=${r##* }
+    if [[ "${n:-0}" == "0" ]]; then
+        print_ok "没有残留产物, out/ 与当前节点一一对应"
+        return 0
+    fi
+    print_warn "发现 $n 个产物找不到对应节点 —— 这些是节点删掉后留下的"
+    print_info "它们的 server 指向早已没人监听的端口, 但仍会被 build_sub.py 收进订阅"
+    echo
+    printf "  确认清理这 ${CYAN}%s${RESET} 个? ${DIM}[y/N]: ${RESET}" "$n" >&2
+    local a; read -r a
+    case "$(clean_input "${a:-}")" in y|Y) ;; *) print_info "已取消"; return 0 ;; esac
+    r=$(m_artifacts_clean_orphan); del=${r##* }
+    print_ok "已清理 $del 个残留产物 (对应的分享链接一并清理)"
+    _ca_show_artifact_count
+}
+
 client_artifact_menu() {
     while true; do
         print_title "客户端产物设置 (生成节点时写入)"
@@ -1136,11 +1162,12 @@ client_artifact_menu() {
         ui_kv_ascii "本机 IPv6"  "$(m_addr6_real  2>/dev/null || echo '(无)')"
         m_warp_active && print_warn "检测到 WARP/隧道接口 —— 其上的地址已排除, 不会被写进产物"
         echo >&2
-        print_info "改动只影响之后新生成的节点; 已有节点需重新生成"
+        _ca_show_artifact_count
         echo >&2
-        ui_menu 1 "改指纹"
-        ui_menu 2 "改连接地址族"
+        ui_menu 1 "改指纹 (会同步改掉已有产物)"
+        ui_menu 2 "改连接地址族 (会同步改掉已有产物)"
         ui_menu 3 "导出全部节点与订阅链接"
+        ui_menu 4 "清理无对应节点的残留产物"
         ui_menu 0 "返回"
         printf "请选择: " >&2
         local c; read -r c || return 0
@@ -1149,6 +1176,7 @@ client_artifact_menu() {
             1) _ca_pick_fp ;;
             2) _ca_pick_family ;;
             3) export_all_nodes ;;
+            4) _ca_clean_orphan ;;
             0) return 0 ;;
             *) ui_invalid "$c" ;;
         esac
