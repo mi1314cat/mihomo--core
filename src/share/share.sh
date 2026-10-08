@@ -264,11 +264,24 @@ PY
     #   宁可当场说"服务没起", 也不要给一个注定连不上的链接 —— 后者会让人
     #   以为是网络问题、去查防火墙、去换客户端, 方向完全错了。
     if ! systemctl is-active --quiet "$SHARE_SERVICE" 2>/dev/null; then
-        print_warn "分享服务 ($SHARE_SERVICE) 没有在运行, 这个链接现在拉不动"
-        print_error "原因: 生成链接和启动服务是两个独立步骤, 生成链接不会自动启动服务"
-        printf '  启动命令: \033[1msystemctl enable --now %s\033[0m\n' "$SHARE_SERVICE"
-        printf '  或在面板里执行「分享 → 安装分享服务」\n'
-        print_info "已生成 $SHARES/$token.json, 服务起来之后这个链接立即可用, 不用重新生成"
+        # 别只丢一句警告就把一个拉不动的链接交出去 —— 那等于把问题留给用户,
+        # 而用户能做的只有"看不懂、换客户端、查防火墙"。直接把它起起来。
+        local unit="/etc/systemd/system/$SHARE_SERVICE.service"
+        if [[ -f "$unit" ]]; then
+            systemctl start "$SHARE_SERVICE" >/dev/null 2>&1
+        else
+            # 单元还没装 (生成链接和安装服务是两个独立菜单项, 用户只做了前者)
+            print_info "分享服务还没安装, 正在安装并启动..."
+            share_service_install >/dev/null 2>&1
+            systemctl enable --now "$SHARE_SERVICE" >/dev/null 2>&1
+        fi
+        if systemctl is-active --quiet "$SHARE_SERVICE" 2>/dev/null; then
+            print_ok "分享服务已启动, 这个链接现在就能拉取"
+        else
+            print_warn "分享服务 ($SHARE_SERVICE) 没能启动, 链接暂时拉不动"
+            printf '  手动启动: \033[1msystemctl start %s\033[0m\n' "$SHARE_SERVICE"
+            print_info "token 已存到 $SHARES/$token.json, 服务起来后链接立即可用, 不用重新生成"
+        fi
     fi
 
     if [[ "$TAG" == "all" ]] && python3 - "$SRV_OUT" <<'PY' 2>/dev/null | grep -q yes; then

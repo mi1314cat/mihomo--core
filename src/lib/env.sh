@@ -1260,6 +1260,43 @@ m_server_ip() {
 }
 
 # m_sync_reload —— 校验通过才重载; 失败保留旧配置
+# ---------- 绑定核对: 配置校验通过 ≠ 端口真的绑上了 ----------
+#
+# mihomo 的 SAFE_PATHS 只允许读工作目录内的证书; 片段引用 /etc/letsencrypt 下的
+# 证书时 `mihomo -t` **照样通过** —— 它只验语法, 真正 bind 的那一刻才报
+# "parse certificate failed", 而那个 error 只进日志。实测在生产机上: 22 个
+# listener 只绑上 9 个, 面板显示"成功 N · 失败 0", 用户拿到一批连不上的节点。
+#
+# 这不是证书独有的: 端口冲突、协议不被内核支持, 都是同一个形状。所以不针对
+# 具体原因, 直接核对"片段里写的端口, 重载后到底有没有在监听", 并把内核的真实
+# listen err 翻出来 —— 别让用户自己去翻 journal。
+#
+# 放在 m_sync_reload 里而不是各协议脚本里: 新增/删除/重建/批量全都走这一个出口,
+# 放这里才谈得上"不会再犯"。
+m_verify_bound() {
+    local f p bad=0 tot=0 dump
+    dump=$(ss -tuln 2>/dev/null)
+    [[ -n "$dump" ]] || return 0
+    local -a badlist=()
+    shopt -s nullglob
+    for f in "$SRV_CONFIGD"/*.yaml; do
+        p=$(grep -m1 -oE "port:[[:space:]]*[0-9]+" "$f" 2>/dev/null | grep -oE "[0-9]+")
+        [[ -n "$p" ]] || continue
+        tot=$((tot + 1))
+        grep -qE "[:.]${p}[[:space:]]" <<< "$dump" || { bad=$((bad + 1)); badlist+=("$(basename "$f" .yaml):$p"); }
+    done
+    shopt -u nullglob
+    (( bad == 0 )) && return 0
+
+    print_error "${bad} 个节点的端口没有绑上 (共 $tot 个): ${badlist[*]}"
+    # 把内核真实报错翻出来, 这是唯一能说清原因的地方
+    local err
+    err=$(timeout 12 "${MIHOMO_BIN:-$SRV_ROOT/mihomo}" -d "$SRV_CONF" 2>&1 | grep -m2 -iE "listen err" | head -2)
+    [[ -n "$err" ]] && printf "  ${DIM}%s${RESET}\n" "$err"
+    print_warn "这些节点会出现在订阅里, 但连不上 —— bind 失败只写进内核日志, 面板分辨不出来"
+    return 1
+}
+
 m_sync_reload() {
     local bak; bak=$(mktemp)
     [ -f "$SRV_CONF/config.yaml" ] && cp -f "$SRV_CONF/config.yaml" "$bak"
@@ -1268,11 +1305,11 @@ m_sync_reload() {
         if systemctl reload "$SRV_SERVICE" 2>/dev/null && \
            systemctl is-active --quiet "$SRV_SERVICE"; then
             [[ -n "${1:-}" ]] || print_ok "已重载服务"
-            rm -f "$bak"; return 0
+            rm -f "$bak"; m_verify_bound; return 0
         fi
         if systemctl restart "$SRV_SERVICE" 2>/dev/null; then
             [[ -n "${1:-}" ]] || print_ok "已重启服务"
-            rm -f "$bak"; return 0
+            rm -f "$bak"; m_verify_bound; return 0
         fi
         print_error "服务重启失败, 正在回滚配置"
         cp -f "$bak" "$SRV_CONF/config.yaml"; systemctl restart "$SRV_SERVICE" 2>/dev/null
