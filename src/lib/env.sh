@@ -1289,9 +1289,22 @@ m_verify_bound() {
     (( bad == 0 )) && return 0
 
     print_error "${bad} 个节点的端口没有绑上 (共 $tot 个): ${badlist[*]}"
-    # 把内核真实报错翻出来, 这是唯一能说清原因的地方
-    local err
-    err=$(timeout 12 "${MIHOMO_BIN:-$SRV_ROOT/mihomo}" -d "$SRV_CONF" 2>&1 | grep -m2 -iE "listen err" | head -2)
+    # 把内核真实报错翻出来, 这是唯一能说清原因的地方。
+    #
+    # ⚠ **不能在这里再起一个 mihomo** —— 服务正占着那些端口, 第二个实例必然
+    #   满屏 "bind: address already in use", 把真正的错误 (比如证书
+    #   SAFE_PATHS) 挤掉。之前就是这么把自己绕进去的: 明明是证书路径问题,
+    #   输出里却全是端口冲突, 差点照着错的方向查。
+    # 服务在跑就直接读它自己的日志; 没在跑才自己跑一个。
+    local err=""
+    if systemctl is-active --quiet "${SRV_SERVICE:-mihomo}" 2>/dev/null; then
+        err=$(journalctl -u "${SRV_SERVICE:-mihomo}" -n 60 --no-pager 2>/dev/null \
+              | grep -iE "listen err" | tail -2)
+        [[ -n "$err" ]] || err=$(timeout 12 "${MIHOMO_BIN:-$SRV_ROOT/mihomo}" -t -d "$SRV_CONF" 2>&1 \
+              | grep -iE "listen err" | tail -2)
+    else
+        err=$(timeout 12 "${MIHOMO_BIN:-$SRV_ROOT/mihomo}" -d "$SRV_CONF" 2>&1 | grep -m2 -iE "listen err")
+    fi
     [[ -n "$err" ]] && printf "  ${DIM}%s${RESET}\n" "$err"
     print_warn "这些节点会出现在订阅里, 但连不上 —— bind 失败只写进内核日志, 面板分辨不出来"
     return 1

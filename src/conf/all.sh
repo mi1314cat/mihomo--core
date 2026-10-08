@@ -1783,28 +1783,6 @@ else
     fi
     [[ -n "$CRT" && -f "$CRT" && -n "$KEY" && -f "$KEY" ]] || { CRT=""; KEY=""; SNI=""; }
 
-    # ★ 证书必须在 -d 工作目录内, 否则 mihomo **拒绝加载** (SAFE_PATHS):
-    #     Listener mVLESS01-TLS-WS listen err: ... path is not subpath of home
-    #     directory or SAFE_PATHS: /etc/letsencrypt/live/<域名>/fullchain.pem
-    #   致命之处在于 **mihomo -t 不报错** —— 合并/严格校验/内核三道关全绿,
-    #   面板显示"成功 19", 实际 7 个 TLS 监听根本没起来 (实测真实可用 12/19),
-    #   客户端连这些节点全部 connection refused。
-    #
-    #   cert.sh 的 ask_cert 早就调用了 cert_ensure_safe_path (单协议路径没事),
-    #   只有 all.sh 这条"★推荐第一次选这个"的批量路径漏了 —— 于是最被推荐的
-    #   入口产出最残缺的结果。
-    if declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
-       declare -F cert_path_in_confdir >/dev/null 2>&1 && \
-       ! cert_path_in_confdir "$CRT"; then
-        if cert_ensure_safe_path "$CRT" "$KEY"; then
-            [[ -n "${CERT_FILE:-}" && -f "$CERT_FILE" ]] && CRT="$CERT_FILE"
-            [[ -n "${KEY_FILE:-}" && -f "$KEY_FILE" ]] && KEY="$KEY_FILE"
-        else
-            printf "     ${RED}✗${RESET} 证书无法复制进配置目录, 需要证书的协议将跳过\n" >&2
-            CRT=""; KEY=""; SNI=""
-        fi
-    fi
-
     if [[ -n "$CRT" ]]; then
         # 把"本机到底有几张可用证书"这个事实直接摆出来 —— 用户一眼知道有多少
         # 备选, 而不是进去之后才发现只有一张。
@@ -1960,6 +1938,30 @@ else
             printf "     ${DIM}想让它们也生成: 加 --self-sign (或 ALL_CERT_MODE=self) 生成自签证书${RESET}\n" >&2
             printf "     ${GREEN}[OK]${RESET} 证书: 无 ${DIM}(将跳过需要证书的协议)${RESET}\n" >&2
         fi
+    fi
+fi
+
+# ---------- 证书落位检查: 必须在**选完证书之后** ----------
+#
+# ★ 位置是关键。原来的防护跑在选证书**之前**, 而交互式选证书菜单里
+#   `CRT="$__cc"` 会把它重新赋成扫描到的原始路径 —— 防护刚做完就被覆盖,
+#   等于没做。实测在生产机上: 13 个 TLS 节点全部绑不上, 面板却报"成功"。
+#
+# mihomo 的 SAFE_PATHS 只允许读 -d 工作目录内的证书:
+#     Listener mVLESS02-TLS-XHTTP listen err: parse certificate failed ...
+#     path is not subpath of home directory or SAFE_PATHS:
+#     /etc/letsencrypt/live/<域名>/fullchain.pem
+#     allowed paths: [/root/catmi/mihomo/conf]
+# 致命之处是 `mihomo -t` **照样通过** —— 它只验语法, bind 失败只进日志。
+if [[ -n "${CRT:-}" ]] && declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
+   declare -F cert_path_in_confdir >/dev/null 2>&1 && \
+   ! cert_path_in_confdir "$CRT"; then
+    if cert_ensure_safe_path "$CRT" "$KEY"; then
+        [[ -n "${CERT_FILE:-}" && -f "$CERT_FILE" ]] && CRT="$CERT_FILE"
+        [[ -n "${KEY_FILE:-}" && -f "$KEY_FILE" ]] && KEY="$KEY_FILE"
+    else
+        printf "     ${RED}✗${RESET} 证书无法复制进配置目录, 需要证书的协议将跳过\n" >&2
+        CRT=""; KEY=""; SNI=""
     fi
 fi
 
