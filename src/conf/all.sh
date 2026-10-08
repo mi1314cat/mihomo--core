@@ -1422,7 +1422,7 @@ proxies:
     password: $UUID
     udp: true
     sni: $SNI
-    skip-cert-verify: true
+    skip-cert-verify: $CERT_SKIP_VERIFY
 EOF
 }
 
@@ -1453,7 +1453,7 @@ proxies:
     network: ws
     tls: true
     udp: true
-    skip-cert-verify: true
+    skip-cert-verify: $CERT_SKIP_VERIFY
     servername: $SNI
     ws-opts:
       path: $path
@@ -1513,7 +1513,7 @@ proxies:
     network: xhttp
     tls: true
     udp: true
-    skip-cert-verify: true
+    skip-cert-verify: $CERT_SKIP_VERIFY
     servername: $SNI
     # uTLS ClientHello 伪装。XHTTP 把握手指纹做在 HTTP 握手层,
     # 这里给真实浏览器指纹才有意义 (明文 xhttp 用不上, 故明文那版不写)。
@@ -1582,7 +1582,7 @@ proxies:
     port: $2
     password: $UUID
     sni: $SNI
-    skip-cert-verify: true
+    skip-cert-verify: $CERT_SKIP_VERIFY
     up: "30"
     down: "200"
 EOF
@@ -1616,7 +1616,7 @@ proxies:
     uuid: $UUID
     password: $UUID
     sni: $SNI
-    skip-cert-verify: true
+    skip-cert-verify: $CERT_SKIP_VERIFY
     alpn:
       - h3
     congestion-controller: bbr
@@ -1646,7 +1646,7 @@ proxies:
     port: $2
     password: $UUID
     sni: $SNI
-    skip-cert-verify: true
+    skip-cert-verify: $CERT_SKIP_VERIFY
     udp: true
     client-fingerprint: $CLIENT_FP
 EOF
@@ -1963,6 +1963,21 @@ if [[ -n "${CRT:-}" ]] && declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
         printf "     ${RED}✗${RESET} 证书无法复制进配置目录, 需要证书的协议将跳过\n" >&2
         CRT=""; KEY=""; SNI=""
     fi
+fi
+
+# 客户端是否跳过证书校验: **只有自签证书才需要**。
+#
+# 原来 6 个 TLS 模板里写死了 `skip-cert-verify: true`, 不管证书可不可信 ——
+# 于是拿到一张有效的 Let's Encrypt 证书时, 客户端仍然不校验, 等于放弃了
+# TLS 一半的意义: 中间人可以拿一张自己签的证书冒充服务端, 客户端照单全收。
+# 直接连的节点受害最明显 (走 CDN 的至少域名是别人的)。
+#
+# 自签证书必须跳过, 否则客户端直接拒绝连接 —— 那个代价是"连不上", 比
+# "能连但可被冒充"更难排查, 所以自签时保留 true。
+CERT_SKIP_VERIFY="true"
+if [[ "${CERT_IS_SELF:-0}" != "1" ]]; then
+    CERT_SKIP_VERIFY="false"
+    printf "     ${GREEN}[OK]${RESET} 证书受信任, 客户端将校验证书 ${DIM}(skip-cert-verify=false)${RESET}\n" >&2
 fi
 
 # ---------- ② 对外地址 ----------

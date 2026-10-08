@@ -338,7 +338,7 @@ ask_transport() {
 #   # mode: tls|reality
 #   # transport: tcp|ws|grpc
 #   # fingerprint: <client-fingerprint>
-#   # skip-cert-verify: true|false
+#   # skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}|false
 #   # mtls: true
 #   # smux: <档位>
 # ================================================================
