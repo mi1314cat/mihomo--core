@@ -189,6 +189,28 @@ for s in d.get("subscriptions", []):
 PY
 }
 
+# 覆盖订阅显示名。只改 name 字段, prefix/url/kind 一律不动 ——
+# 这三样任何一个变了都会指向另一个 provider, 节点就凭空消失了。
+subs_set_name() {   # 覆盖某条订阅的显示名, 其余字段一律不动
+    python3 - "$CLI_SUBS" "$1" "$2" <<'PY'
+import json, sys
+path, prefix, label = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    d = json.load(open(path, encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+hit = False
+for s in d.get("subscriptions", []):
+    if s.get("prefix") == prefix:
+        s["name"] = label
+        hit = True
+        break
+if not hit:
+    sys.exit(1)
+json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+PY
+}
+
 subs_put() {   # upsert
     python3 - "$CLI_SUBS" "$1" <<'PY'
 import json, os, sys, tempfile
@@ -766,11 +788,30 @@ node_add() {
         # 能力, 得真正能用。
         local kind="http-oneshot"
         printf '\n是否让内核自动定时更新这个订阅?\n'
-        printf "    1) 自动更新 (每 10 分钟, 推荐)\n"
-        printf "    2) 手动更新 (只在选「更新配置」时拉取)\n"
-        printf "请选择 [1]: "
+        printf "    1) 自动更新 (每 10 分钟)\n"
+        printf "    2) 手动更新 (只在选「更新配置」时拉取, 推荐)\n"
+        printf "请选择 [2]: "
         local a; read -r a
-        [[ "$a" == "2" ]] || kind="http-auto"
+        # 默认手动。自动更新每 10 分钟就发一次请求, 对一次性令牌是**直接把它
+        # 拉废** —— 额度用掉之后订阅里就再也拿不到新节点了, 而界面只显示一个
+        # 空的 provider, 没有任何地方提示是额度耗尽。
+        [[ "$a" == "1" ]] && kind="http-auto"
+
+        # 组名: 自动取的名字多半是 IP 或哈希, 订阅一多就分不清谁是谁
+        # (面板里显示成哈希前缀或一串地址就是这么来的)。先问一句, 回车才用
+        # 自动名 —— 多一次输入换一个长期能认出来的名字, 划算。
+        printf '\n这条订阅在面板里叫什么?\n'
+        printf '    (回车 = 按地址自动命名)\n'
+        printf '请输入: '
+        local want; read -r want
+        want=$(clean_input "${want:-}")
+        # 组名会直接进 YAML 的 name 字段, 冒号等字符会让 mihomo -t 失败;
+        # 引号和换行同样会让配置写坏。
+        want="${want//$'"'\n'"'/ }"
+        [[ "$want" == *:* ]] && want="${want//:/-}"
+        want="${want//\"/}"
+        want="${want//$'"'\\'"'/}"
+
         # 组名取来源标识: 分享链接的 host、本地文件名, 或按序号兜底。
         # 原来只存哈希前缀, 面板里那个组就显示成一串 45fe6c20..., 完全看不出
         # 是哪条订阅 —— 分组再漂亮, 名字是乱码也没法用。
@@ -787,6 +828,10 @@ if not label or label==prefix: label="订阅-"+prefix[:6]
 print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
  "imported_at":datetime.datetime.now().isoformat(timespec="seconds")},
  ensure_ascii=False))' "$name" "$src" "$kind")"
+        # 用户起的名字优先于自动名
+        if [[ -n "$want" ]]; then
+            subs_set_name "$name" "$want"
+        fi
         if [[ "$kind" == "http-auto" ]]; then
             print_ok "已设为自动更新, 需重新生成配置后生效"
         fi
