@@ -1275,7 +1275,27 @@ m_server_ip() {
 # 放这里才谈得上"不会再犯"。
 m_verify_bound() {
     local f p bad=0 tot=0 dump
-    dump=$(ss -tuln 2>/dev/null)
+    # ★ 必须给内核一点时间把监听绑完。`systemctl restart` 返回只代表**进程
+    #   起来了**, listener 是异步绑的 —— 紧接着查 ss 会看到"一个都没绑上",
+    #   于是报 "22 个节点的端口没有绑上"。实测生产机上就这么误报过一次,
+    #   隔 20 秒再查, 实际 22/22 全在监听。
+    #   误报比不报更糟: 用户会以为整批节点都废了, 实际一个都没问题。
+    local waited=0
+    while :; do
+        bad=0
+        dump=$(ss -tuln 2>/dev/null)
+        shopt -s nullglob
+        for f in "$SRV_CONFIGD"/*.yaml; do
+            p=$(grep -m1 -oE "port:[[:space:]]*[0-9]+" "$f" 2>/dev/null | grep -oE "[0-9]+")
+            [[ -n "$p" ]] || continue
+            grep -qE "[:.]${p}[[:space:]]" <<< "$dump" || bad=$((bad + 1))
+        done
+        shopt -u nullglob
+        # 全绑上了, 或者已经等够了还没绑上 —— 后者是真问题
+        (( bad == 0 )) && break
+        (( waited >= 8 )) && break
+        sleep 1; waited=$((waited + 1))
+    done
     [[ -n "$dump" ]] || return 0
     local -a badlist=()
     shopt -s nullglob
@@ -1283,7 +1303,7 @@ m_verify_bound() {
         p=$(grep -m1 -oE "port:[[:space:]]*[0-9]+" "$f" 2>/dev/null | grep -oE "[0-9]+")
         [[ -n "$p" ]] || continue
         tot=$((tot + 1))
-        grep -qE "[:.]${p}[[:space:]]" <<< "$dump" || { bad=$((bad + 1)); badlist+=("$(basename "$f" .yaml):$p"); }
+        grep -qE "[:.]${p}[[:space:]]" <<< "$dump" || badlist+=("$(basename "$f" .yaml):$p")
     done
     shopt -u nullglob
     (( bad == 0 )) && return 0
