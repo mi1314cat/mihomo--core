@@ -458,7 +458,20 @@ m_cert_gc() {
 # 统一前缀 m: 客户端里 mihomo-core 生成的节点一律以 m 开头, 和别的项目/手工
 # 加的节点一眼分得开。要改前缀设 M_TAG_PREFIX 即可, 留空则不加。
 m_node_tag() {
-    local proto="$1" idx="$2" form="${3:-plain}" extra="${4:-}"
+    local proto="$1" idx="$2" form="${3:-plain}"
+    # 第 4 个之后**全部**并进 extra, 不能只取 $4。
+    #
+    # 原来只读 "$4", 而调用方写的是 m_node_tag VLESS 3 tls XHTTP CDN —— "CDN"
+    # 落在 $5, 被静默丢掉。于是走 CDN 的 xHTTP 节点叫 "mVLESS03-TLS-XHTTP",
+    # 跟直连那个 "mVLESS02-TLS-XHTTP" 只差编号, 面板上完全看不出谁是过 CDN 的。
+    # 排查 CDN 问题时先被名字带偏 —— 本来就在这里绕过一次。
+    local extra=""
+    if (( $# >= 4 )); then
+        shift 3
+        # 用 tr 而不是 ${*// /-}: 后者在 zsh 下不做替换, 而面板偶尔会用
+        # zsh 跑这个函数, 于是名字里留下空格, 和其他节点的连字符风格不一致。
+        extra=$(printf '%s' "$*" | tr ' ' '-')
+    fi
     [[ -n "$proto" && -n "$idx" ]] || return 1
     # 索引补零到两位。10# 强制十进制: 否则 08/09 会被当成八进制非法数
     idx=$(printf '%02d' "$((10#$idx))" 2>/dev/null) || idx="$idx"

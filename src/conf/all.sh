@@ -984,9 +984,22 @@ EOF
     esac
     [[ "$proto" == "vmess" ]] && cipherline="    cipher: auto"
 
-    # 复用 ECH 探测: CDN 档位开 ECH 零额外代价 (不换 IP、不换端口、不多一跳)
+    # ECH 默认**不开**。
+    #
+    # Cloudflare 会给所有代理域名自动下发 ECHConfig, 所以 cdn_ech_ready 对
+    # 任何橙云域名都返回"就绪" —— 但实测客户端拿这个配置握手会失败, 7 个 CDN
+    # 节点一个都连不上。同一批节点去掉 ech-opts 立刻全部可用 (对照实测):
+    #     带 ECH   mTrojan04-CDN-WS / mVLESS04-CDN-WS / mVMess03-CDN-WS / mVLESS03-TLS-XHTTP  全不可用
+    #     不带 ECH 同样四个                        1364 / 1739 / 1693 / 1696 ms  全部可用
+    #
+    # 探测只验证"域名下发了 ECHConfig", 验证不了"这台机器的客户端能用它" ——
+    # 而失败是静默的: 面板照常显示节点, 只是连不上。所以这里按实测结论关掉,
+    # 而不是相信探测。确实要用可以 export ALL_ECH=1。
+    #
+    # 直连节点本来就不开 ECH, 所以这不是"少了一层保护": 走 CDN 时边缘侧
+    # 已经有 Cloudflare 的证书, 再套一层 ECH 是锦上添花, 不开不损失什么。
     local ech=""
-    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-1}" == "1" ]] \
+    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-0}" == "1" ]] \
        && declare -F cdn_ech_ready >/dev/null 2>&1 && cdn_ech_ready "$SNI"; then
         ech=$'    ech-opts:\n      enable: true\n      query-server-name: '"$SNI"$'\n'
     fi
@@ -1039,8 +1052,11 @@ g_vless_xhttp_cdn() {
     #   而抓包证实开启后明文 SNI 只剩 cloudflare-ech.com, 真实域名消失。
     #
     # ALL_ECH=0 可关 (走 Cloudflare API 开过、或域名 ECH 探测有假阳性时)。
+    # 同上: 探测能证明"域名下发了 ECHConfig", 证明不了"客户端能用"。
+    # 实测开了就连不上, 去掉就正常, 所以默认不开。
     ECH_OPTS_FIELDS=""
-    if [[ "${ALL_ECH:-1}" == "1" ]] && declare -F cdn_ech_ready >/dev/null 2>&1 \
+    if [[ "${ALL_ECH:-1}" == "1" ]] && [[ "${CDN_ECH_ALL:-0}" == "1" ]] \
+       && declare -F cdn_ech_ready >/dev/null 2>&1 \
        && cdn_ech_ready "$SNI"; then
         # 用 $'...' 而不是 "...": 后者里的 \n 是**字面两个字符**, 会被原样
         # 写进 YAML, 生成出 ech-opts:\n  这样的坏缩进。
