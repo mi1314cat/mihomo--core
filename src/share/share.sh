@@ -660,3 +660,59 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     source "$(dirname "$SH_SHARE_DIR")/lib/env.sh"
     share_menu
 fi
+# ---------- 非交互生成: 批量生成完直接给一条能用的链接 ----------
+#
+# 为什么要有这个: 交互式那条 (share_gen_tag) 会问"对外地址对不对", 因为透明
+# 代理环境下自动探测经常拿到代理出口 IP, 输错一个字符就会生成一条永远打不开
+# 的链接。**这个判断必须保留**, 所以批量生成完不能替用户瞎选一个地址。
+#
+# 折中: 用探测到的地址生成, 但**把地址显示出来并说明可以自己改**; 同时把
+# token 落盘, 用户随后在面板里改了地址也不用重新生成节点, 换一个链接即可。
+#
+# 参数: <tag> <次数 0=不限> <有效期小时 0=永久>
+share_gen_tag_auto() {
+    local TAG="${1:-all}" MU="${2:-1}" HOURS="${3:-24}"
+    [[ "$MU" =~ ^[0-9]+$ ]] || MU=1
+    [[ "$HOURS" =~ ^[0-9]+$ ]] || HOURS=24
+    declare -F _share_addr >/dev/null 2>&1 || { printf '0'; return 1; }
+
+    local now expires token addr
+    now=$(date +%s)
+    expires=0; [[ "$HOURS" -gt 0 ]] && expires=$((now + HOURS * 3600))
+    token=$(openssl rand -hex 16)
+    addr=$(_share_addr)
+
+    mkdir -p "$SHARES"
+    python3 - "$SHARES/$token.json" "$token" "$TAG" "$MU" "$expires" <<'PY'
+import json, sys, time
+path, token, tag, maxu, exp = sys.argv[1:6]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump({"share_token": token, "tag": tag, "created_at": int(time.time()),
+               "expires_at": int(exp), "max_uses": int(maxu), "used_count": 0,
+               "enabled": True, "last_used_at": 0}, fh, indent=1)
+PY
+    printf '%s' "$addr" > "$SRV_OUT/share_addr.txt"
+    printf 'http://%s:%s/share/%s\n' "$(_share_host "$addr")" "$SHARE_PORT" "$token" > "$SRV_OUT/share_tag-$TAG.txt"
+
+    # 服务没起就直接拉起 —— 否则刚生成的链接当场就是拉不动的
+    if ! systemctl is-active --quiet "$SHARE_SERVICE" 2>/dev/null; then
+        local unit="/etc/systemd/system/$SHARE_SERVICE.service"
+        if [[ -f "$unit" ]]; then
+            systemctl start "$SHARE_SERVICE" >/dev/null 2>&1
+        else
+            share_service_install >/dev/null 2>&1
+            systemctl enable --now "$SHARE_SERVICE" >/dev/null 2>&1
+        fi
+    fi
+
+    local link; link="http://$(_share_host "$addr"):$SHARE_PORT/share/$token"
+    printf '\n  %s一次性分享链接%s  %s用 %s 次 · %s 小时后过期%s\n' \
+        "$GREEN" "$RESET" "$DIM" "$MU" "$([[ "$HOURS" -gt 0 ]] && echo "$HOURS" || echo "永久")" "$RESET"
+    printf '  %s%s%s\n' "$BOLD" "$link" "$RESET"
+    if ! systemctl is-active --quiet "$SHARE_SERVICE" 2>/dev/null; then
+        printf '  %s分享服务没能启动, 上面这条暂时拉不动%s\n' "$YELLOW" "$RESET"
+    else
+        printf '  %s地址探测自本机; 若客户端拉不到, 面板「生成分享链接」里可改地址重发%s\n' "$DIM" "$RESET"
+    fi
+    return 0
+}

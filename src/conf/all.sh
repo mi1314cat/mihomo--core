@@ -2320,6 +2320,22 @@ if m_sync_reload; then
     printf "  配置目录: %s\n" "$CONF_DIR"
     printf "  分享内容: %s\n" "$OUT_DIR"
 
+    # 生成完就该能直接用 —— 过去要用户自己再走一遍「生成分享链接」,
+    # 中间还夹着"选次数 / 选有效期 / 确认对外地址"三个问题, 于是常常就停在
+    # "节点有了, 怎么给客户端"这一步。
+    #
+    # 次数与有效期取最保守的默认值: 1 次 / 24 小时。链接会直接写进订阅, 而
+    # 订阅是要转手给别人的 —— 一次性的链接泄露了也用不了第二次, 到期自动作废。
+    # 想要长期链接在面板里自己发, 不批量发。
+    if [[ "${NO_SHARE:-0}" != "1" ]] && \
+       declare -F share_gen_tag_auto >/dev/null 2>&1; then
+        # shellcheck disable=SC1090
+        source "${SELF_SHARE_DIR:-$SELF_DIR/../share}/share.sh" 2>/dev/null || true
+        if declare -F share_gen_tag_auto >/dev/null 2>&1; then
+            share_gen_tag_auto all 1 24 || print_warn "分享链接自动生成失败, 可在面板「生成分享链接」里手动发"
+        fi
+    fi
+
     # ---- CDN 回源自动挂载 (2026-10-07 新增) ----
     #
     # 放在**重启成功之后**: 此时 conf/config.d 里是这批真实产物, 传输与路径
