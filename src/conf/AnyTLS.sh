@@ -451,6 +451,16 @@ add_config() {
             ;;
     esac
 
+    # 4.5 把选中的证书域名接给 DOMAIN。
+    #
+    # ★ 客户端模板和分享链接里都写 `sni: $DOMAIN`, 而 DOMAIN 原来**只**在
+    #   "预设自签"分支 (DOMAIN="cloudflare.com") 和三个"重建"分支里被赋值 ——
+    #   新增路径选了证书之后 DOMAIN 仍然是空的, 于是产物写出 `sni: ` (空):
+    #   客户端没有 SNI、分享链接变成 `?sni=&insecure=1`, 节点连不上,
+    #   而合并 / 严格字段 / `mihomo -t` 三道关全绿。
+    #   TUIC 有同款的一行 (TUIC.sh:298 `domain="$CERT_DOMAIN"`), AnyTLS 漏了。
+    DOMAIN="${CERT_DOMAIN:-$DOMAIN}"
+
     # 5. 自动编号
     index=$(get_next_index)
 

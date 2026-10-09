@@ -95,6 +95,44 @@
 SPKI 校验证书与私钥配对, 落位用「临时文件 + 原子改名」。
 同一个坑 `xray--core/tools/cert-sync.sh:41-45` 有独立记录。
 
+### ★ AnyTLS 产物写出 `sni: `（空），节点连不上
+
+AnyTLS 的客户端模板和分享链接都写 `sni: $DOMAIN`，而 `DOMAIN` **只**在
+"预设自签"分支（`DOMAIN="cloudflare.com"`）和三个"重建"分支里被赋值。
+**新增路径选了证书之后 `DOMAIN` 仍然是空的** —— 于是产物是：
+
+```yaml
+sni:
+skip-cert-verify: true
+```
+
+分享链接变成 `anytls://...?sni=&insecure=1`。客户端没有 SNI，节点连不上，
+而合并 / 严格字段 / `mihomo -t` 三道关全绿。
+
+TUIC 有同款的一行桥接（`TUIC.sh:298  domain="$CERT_DOMAIN"`），AnyTLS 漏了。
+已补 `DOMAIN="${CERT_DOMAIN:-$DOMAIN}"`。
+
+> 这条是"全协议自签证书审计"时掉出来的：自签场景下 `sni` 为空特别显眼
+> （自签证书的域名本来就是编的，空值看起来像"没配"），真证书场景一样为空。
+
+### ★ 自签证书在各协议的支持方式不一致（hysteria2 用钉扎，其余用跳过校验）
+
+全协议审计结果（沙箱里逐个把新增向导跑了一遍）：
+
+| 协议 | 自签时客户端的做法 | 分享链接 |
+|---|---|---|
+| VLESS | `skip-cert-verify: true` | `sni=…` |
+| Trojan | `skip-cert-verify: true` | `sni=…` |
+| **hysteria2** | **`fingerprint: <证书 DER 的 SHA256>`（钉扎）** | `sni=…,pin=…` |
+| TUIC | `skip-cert-verify: true` | `sni=…,insecure=1` |
+| AnyTLS | `skip-cert-verify: true` | `sni=…,insecure=1` |
+
+**五种协议都支持自签**，只是 hysteria2 走的是证书钉扎 —— 那是更强的做法
+（只认这一张证书，而不是"谁的都不验"）。钉扎值已核验：产物里的
+`fingerprint` 与证书 DER 的 SHA256 逐字符一致。
+
+真证书（CA 签发）场景下五个协议统一是 `skip-cert-verify: false` + 正确的 SNI。
+
 ### ★ `skip-cert-verify` 展开成 `falsetrue`，整个客户端配置加载失败
 
 客户端模板里有 8 处写着：
@@ -130,8 +168,9 @@ configuration file test failed
 | VLESS / TUIC / AnyTLS | `${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}` | ❌ `falsetrue` |
 | Trojan | 独立的 `ask_skip_cert_verify()` 交互提问，默认跳过 | ⚠️ 与证书可信度无关 |
 
-Trojan 那套暂时保留：它在 `ask_features()` 里问，而 `ask_cert` 在 `add_config()` 里
-—— **问的时候还不知道选的是哪张证书**，要自动推导得先调整次序。
+Trojan 那套已合并：把 `ask_skip_cert_verify` 从 `ask_features()` 挪到
+`add_config()` 里 `ask_cert` **之后**，默认值改成跟着刚选中的证书走。
+次序是根因 —— 原来问的时候还不知道选的是哪张证书，只能给一个与证书无关的默认值。
 
 ### ★ 三道校验没有一道看证书文件
 

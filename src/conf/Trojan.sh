@@ -243,14 +243,32 @@ ask_client_fingerprint() {
 }
 
 # skip-cert-verify: 纯 TLS 分支的 proxy 侧字段 (adapter/outbound/trojan.go:53)。
-# 默认 true —— 保持脚本既有行为(自签 / 免费证书 / 域名对不上都能连)。
+#
+# ★ 默认值跟着**证书本身**走, 不再是写死的"跳过"。同一个判断在项目里原本
+#   有三套写法 (hysteria2 显式分支 / VLESS·TUIC·AnyTLS 的参数展开 / 这里
+#   独立提问), 已统一到 cert.sh 的 cert_client_skip_verify():
+#       CA 签发的真证书 -> 默认严格校验 (不跳过)
+#       自签证书        -> 默认跳过 (否则客户端直接拒连)
+#   写死跳过的代价是: 拿着有效的 Let's Encrypt 证书也放弃校验, TLS 白做一半。
+#
+# ★ 这个提问必须排在 ask_cert **之后** —— 原来它在 ask_features() 里,
+#   而 ask_cert 在 add_config() 里更靠后, 提问时根本不知道选的是哪张证书,
+#   所以只能给一个与证书无关的默认值。
 # 选严格校验后, 证书身份必须与 sni 匹配, 否则是【首次握手】才失败, -t 抓不到 (§3.4)。
 ask_skip_cert_verify() {
-    local yn
-    SKIP_CERT_VERIFY=true
-    printf "  跳过服务端证书校验 (自签/域名不符也能连)？(Y/n): " >&2
-    read -r yn
-    [[ "$(clean_input "$yn")" =~ ^[nN]$ ]] && SKIP_CERT_VERIFY=false
+    local yn default_hint
+    if [[ "$(cert_client_skip_verify)" == "false" ]]; then
+        SKIP_CERT_VERIFY=false; default_hint="y/N"
+        printf "  跳过服务端证书校验 (自签/域名不符也能连)？(y/N): " >&2
+        read -r yn
+        [[ "$(clean_input "$yn")" =~ ^[yY] ]] && SKIP_CERT_VERIFY=true
+    else
+        SKIP_CERT_VERIFY=true; default_hint="Y/n"
+        printf "  跳过服务端证书校验 (自签/域名不符也能连)？(Y/n): " >&2
+        read -r yn
+        [[ "$(clean_input "$yn")" =~ ^[nN] ]] && SKIP_CERT_VERIFY=false
+    fi
+    : "$default_hint"
 }
 
 # ================================================================
@@ -366,7 +384,7 @@ ask_features() {
 
     # mTLS 仅纯 TLS 模式有意义 (Reality 用真站握手, 无本端证书)
     if [[ "$TROJAN_MODE" = "tls" ]]; then
-        ask_skip_cert_verify
+        # 这里**不问** skip-cert-verify —— 见 add_config 里 ask_cert 之后那一段
         printf "启用 mTLS 客户端证书认证？(y/N): " >&2
         read -r yn
         [[ "$(clean_input "$yn")" =~ ^[yY]$ ]] && MTLS_ENABLED=true
@@ -586,6 +604,10 @@ add_config() {
         fi
     else
         ask_cert
+        # ★ 必须在 ask_cert **之后**: 默认值要跟着"刚选中的那张证书"走。
+        #   放在 ask_features 里就只能给一个与证书无关的默认值 —— 那正是
+        #   "拿着有效 LE 证书却默认跳过校验"的由来。
+        ask_skip_cert_verify
         if $MTLS_ENABLED; then
             gen_mtls_cert "$index"
         fi
