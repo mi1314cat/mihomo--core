@@ -77,6 +77,43 @@
 防护跑在选证书菜单**之前**, 菜单里又把 `CRT` 覆盖回原始路径, 防护等于没写。
 导致 13 个 TLS 节点绑不上。
 
+### ★ 证书复制按 basename 落位, 两个域名互相覆盖
+
+`cert_ensure_safe_path` 原来用 `$(basename "$cert")` 当落位文件名。
+而从 `/etc/letsencrypt/live/<域名>/` 取到的 basename **恒为 `fullchain.pem`**:
+
+```
+节点1 选 域名A -> conf/certs/fullchain.pem
+节点2 选 域名B -> conf/certs/fullchain.pem   ← 同一个文件, 证书+私钥一起被顶掉
+```
+
+之后节点1 对外发的是域名B 的证书, SNI 不匹配 → 客户端全部握手失败。
+**而 `mihomo -t` 通过、service 是 active、监听一个不少** —— 正是本项目
+最常见的那类静默失败。
+
+已改为域名限定落位 (`cert-<域名>.crt` / `key-<域名>.key`), 并在写入前用
+SPKI 校验证书与私钥配对, 落位用「临时文件 + 原子改名」。
+同一个坑 `xray--core/tools/cert-sync.sh:41-45` 有独立记录。
+
+### ★ 续期后没人把新证书同步进 conf/certs
+
+第三方保活脚本 (`/root/auto_cert_renewal.sh`) 续签后只 `cp` 到
+`/home/web/certs/` 并 reload nginx, **它不碰 `conf/certs`**。
+内核也不检查有效期 —— 只有客户端握手时才拒。
+于是副本会一直停在旧世代, 直到过期那天所有 TLS 节点一起断。
+
+<SERVER_ALIAS> 上原本有个 `mihomo-hy2-cert-sync.timer` 干这件事, 但它指向的
+`sync-hy2-certs.sh` 随清空重装一起消失, 从 2026-10-05 起每晚 `203/EXEC`
+失败 (`docs/E2E_VERIFY_REPORT.md:440` 记为"未处理")。
+
+已补 `tools/cert-sync.sh`, **从 mihomo 自己的配置反查**要维护哪些证书文件,
+域名从证书本体读 —— 不硬编码主域名 (旧实现换一台主域名不同的机器就静默什么都不做)。
+
+> **实测纠正**: 之前认为"续签后必须 restart mihomo 才能加载新证书"。
+> 是错的。mihomo 每次握手都重新读证书文件, 换掉文件 **≤1 秒**生效,
+> 不需要重启。附带: 证书与私钥不配对时它会**继续发上一份有效证书**,
+> 是 fail-safe 的 —— 所以同步写坏文件的后果是"没生效", 不是"打挂服务"。
+
 ### ★ `skip-cert-verify` 被写死成 true
 
 15 处模板命中。有有效 Let's Encrypt 证书还跳过校验, 等于把 TLS 的意义丢掉。

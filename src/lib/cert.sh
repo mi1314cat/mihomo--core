@@ -38,6 +38,53 @@ cert_path_in_confdir() { # <路径>
     [[ "$rp" == "$rc" || "$rp" == "$rc"/* ]]
 }
 
+# 证书与私钥是否配对 (SPKI 的 SHA256 比对)
+#   ★ 用 SPKI 而不是 `openssl x509 -modulus` —— 后者是 RSA 专用, 遇到 EC 证书
+#     直接报错, 而本项目自签证书是 ECDSA P-256, LE 也是 --key-type ecdsa。
+cert_pub_hash() { # <证书>
+    [[ -s "${1:-}" ]] || return 1
+    openssl x509 -in "$1" -noout -pubkey 2>/dev/null | sha256sum | awk '{print tolower($1)}'
+}
+key_pub_hash() { # <私钥>
+    [[ -s "${1:-}" ]] || return 1
+    openssl pkey -in "$1" -pubout 2>/dev/null | sha256sum | awk '{print tolower($1)}'
+}
+cert_key_match() { # <证书> <私钥>
+    local c="${1:-}" k="${2:-}" a b
+    [[ -s "$c" && -s "$k" ]] || return 1
+    a=$(cert_pub_hash "$c") || return 1
+    b=$(key_pub_hash "$k")  || return 1
+    [[ -n "$a" && -n "$b" && "$a" == "$b" ]]
+}
+
+# 证书在配置目录内的落位文件名 —— 打印 "证书<TAB>私钥"
+#
+# ★ 这里必须**带域名**。原来落位用的是 $(basename "$cert"), 而从
+#   /etc/letsencrypt/live/<域名>/ 取到的 basename 恒为 fullchain.pem:
+#     节点1 选 域名A  -> conf/certs/fullchain.pem
+#     节点2 选 域名B  -> conf/certs/fullchain.pem   ← 同一个文件, 证书+私钥一起被顶掉
+#   于是节点1 开始对外发域名B 的证书 (SNI 不匹配 → 客户端全部握手失败),
+#   而 `mihomo -t` 通过、service 是 active、监听一个不少 —— 静默失败里最难查的一类。
+#   同一个坑 xray--core/tools/cert-sync.sh:41-45 有实测记录。
+#
+# 命名沿用项目自己的 cert-<域名>.crt / key-<域名>.key, 于是
+# find_key_for_cert() 的第一条配对规则天然认得它们, 扫描/回收链路无需改动。
+cert_dest_paths() { # <证书>
+    local cert="${1:-}" dom
+    [[ -n "$cert" ]] || return 1
+    dom=$(cert_extract_domain "$cert" 2>/dev/null)
+    # 拿不到真域名时用内容指纹兜底 —— 保证"不同证书必然落到不同文件",
+    # 宁可名字难看, 也不能再出现互相覆盖。
+    case "$dom" in
+        ""|fullchain|cert|chain|cert1|fullchain1|privkey)
+            dom="imported-$(sha256sum "$cert" 2>/dev/null | cut -c1-16)" ;;
+    esac
+    [[ -n "$dom" ]] || return 1
+    dom=$(printf '%s' "$dom" | tr -c 'A-Za-z0-9._-' '_')
+    [[ -n "$dom" ]] || return 1
+    printf '%s\t%s' "$CERT_DIR/cert-${dom}.crt" "$CERT_DIR/key-${dom}.key"
+}
+
 # 若用户给的证书不在配置目录内, 把它复制进来并改写 CERT_FILE/KEY_FILE。
 # 返回 0 = 已可用 (可能已复制), 1 = 无法处理
 cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FILE)
@@ -47,25 +94,49 @@ cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FIL
         return 0
     fi
 
-    mkdir -p "$CERT_DIR"
-    local base cdest kdest dom
-    dom=$(cert_extract_domain "$cert" 2>/dev/null)
-    [[ -n "$dom" ]] || dom="imported-$(date +%s)"
-    base=$(basename "$cert")
-    cdest="$CERT_DIR/${base}"
-    kdest=""
-    # 同名文件直接覆盖用, 避免每次导入都堆一份新的
-    cp -f "$cert" "$cdest" || return 1
-    if [[ -n "$key" && -f "$key" ]]; then
-        kdest="$CERT_DIR/$(basename "$key")"
-        cp -f "$key" "$kdest" || return 1
+    # 私钥必须存在。原来私钥缺失时 KEY_FILE 会被赋成空串, 一路静默写进配置
+    # (private-key: ""), 直到 listener 起不来才暴露。
+    if [[ -z "$key" || ! -f "$key" ]]; then
+        print_error "证书私钥缺失或不可读: ${key:-<未提供>}"
+        return 1
     fi
+    # 配对要在**写入之前**判定源文件。写一份配不上的证书进配置目录,
+    # 等于给所有引用它的节点埋雷。
+    if ! cert_key_match "$cert" "$key"; then
+        print_error "证书与私钥不配对: $cert <-> $key"
+        return 1
+    fi
+
+    mkdir -p "$CERT_DIR"
+    local cdest="" kdest="" dom
+    IFS=$'\t' read -r cdest kdest < <(cert_dest_paths "$cert")
+    [[ -n "$cdest" && -n "$kdest" ]] || { print_error "无法确定落位文件名"; return 1; }
+    dom=$(cert_extract_domain "$cert" 2>/dev/null)
+
+    # 先写临时文件再原子改名。
+    # ★ 这不是洁癖: mihomo 是**热读**证书文件的 (TCP-TLS 与 QUIC 都实测过),
+    #   直接在目标路径上 cp 会出现"新证书 + 旧私钥"的中间态, 而这个中间态
+    #   真的会被正在握手的客户端读到。
+    local ct="${cdest}.tmp.$$" kt="${kdest}.tmp.$$"
+    if ! cp -f "$cert" "$ct" || ! cp -f "$key" "$kt"; then
+        rm -f "$ct" "$kt"; print_error "复制证书失败"; return 1
+    fi
+    chmod 644 "$ct" 2>/dev/null || true
+    chmod 600 "$kt" 2>/dev/null || true
+    if ! cert_key_match "$ct" "$kt"; then
+        rm -f "$ct" "$kt"; print_error "落位后配对校验失败, 已放弃"; return 1
+    fi
+    if ! { mv -f "$ct" "$cdest" && mv -f "$kt" "$kdest"; }; then
+        rm -f "$ct" "$kt"; print_error "落位失败"; return 1
+    fi
+
     CERT_FILE="$cdest"; KEY_FILE="$kdest"
     print_warn "证书不在配置目录内, mihomo 会拒绝加载 (SAFE_PATHS 限制)"
     print_info "已自动复制到配置目录: $cdest"
+    print_info "  (文件名带域名, 多域名不会互相覆盖)"
     if [[ -L "$cert" ]]; then
         print_warn "原路径是符号链接 (常见于 Let's Encrypt) —— 复制件**不会随续期自动更新**"
-        print_info "续期后请重新导入, 或改用 SAFE_PATHS 方案 (见下)"
+        print_info "续期后用 tools/cert-sync.sh 刷新, 或装它的 timer: bash tools/cert-sync.sh --install"
     fi
     print_info "另一种做法: 在 systemd unit 里加"
     print_info "  Environment=SAFE_PATHS=$(dirname "$(readlink -f "$cert")")"
