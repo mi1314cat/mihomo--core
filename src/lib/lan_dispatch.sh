@@ -47,47 +47,56 @@ lan_host_ip() {
     printf '%s\n' "${ip:-127.0.0.1}"
 }
 
-# 生成可分发的配置: 实时合并 conf/ 下所有片段, 剥掉本机专属段。
+# 生成可分发的配置 —— **唯一实现**在 src/share/lan_config.py。
+#
+# ★ 这里原先有一份 40 行的内联 python, 与 share_server.py 的 build_lan_config()
+#   重复, 而且已经漂移: 这边没剥 `profile`, 实际分发那边剥了。实测在真实客户端上
+#   "预览版本 profile 出现 1 处 / 实际分发 0 处" —— 用户看到的不是别人拿到的。
+#   现在两份实现收敛成一份, 谁都不会再单独漂。
+#
+# 输出契约 (保持不变): 配置内容 + **最后一行节点数**。
+#   调用方一直用 `| tail -1` 取节点数、`head -60` 做预览, 形状不能改。
 lan_gen_config() {
-    local out="$1"
-    python3 - "$CLI_ROOT" "$out" <<'PY'
-import sys, os, glob, re
-root, out = sys.argv[1], sys.argv[2]
-confdir = os.path.join(root, "conf")
+    local out="$1" lib="${CLI_ROOT}/src/share/lan_config.py"
+    if [[ ! -f "$lib" ]]; then
+        print_error "缺少 lan_config.py: $lib" >&2
+        return 1
+    fi
+    if [[ "$out" == "/dev/stdout" ]]; then
+        python3 "$lib" --root "$CLI_ROOT"
+    else
+        python3 "$lib" --root "$CLI_ROOT" --out "$out"
+    fi
+}
 
-# 合并 config.d/*.yaml 与节点片段。Mihomo 的 -d 目录语义就是合并所有 yaml,
-# 这里只把"片段文件"读进来, 主配置 config.yaml 原样保留。
-merged = ""
-for f in sorted(glob.glob(os.path.join(confdir, "config.d", "*.yaml"))) + \
-         sorted(glob.glob(os.path.join(confdir, "providers", "*.yaml"))):
-    try:
-        merged += open(f, encoding="utf-8").read() + "\n"
-    except Exception as e:
-        sys.stderr.write(f"跳过 {f}: {e}\n")
-
-main = os.path.join(confdir, "config.yaml")
-txt = open(main, encoding="utf-8").read() if os.path.exists(main) else ""
-
-# 剥掉本机专属段 —— 这些换台设备全都对不上
-# 不带尾部冒号: 比较的是 line.split(":", 1)[0] (见上一行), 带了永远匹配不上。
-DROP_PREFIX = ("mixed-port", "port", "socks-port", "redir-port", "tproxy-port",
-               "allow-lan", "bind-address", "external-controller", "external-ui",
-               "secret", "log-level", "mode")
-kept, skip = [], False
-for line in txt.splitlines():
-    if line and not line[0].isspace() and ":" in line:
-        skip = line.split(":", 1)[0].strip() in DROP_PREFIX
-    if not skip:
-        kept.append(line)
-
-# 把节点片段拼在主配置之后 (规则仍以主配置的为准)
-result = "\n".join(kept).rstrip() + "\n" + merged
-open(out, "w", encoding="utf-8").write(result)
-
-# 统计一下有没有节点 —— 没有节点的分发是没意义的
-n = len(re.findall(r'^\s*-\s*name:', merged, re.M))
-print(n)
-PY
+# 端口回避 —— 首选端口被占就自动找一个空闲的, 并把结果**记住**。
+#
+# 记住是必需的: 分发地址已经给了局域网里别的设备, 每次重启都换端口会让
+# 那些设备全部失效。只在"上次的端口也用不了"时才重新挑。
+lan_pick_port() {
+    local f="$SUB_STATE_DIR/sub-port" old
+    if [[ -f "$f" ]]; then
+        old=$(cat "$f" 2>/dev/null)
+        if [[ "$old" =~ ^[0-9]+$ ]] && ! m_port_listening "$old"; then
+            LAN_SUB_PORT="$old"; return 0
+        fi
+    fi
+    if ! m_port_listening "$LAN_SUB_PORT"; then
+        [[ -f "$f" ]] || printf '%s' "$LAN_SUB_PORT" > "$f"
+        return 0
+    fi
+    local i
+    for ((i = LAN_SUB_PORT + 1; i <= LAN_SUB_PORT + 200; i++)); do
+        if ! m_port_listening "$i"; then
+            print_warn "端口 $LAN_SUB_PORT 已被占用, 端口回避 -> $i"
+            LAN_SUB_PORT="$i"
+            mkdir -p "$SUB_STATE_DIR"
+            printf '%s' "$i" > "$f"
+            return 0
+        fi
+    done
+    print_error "端口区间内没有空闲端口"
+    return 1
 }
 
 lan_sub_is_running() {
@@ -97,6 +106,7 @@ lan_sub_is_running() {
 
 lan_dispatch_start() {
     lan_dispatch_init
+    lan_pick_port || return 1
     local tok; tok=$(lan_sub_token)
     local n
     n=$(lan_gen_config /dev/stdout 2>/dev/null | tail -1)
@@ -104,10 +114,12 @@ lan_dispatch_start() {
         print_error "当前没有节点, 分发出去也没用 —— 先添加节点"
         return 1
     fi
-    # share_server.py 全用环境变量传参, 没有 argparse —— 跟着它, 不另立一套
-    MODE=lan LAN_ROOT="$CLI_ROOT" LAN_TOKEN="$tok" LAN_TMP="$SUB_STATE_DIR/tmp" \
-    SHARE_PORT="$LAN_SUB_PORT" SHARE_DIR="$SUB_STATE_DIR" OUT_DIR="$SUB_STATE_DIR/out" \
-        python3 "$CLI_ROOT/src/share/share_server.py" >/dev/null 2>&1 &
+    # lan_server.py 全用环境变量传参, 没有 argparse —— 跟着它, 不另立一套。
+    # 环境变量名保持与拆分前一致 (LAN_ROOT/LAN_TOKEN/LAN_TMP/SHARE_PORT),
+    # 这样调用点只有可执行文件这一处变化。
+    LAN_ROOT="$CLI_ROOT" LAN_TOKEN="$tok" LAN_TMP="$SUB_STATE_DIR/tmp" \
+    SHARE_PORT="$LAN_SUB_PORT" \
+        python3 "$CLI_ROOT/src/share/lan_server.py" >/dev/null 2>&1 &
     local pid=$!
     echo "$pid" > "$SUB_STATE_DIR/sub.pid"
     sleep 2
