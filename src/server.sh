@@ -218,6 +218,20 @@ fw_after_node_change() {
 }
 
 
+# 节点变更后刷新已有分享链接的内容。
+#
+# 幂等且**安静**: 没有分享、或公共服务不在、或内容没变, 都一声不吭。
+# share.sh 未必已加载 (用户可能直接删/加节点而没进过分享菜单), 所以这里
+# 按需 source 一次 —— 与 all.sh 的做法一致。
+_share_refresh_after_change() {
+    if ! declare -F share_refresh_all >/dev/null 2>&1; then
+        # shellcheck disable=SC1090
+        source "$HERE/share/share.sh" 2>/dev/null || return 0
+    fi
+    declare -F share_refresh_all >/dev/null 2>&1 && share_refresh_all >/dev/null 2>&1
+    return 0
+}
+
 add_node() {
     print_title "添加节点"
     local i
@@ -273,6 +287,9 @@ add_node() {
     BASE_DIR="$SRV_ROOT" MIHOMO_BIN="$SRV_BIN" SELF_DIR="$HERE/conf" bash "$script" add
     fw_after_node_change
     declare -F m_publish_addrs >/dev/null 2>&1 && m_publish_addrs
+    # 节点变了 → 刷新已有分享链接的内容 (token/URL/TTL/次数全不变, 只换内容)。
+    # 放在这里而不是每个协议脚本里: 六份协议脚本各加一次必然漂移, 一处足够。
+    _share_refresh_after_change
 }
 
 # all.sh 的菜单外壳。

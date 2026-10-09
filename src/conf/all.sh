@@ -2490,6 +2490,9 @@ if m_sync_reload; then
         if declare -F share_gen_tag_auto >/dev/null 2>&1; then
             share_gen_tag_auto all 1 24 || print_warn "分享链接自动生成失败, 可在面板「生成分享链接」里手动发"
         fi
+        # 节点刚变过 —— 顺手把**已有**分享链接的内容刷新一遍 (token/URL 不变)。
+        # 不刷的话, 老链接会一直发上一批节点, 直到有人打开分享菜单。
+        declare -F share_refresh_all >/dev/null 2>&1 && share_refresh_all
     fi
 
     # ---- CDN 回源自动挂载 (2026-10-07 新增) ----
