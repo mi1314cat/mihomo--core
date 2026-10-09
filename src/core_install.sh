@@ -849,3 +849,24 @@ printf '  管理面板: bash %s/src/%s\n\n' "$INSTALL_DIR" "$_panel"
 # 的规则就永远收不到提示 —— 而那正是会让 mihomo 卡在启动阶段的场景。
 seed_geodata
 
+# ---------- 公共分享服务 (放在最后, 且失败不影响安装) ----------
+#
+# ★ 分享的存储与生命周期归**公共基础服务** proxy-share-service (独立项目),
+#   M / SB / X 共用。这里只做"检查 → 不存在才装 → 启动", 装过就是空操作,
+#   所以后装的内核不会重复安装、不会重新占端口、不会覆盖已有分享数据。
+#
+#   直接调 share_client.py, **不 source share.sh** —— 这个脚本在安装阶段跑,
+#   那些 UI 函数还没就位; 依赖它们只会得到一个静默失效的检查。
+#
+#   失败**绝不能**让安装失败 —— 分享不是 M 的核心功能, 没有它 M 照样能用。
+#   装不上只提示, 用户之后在面板「分享链接管理 → 7」里还能重试。
+_pss_client="$INSTALL_DIR/src/share/share_client.py"
+if [[ "${ROLE:-server}" != "client" && -f "$_pss_client" ]]; then
+    printf '  公共分享服务: ' >&2
+    # 端口可能因端口回避而不是 9443, 所以取它**打印出来的值**, 不猜。
+    if _pss_port=$(python3 "$_pss_client" ensure 2>/dev/null) && [[ -n "$_pss_port" ]]; then
+        printf '已就绪 (端口 %s)\n' "$_pss_port" >&2
+    else
+        printf '未就绪 (不影响使用; 面板「分享链接管理 → 7」可重试)\n' >&2
+    fi
+fi
