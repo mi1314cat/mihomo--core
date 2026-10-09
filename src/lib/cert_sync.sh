@@ -37,11 +37,20 @@
 #   3. mihomo 的配置里 private-key 与 certificate **成对出现**, 这里按配置
 #      反查, 不靠文件名猜。
 #
-# 用法:
-#   bash tools/cert-sync.sh              # 同步 (只在内容真的不同时才写)
-#   bash tools/cert-sync.sh --check      # 只报告, 不改任何东西 (有需要同步的返回 2)
-#   bash tools/cert-sync.sh --install    # 装 systemd timer (每天 03:30), 并清理孤儿单元
-#   bash tools/cert-sync.sh --uninstall  # 卸载 timer
+# 用法 (日常不需要人来敲 —— 见下面「谁在调它」):
+#   bash src/lib/cert_sync.sh            # 同步 (只在内容真的不同时才写)
+#   bash src/lib/cert_sync.sh --check    # 只报告, 不改任何东西 (有需要同步的返回 2)
+#   bash src/lib/cert_sync.sh --ensure   # 幂等自愈: 需要才装定时器, 否则一声不吭
+#   bash src/lib/cert_sync.sh --install  # 强制装 systemd timer (每天 03:30) 并清理孤儿单元
+#   bash src/lib/cert_sync.sh --uninstall
+#   bash src/lib/cert_sync.sh --run      # systemd 单元用的入口 (等同不带参数)
+#
+# 谁在调它 (全部是自动的, 用户无感):
+#   1. systemd: mihomo-cert-sync.timer 每天 03:30 跑 --run
+#   2. 面板启动时: server.sh → cert_sync_ensure_timer → --ensure
+#   3. 面板里**选中一个 Let's Encrypt 证书时**: cert_ensure_safe_path → --ensure
+#      —— 这一条是关键: 用户的心智是"我在面板里选个证书它就该自己动起来",
+#         所以触发点就放在选证书那一刻, 而不是留一步"记得去装定时器"。
 #
 # 环境变量:
 #   SRV_ROOT=/root/catmi/mihomo      mihomo 安装根目录
@@ -49,16 +58,16 @@
 #   CERT_SYNC_URL=<raw GitHub 地址>   --install 时若脚本自身不是普通文件 (>_)
 #                                    就用它重拉一份; 默认指向本项目的 main 分支
 #
-# 从 GitHub 远程执行 (推荐这种, --install 才能把自己落到稳定位置):
-#   curl -fsSL https://raw.githubusercontent.com/mi1314cat/mihomo--core/main/tools/cert-sync.sh \
-#     -o /tmp/cert-sync.sh && bash /tmp/cert-sync.sh --check
+# 本文件放在 src/lib/ 而不是 tools/: install.sh 的更新只把 $tmp/src/. 拷到
+# $root/src/, 面板「更新脚本」也以 src/ 为主 —— 放 tools/ 的话两条更新路径都
+# 覆盖不到它, 定时器会一直跑一份再也不会被更新的旧脚本。
 # =============================================================
 set -uo pipefail
 
 SRV_ROOT="${SRV_ROOT:-/root/catmi/mihomo}"
 SRC="${CERT_SYNC_SRC:-/etc/letsencrypt/live}"
 # "bash <(curl ...)" 这种跑法下脚本复制不了自己, --install 会退回按这个地址重拉
-CERT_SYNC_URL="${CERT_SYNC_URL:-https://raw.githubusercontent.com/mi1314cat/mihomo--core/main/tools/cert-sync.sh}"
+CERT_SYNC_URL="${CERT_SYNC_URL:-https://raw.githubusercontent.com/mi1314cat/mihomo--core/main/src/lib/cert_sync.sh}"
 CONF_DIR="$SRV_ROOT/conf"
 CERT_DIR="$CONF_DIR/certs"
 
@@ -76,16 +85,22 @@ fetch_self() { # <目标路径>
 ORPHAN_UNITS=(mihomo-hy2-cert-sync.service mihomo-hy2-cert-sync.timer)
 UNIT=/etc/systemd/system/mihomo-cert-sync.service
 TIMER=/etc/systemd/system/mihomo-cert-sync.timer
+# 本实现的稳定落位路径。定时器的 ExecStart 指向它 ——
+# 它在 src/lib/ 下, 于是 **install.sh 与面板「更新脚本」两条路都会覆盖到它**,
+# 定时器用的永远是当前版本。放在 tools/ 下就两条都覆盖不到 (install.sh 只拷
+# $tmp/src/. → $root/src/), 定时器会一直跑一份再也不会被更新的旧脚本。
+SELF_DEST="$SRV_ROOT/src/lib/cert_sync.sh"
 
 CHECK_ONLY=0
 MODE="sync"
 case "${1:-}" in
     --check)     CHECK_ONLY=1 ;;
     --install)   MODE="install" ;;
+    --ensure)    MODE="ensure" ;;
     --uninstall) MODE="uninstall" ;;
     -h|--help)   sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    "")          ;;
-    *)           echo "未知参数: $1 (--check / --install / --uninstall)"; exit 2 ;;
+    "--run"|"")  ;;
+    *)           echo "未知参数: $1 (--run / --check / --ensure / --install / --uninstall)"; exit 2 ;;
 esac
 
 _color(){ [[ -t 1 ]] && printf '\033[%sm%s\033[0m\n' "$1" "$2" || printf '%s\n' "$2"; }
@@ -296,6 +311,54 @@ main() {
     return 0
 }
 
+# 本机是否有"LE 出处"的证书在用 —— 决定要不要装定时器
+#
+# 只有真正在用 Let's Encrypt 证书时才需要同步 (那种证书会被第三方脚本换掉)。
+# 全自签的机器不该被塞一个每天空跑一遍的定时器, 所以这里判得很死。
+has_le_cert() {
+    local refs=() i cert key dom
+    mapfile -t refs < <(collect_refs)
+    ((${#refs[@]})) || return 1
+    for i in "${!refs[@]}"; do
+        IFS=$'\t' read -r cert key <<< "${refs[$i]}"
+        dom=""
+        [[ -s "$cert" ]] && dom=$(cert_domain "$cert" 2>/dev/null)
+        [[ -z "$dom" ]] && dom=$(basename "$cert" | sed -n 's/^cert-\(.*\)\.crt$/\1/p')
+        [[ -n "$dom" && -s "$SRC/$dom/fullchain.pem" ]] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------- 无感自愈
+#
+# 面板每次启动、以及每次导入证书后都会调这个。它必须是**安静且幂等**的:
+#
+#   * 已经装好且指向正确 → 一个字的输出都没有
+#   * 本机没有 LE 证书   → 什么都不做
+#   * 需要装             → 装好, 并说明一句为什么
+#
+# 为什么要有它: 定时器以前只能靠手工敲一条命令装。用户的心智模型是
+# "我在面板里选个证书, 它自己就该动起来" —— 那就必须由面板自己保证,
+# 而不是留一步"记得去装定时器"给人记。
+ensure_quiet() {
+    [[ "${EUID:-$(id -u)}" -eq 0 ]] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    [[ -d /run/systemd/system ]] || return 0      # 容器里没有 systemd, 不硬装
+
+    # 已就位且 ExecStart 指向当前实现的稳定路径 → 静默通过。
+    # 这里比的是路径而不是"服务存在": 实现从 tools/ 挪到 src/lib/ 之后,
+    # 老单元仍然存在但指向一个不会再被更新路径覆盖的位置, 必须自动升级。
+    if systemctl is-enabled --quiet mihomo-cert-sync.timer 2>/dev/null &&
+       [[ -f "$UNIT" ]] && grep -qF "ExecStart=$SELF_DEST" "$UNIT" 2>/dev/null; then
+        return 0
+    fi
+
+    has_le_cert || return 0
+
+    echo "  检测到证书来自 Let's Encrypt —— 自动启用每日同步 (每天 03:30)"
+    install_timer
+}
+
 # ---------------------------------------------------------------- 安装 timer
 install_timer() {
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -303,15 +366,15 @@ install_timer() {
     fi
     local self dest_dir dest
     self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '')
-    dest_dir="$SRV_ROOT/tools"
-    dest="$dest_dir/cert-sync.sh"
+    dest_dir="$SRV_ROOT/src/lib"
+    dest="$SELF_DEST"
     mkdir -p "$dest_dir" || { bad "✗ 无法创建 $dest_dir"; return 1; }
 
     # 单元里的 ExecStart 必须指向一个**稳定位置**, 所以要把自己复制过去。
     #
     # ★ 从 GitHub 远程执行时有两种姿势, 一种复制不了:
-    #     curl -o /tmp/cert-sync.sh && bash /tmp/cert-sync.sh --install   ← 可以
-    #     bash <(curl -fsSL ...) --install                                ← BASH_SOURCE 是 /dev/fd/NN
+    #     curl -o /tmp/x.sh && bash /tmp/x.sh --install   ← 可以
+    #     bash <(curl -fsSL ...) --install                ← BASH_SOURCE 是 /dev/fd/NN
     #   后者 $self 不是普通文件, cp 必然失败。这时退回按 URL 重新拉一份。
     if [[ ! -f "$self" || "$self" == "$dest" ]]; then
         if [[ "$self" == "$dest" ]]; then
@@ -320,7 +383,7 @@ install_timer() {
             bad "✗ 无法把自己安装到 $dest"
             echo "     当前脚本不是普通文件 (${self:-<空>}), 常见于 'bash <(curl ...)' 这种跑法。"
             echo "     请改成先落盘再跑:"
-            echo "       curl -fsSL $CERT_SYNC_URL -o /tmp/cert-sync.sh && bash /tmp/cert-sync.sh --install"
+            echo "       curl -fsSL $CERT_SYNC_URL -o /tmp/cert_sync.sh && bash /tmp/cert_sync.sh --install"
             return 1
         else
             echo "  ✓ 脚本已安装到 $dest"
@@ -346,7 +409,7 @@ install_timer() {
     ((found)) || dim "  · 无孤儿单元需要清理"
 
     cat > "$UNIT" <<UNITEOF
-# 由 tools/cert-sync.sh --install 生成
+# 由 src/lib/cert_sync.sh --install 生成
 [Unit]
 Description=Sync Let's Encrypt certs into mihomo conf (SAFE_PATHS)
 After=network.target
@@ -357,7 +420,7 @@ ExecStart=$dest
 UNITEOF
 
     cat > "$TIMER" <<TIMEREOF
-# 由 tools/cert-sync.sh --install 生成
+# 由 src/lib/cert_sync.sh --install 生成
 [Unit]
 Description=Daily cert sync for mihomo
 
@@ -386,12 +449,13 @@ uninstall_timer() {
     systemctl disable --now mihomo-cert-sync.timer >/dev/null 2>&1 || true
     rm -f "$UNIT" "$TIMER"
     systemctl daemon-reload
-    ok "  ✓ 已卸载 mihomo-cert-sync.timer (脚本文件保留在 $SRV_ROOT/tools/)"
+    ok "  ✓ 已卸载 mihomo-cert-sync.timer (脚本文件保留在 $SELF_DEST)"
     return 0
 }
 
 case "$MODE" in
     install)   install_timer ;;
+    ensure)    ensure_quiet ;;
     uninstall) uninstall_timer ;;
     *)         main ;;
 esac

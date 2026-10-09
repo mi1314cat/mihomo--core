@@ -172,7 +172,7 @@ core_update_scripts() {
         print_warn "清单拉取失败, 使用内置兜底清单"
         files=(
             "src/lib/env.sh" "src/lib/ui.sh" "src/lib/core_mgmt.sh" "src/lib/webui.sh" "src/lib/portcheck.sh"
-            "src/lib/cert.sh" "src/lib/preset.sh" "src/lib/cdn.sh" "src/lib/fw.sh"
+            "src/lib/cert.sh" "src/lib/cert_sync.sh" "src/lib/preset.sh" "src/lib/cdn.sh" "src/lib/fw.sh"
             "src/lib/rules_bind.sh" "src/lib/lan_dispatch.sh" "src/lib/dl_route.sh" "src/lib/simple_proxy.sh"
             "src/lib/server_extra.sh"
             "src/lib/dns.sh" "src/lib/dns_edit.py"

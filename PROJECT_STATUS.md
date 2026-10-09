@@ -29,7 +29,7 @@
 | 证书签发 / 选择 / 续期 | 代码落到 `CERT_DIR`，写入前校验配对。**"有效期至某日"不是成果** —— 副本必须有机制跟着续期走，见下两行 |
 | SAFE_PATHS 路径防护 | 已修（防护曾跑在选证书菜单之前，等于没写） |
 | 证书落位不撞名 | 域名限定 `cert-<域名>.crt` / `key-<域名>.key`（原先按 basename 落位，两个 LE 域名都写 `fullchain.pem`，证书+私钥一起被顶掉） |
-| 续期后自动同步副本 | `tools/cert-sync.sh` + `mihomo-cert-sync.timer`（每天 03:30）。**从 mihomo 配置反查**要维护哪些证书，域名读证书本体，不硬编码。<SERVER_ALIAS> 实测：漂移 → `--check` 报 `待刷新`(退出码 2) → 同步后副本与 LE 源逐字节一致，mihomo 未重启 |
+| 续期后自动同步副本 | `src/lib/cert_sync.sh` + `mihomo-cert-sync.timer`（每天 03:30）。**面板里选中 LE 证书时自动接上，无需任何手工步骤**。**从 mihomo 配置反查**要维护哪些证书，域名读证书本体，不硬编码。<SERVER_ALIAS> 实测：漂移 → `--check` 报 `待刷新`(退出码 2) → 同步后副本与 LE 源逐字节一致，mihomo 未重启 |
 | `skip-cert-verify` 条件化 | 已修 15 处写死 `true` 的模板 |
 | 清理无对应节点的残留产物 | 菜单项可用 |
 

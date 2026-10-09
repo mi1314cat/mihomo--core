@@ -8,6 +8,7 @@
 
 src/lib/cdn.sh
 src/lib/cert.sh
+src/lib/cert_sync.sh
 src/lib/core_mgmt.sh
 src/lib/dl_route.sh
 src/lib/dns.sh

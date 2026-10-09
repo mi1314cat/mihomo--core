@@ -85,6 +85,36 @@ cert_dest_paths() { # <证书>
     printf '%s\t%s' "$CERT_DIR/cert-${dom}.crt" "$CERT_DIR/key-${dom}.key"
 }
 
+# 这张证书是不是"会被别人换掉"的那种
+#   LE 的 live/*.pem 全是符号链接, 指向 archive/ 下带序号的真实文件 ——
+#   续期后符号链接指向新的那份, 而我们复制出来的快照不会跟着变。
+cert_is_renewable_source() { # <证书路径>
+    local c="${1:-}" r
+    [[ -n "$c" ]] || return 1
+    r=$(readlink -f "$c" 2>/dev/null) || r="$c"
+    [[ "$r" == /etc/letsencrypt/* ]] && return 0
+    [[ "$r" == /root/.acme.sh/* ]]    && return 0
+    [[ -L "$c" ]] && return 0
+    return 1
+}
+
+# 确保"续期后自动同步"的定时器在位 —— 幂等、安静、失败不影响主流程。
+#
+# ★ 这是整个机制**无感**的关键: 用户不需要知道有定时器这回事。他在面板里
+#   选中 LE 证书的那一刻, 这里就把后续每一次续期的同步接上了。
+#   留一步"记得去装定时器"给人记, 等于没做 —— 这条链路上已经断过一次
+#   (原 mihomo-hy2-cert-sync.timer 指向的脚本丢失, 从 2026-10-05 起每晚
+#    203/EXEC 失败, 大半个月没人发现)。
+cert_sync_ensure_timer() {
+    local lib="${M_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    local helper="$lib/cert_sync.sh"
+    [[ -f "$helper" ]] || return 0
+    local out=""
+    out=$(bash "$helper" --ensure 2>&1) || true
+    [[ -n "$out" ]] && printf '%s\n' "$out" >&2
+    return 0
+}
+
 # 若用户给的证书不在配置目录内, 把它复制进来并改写 CERT_FILE/KEY_FILE。
 # 返回 0 = 已可用 (可能已复制), 1 = 无法处理
 cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FILE)
@@ -93,6 +123,9 @@ cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FIL
     if cert_path_in_confdir "$cert"; then
         return 0
     fi
+    # 记下来: 这份证书是不是外部脚本续期的 (决定要不要接上自动同步)
+    local renewable=0
+    cert_is_renewable_source "$cert" && renewable=1
 
     # 私钥必须存在。原来私钥缺失时 KEY_FILE 会被赋成空串, 一路静默写进配置
     # (private-key: ""), 直到 listener 起不来才暴露。
@@ -134,14 +167,12 @@ cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FIL
     print_warn "证书不在配置目录内, mihomo 会拒绝加载 (SAFE_PATHS 限制)"
     print_info "已自动复制到配置目录: $cdest"
     print_info "  (文件名带域名, 多域名不会互相覆盖)"
-    if [[ -L "$cert" ]]; then
-        print_warn "原路径是符号链接 (常见于 Let's Encrypt) —— 复制件**不会随续期自动更新**"
-        print_info "续期后用 tools/cert-sync.sh 刷新, 或装它的 timer: bash tools/cert-sync.sh --install"
+    if ((renewable)); then
+        # 其余的话不再说第二遍: 这一条已经把"后续怎么办"接上了。
+        # SAFE_PATHS 那套备选方案仍写在 cert.sh 顶部注释里, 需要时能查到。
+        print_info "原证书由外部脚本续期 (符号链接 / Let's Encrypt), 复制件本身不会自动更新"
+        cert_sync_ensure_timer
     fi
-    print_info "另一种做法: 在 systemd unit 里加"
-    print_info "  Environment=SAFE_PATHS=$(dirname "$(readlink -f "$cert")")"
-    print_info "  (多个目录用**冒号**分隔; 分号不生效, 实测过)"
-    print_info "然后 systemctl daemon-reload && systemctl restart mihomo"
     return 0
 }
 
