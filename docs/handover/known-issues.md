@@ -95,6 +95,61 @@
 SPKI 校验证书与私钥配对, 落位用「临时文件 + 原子改名」。
 同一个坑 `xray--core/tools/cert-sync.sh:41-45` 有独立记录。
 
+### ★ `skip-cert-verify` 展开成 `falsetrue`，整个客户端配置加载失败
+
+客户端模板里有 8 处写着：
+
+```bash
+skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+```
+
+`CERT_TRUSTED=true`（**证书是 CA 签发的真证书**）时它展开成 `falsetrue`。
+而内核要求 bool：
+
+```
+proxy 0: 'skip-cert-verify' expected type 'bool', got unconvertible type 'string'
+configuration file test failed
+```
+
+**不是降级，是硬失败** —— mihomo 拒绝加载整个配置。
+
+`CERT_TRUSTED` 为空时它又恰好是对的（`true`），所以这个坑只在
+"证书确实可信"时引爆 —— 也就是最该正常工作的那条路径。
+
+> 为什么之前没被发现：批量生成（添加节点 → 10）用的是另一个变量
+> `CERT_SKIP_VERIFY`（写对了），所以 `out/` 里的产物一直是好的。
+> 只有**单协议向导**（添加节点 → 2 VLESS / 5 TUIC / 6 AnyTLS）才会走到这 8 处。
+> 复现方式：沙箱里跑一遍 AnyTLS 的新增向导，产物就是 `falsetrue`。
+
+已修：判断收敛到 `cert.sh` 的 `cert_client_skip_verify()`（唯一真源）。
+顺带记下同一件事在项目里原本有**三套写法**：
+
+| 协议 | 原写法 | 结果 |
+|---|---|---|
+| hysteria2 | `if [[ $CERT_TRUSTED == true ]]` 显式分支 | ✅ 正确 |
+| VLESS / TUIC / AnyTLS | `${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}` | ❌ `falsetrue` |
+| Trojan | 独立的 `ask_skip_cert_verify()` 交互提问，默认跳过 | ⚠️ 与证书可信度无关 |
+
+Trojan 那套暂时保留：它在 `ask_features()` 里问，而 `ask_cert` 在 `add_config()` 里
+—— **问的时候还不知道选的是哪张证书**，要自动推导得先调整次序。
+
+### ★ 三道校验没有一道看证书文件
+
+`合并 / 严格字段 / mihomo -t` 全都不检查配置里引用的证书是否真的存在。实测：
+
+```
+certificate 指向不存在的文件      -> "test is successful"
+证书文件里塞的是垃圾内容          -> "test is successful"
+```
+
+而监听起不来只进日志（内核还会保留上一份有效证书，所以连"服务是活的"
+都不能证明它没问题）。
+
+已补：面板「校验配置 + 重载」从三道关变四道关，新增
+`3/4 证书落位 (文件在不在 / 私钥配不配)` —— 按配置里**声明的**
+certificate/private-key 成对校验，不用命名约定去猜（猜的漏判实测过：
+私钥指向不存在的文件、指向另一张证书的私钥，用猜的都报"通过"）。
+
 ### ★ 批量生成挑证书：配对靠「位置」凑，配错了还不校验
 
 `all.sh` 的 `find_cert()` 先用文件名把证书和私钥配成对，配不上就退回

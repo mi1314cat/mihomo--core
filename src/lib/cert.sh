@@ -272,6 +272,90 @@ cert_is_trusted() {
     return 0
 }
 
+# 配置里引用的证书是否真的能用 —— 存在 + 有配对私钥 + 配对正确。
+#
+# ★ 为什么必须有这一关: 项目的三道校验 (合并 / 严格字段 / `mihomo -t`)
+#   **没有一道看证书文件**。实测:
+#     certificate 指向一个不存在的文件      -> "test is successful"
+#     证书文件里塞的是垃圾内容              -> "test is successful"
+#   而监听起不来只进日志 (内核还会保留上一份有效证书, 所以连"服务是活的"
+#   这个观察都不能证明它没问题)。属于本文件开头警告的"面板全绿但连不上"。
+#
+# 用法: cert_verify_referenced <配置文件...>
+# 返回 0 = 全部可用 (可能带过期警告); 1 = 有硬问题 (已逐条打印)
+#
+# ★ 必须按配置里**声明的** certificate/private-key 成对取, 不能用
+#   find_key_for_cert() 去猜: 猜出来的是"按命名约定应该在哪", 而不是
+#   "配置里实际写了哪个"。实测漏判: 配置写 private-key 指向一把不存在的
+#   文件、或指向另一张证书的私钥, 用猜的都会报"通过"。
+cert_verify_referenced() {
+    local f cert key bad=0 n=0
+    local -a pairs=()
+    for f in "$@"; do
+        [[ -f "$f" ]] || continue
+        while IFS=$'\t' read -r cert key; do
+            [[ -n "$cert" ]] && pairs+=("$cert"$'\t'"$key")
+        done < <(awk '
+            /^[[:space:]]*certificate:[[:space:]]*/ {
+                v=$0; sub(/^[[:space:]]*certificate:[[:space:]]*/, "", v)
+                gsub(/^["'"'"']|["'"'"'][[:space:]]*$/, "", v); gsub(/[[:space:]]+$/, "", v)
+                # 只认路径 (内联 PEM 的值不是路径, 跳过)
+                pend = (v ~ /^\//) ? v : ""
+                next
+            }
+            /^[[:space:]]*private-key:[[:space:]]*/ {
+                v=$0; sub(/^[[:space:]]*private-key:[[:space:]]*/, "", v)
+                gsub(/^["'"'"']|["'"'"'][[:space:]]*$/, "", v); gsub(/[[:space:]]+$/, "", v)
+                if (v ~ /^\// && pend != "") { print pend "\t" v; pend = "" }
+                next
+            }
+        ' "$f")
+    done
+    (( ${#pairs[@]} == 0 )) && return 0
+
+    # 去重: config.yaml 是 config.d 的合并结果, 同一张证书会在两份里各出现一次。
+    # 不去重的话同一个问题报两遍, 用户会以为有两处坏了。
+    while IFS=$'\t' read -r cert key; do
+        [[ -n "$cert" ]] || continue
+        n=$((n + 1))
+        if [[ ! -s "$cert" ]]; then
+            print_error "证书文件不存在或为空: $cert"
+            bad=$((bad + 1)); continue
+        fi
+        if [[ -z "$key" || ! -s "$key" ]]; then
+            print_error "私钥文件不存在或为空: ${key:-<配置里没写 private-key>}"
+            bad=$((bad + 1)); continue
+        fi
+        if ! cert_key_match "$cert" "$key"; then
+            print_error "证书与私钥不配对: $cert <-> $key"
+            bad=$((bad + 1)); continue
+        fi
+        if ! cert_not_expired "$cert"; then
+            print_warn "证书已过期或 24 小时内到期: $cert"
+        fi
+    done < <(printf '%s\n' "${pairs[@]}" | sort -u)
+
+    (( bad == 0 ))
+}
+
+# 客户端配置里 skip-cert-verify 该写什么 —— **唯一真源**。
+#
+#   自签证书 -> true  (客户端必须跳过校验, 否则直接拒连)
+#   CA 签发  -> false (必须校验; 写 true 等于把 TLS 的一半意义丢掉)
+#
+# ★ 这个判断原先在项目里有三套写法, 其中一套直接产出**非法 YAML**:
+#       skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+#   CERT_TRUSTED=true 时它展开成 "falsetrue", 而内核要求 bool:
+#       proxy 0: 'skip-cert-verify' expected type 'bool',
+#       got unconvertible type 'string'
+#       -> configuration file test failed, **整个配置加载失败**。
+#   偏偏 CERT_TRUSTED 为空时它又是对的 ("true") —— 于是这个坑只在
+#   "证书确实可信"时引爆, 也就是最该正常工作的那条路径 (LE 证书)。
+#   实测复现: 沙箱里跑一遍「添加节点 → AnyTLS」的新增向导, 产物就是 falsetrue。
+cert_client_skip_verify() {
+    if [[ "${CERT_TRUSTED:-}" == "true" ]]; then printf 'false'; else printf 'true'; fi
+}
+
 # 证书钉扎值 —— mihomo 的 `fingerprint` 字段
 #   ★ 语义: X.509 证书 DER 的 SHA256 (不是 SPKI!)
 #   sing-box 的 certificate_public_key_sha256 是 SPKI 的 SHA256, 两者不同,

@@ -441,7 +441,7 @@ proxies:
     client-fingerprint: $CLIENT_FP
     udp: true
     tls: true
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
 $CLIENT_TRANSPORT_BLOCK
 $([ "$ECH_ENABLED" = true ] && printf '    ech-opts:\n      enable: true\n      query-server-name: %s' "$CERT_DOMAIN")
 $([ "$MTLS_ENABLED" = true ] && printf '    certificate: |\n%s\n    private-key: |\n%s' "$(echo "$MTLS_CLIENT_CERT" | sed 's/^/      /')" "$(echo "$MTLS_CLIENT_KEY" | sed 's/^/      /')")

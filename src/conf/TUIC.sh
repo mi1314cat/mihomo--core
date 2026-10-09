@@ -349,7 +349,7 @@ proxies:
     password: $pass
     sni: $domain
 $(render_tuic_proxy_opts)
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h3
 EOF
@@ -503,7 +503,7 @@ proxies:
     password: $pass
     sni: $domain
 $(render_tuic_proxy_opts)
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h3
 EOF
@@ -557,7 +557,7 @@ proxies:
     password: $pass
     sni: $domain
 $(render_tuic_proxy_opts)
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h3
 EOF

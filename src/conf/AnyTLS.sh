@@ -515,7 +515,7 @@ proxies:
     sni: $DOMAIN
 $(render_client_opts)
     udp: true
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h2
       - http/1.1
@@ -669,7 +669,7 @@ proxies:
     sni: $DOMAIN
 $(render_client_opts)
     udp: true
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h2
       - http/1.1
@@ -732,7 +732,7 @@ cat >> "$SUB_FILE" <<EOF
     sni: $DOMAIN
 $(render_client_opts)
     udp: true
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h2
       - http/1.1
@@ -789,7 +789,7 @@ proxies:
     sni: $DOMAIN
 $(render_client_opts)
     udp: true
-    skip-cert-verify: ${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}
+    skip-cert-verify: $(cert_client_skip_verify)
     alpn:
       - h2
       - http/1.1

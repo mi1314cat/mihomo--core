@@ -30,6 +30,8 @@
 | SAFE_PATHS 路径防护 | 已修（防护曾跑在选证书菜单之前，等于没写） |
 | 批量挑证书按公钥真配对 | `find_cert` 原先按文件名配对、失败即用「第 0 张+第 0 把」位置兜底；实测在真实目录上 **0 命中**，即兜底每次都在走。已改为 SPKI 真比对 + 优先 CA 签发证书 |
 | 配对校验不看证书在哪 | 原先「已在 conf/certs 内」会跳过全部校验，而批量路径的证书正是从那儿挑的。已前移 |
+| `skip-cert-verify` 唯一真源 | 8 处 `${CERT_TRUSTED:+false}${CERT_TRUSTED:-true}` 在真证书下展开成 `falsetrue`，内核拒绝加载整个配置。已收敛到 `cert_client_skip_verify()` |
+| 校验配置含证书落位 | 三道关（合并/字段/`mihomo -t`）都不看证书文件。已加第 4 道：文件在不在 + 私钥配不配 |
 | 证书落位不撞名 | 域名限定 `cert-<域名>.crt` / `key-<域名>.key`（原先按 basename 落位，两个 LE 域名都写 `fullchain.pem`，证书+私钥一起被顶掉） |
 | 续期后自动同步副本 | `src/lib/cert_sync.sh` + `mihomo-cert-sync.timer`（每天 03:30）。**面板里选中 LE 证书时自动接上，无需任何手工步骤**。**从 mihomo 配置反查**要维护哪些证书，域名读证书本体，不硬编码。<SERVER_ALIAS> 实测：漂移 → `--check` 报 `待刷新`(退出码 2) → 同步后副本与 LE 源逐字节一致，mihomo 未重启 |
 | `skip-cert-verify` 条件化 | 已修 15 处写死 `true` 的模板 |

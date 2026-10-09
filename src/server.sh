@@ -608,15 +608,28 @@ update_config() {
     # SB 把它单列成主菜单第 6 项, 名字就是"校验配置 + 重载"。
     print_title "校验配置 + 重载"
     ensure_dirs
-    print_info "1/3 合并 conf/config.d → conf/config.yaml"
+    print_info "1/4 合并 conf/config.d → conf/config.yaml"
     python3 "$M_LIB/merge.py" --conf "$SRV_CONF" || {
         print_error "合并失败"; return 1; }
 
-    print_info "2/3 严格字段校验"
+    print_info "2/4 严格字段校验"
     if ! python3 "$M_LIB/validate.py" --conf "$SRV_CONF"; then
         print_error "字段校验未通过, 配置未生效"; return 1; fi
 
-    print_info "3/3 内核校验 (mihomo -t)"
+    # 3/4 证书落位。
+    #
+    # ★ 为什么单列这一步: 合并 / 严格字段 / `mihomo -t` **都不看证书文件**。
+    #   实测把 certificate 指到不存在的文件、或塞一份垃圾进去, `mihomo -t`
+    #   依旧输出 "test is successful" —— 而监听起不来只进日志, 面板全绿。
+    #   证书是这份配置里唯一"内核不替你把关"的外部依赖, 所以自己查一遍。
+    print_info "3/4 证书落位 (文件在不在 / 私钥配不配)"
+    if declare -F cert_verify_referenced >/dev/null 2>&1; then
+        cert_verify_referenced "$SRV_CONF"/config.yaml "$SRV_CONFIGD"/*.yaml || {
+            print_error "证书有问题, 配置未生效 (上面已逐条列出)"; return 1; }
+        print_ok "证书文件与配对均正常"
+    fi
+
+    print_info "4/4 内核校验 (mihomo -t)"
     "$SRV_BIN" -t -d "$SRV_CONF" >/tmp/mihomo_t.log 2>&1 || {
         tail -8 /tmp/mihomo_t.log >&2
         print_error "内核校验失败, 配置未生效"; return 1; }
