@@ -38,6 +38,12 @@ _MFW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fw.sh"
 : "${SRV_SERVICE:=mihomo}"
 : "${SHARE_DIR:=$SRV_ROOT/share}"
 : "${SHARE_PORT:=9443}"
+# ★ 这里**不能**改成 proxy-share-service, 也不能拿它去卸载任何东西。
+#   分享的存储与生命周期早已归公共基础服务 (独立项目 Share-Service),
+#   单元名 proxy-share-service 被 M / SB / X **共用**。
+#   这个变量只表示"历史上本内核自己的那个本地分享单元", 现在只用于
+#   把老机器上的残留单元清掉。卸载路径请用 server.sh 里的
+#   _srv_is_shared_unit / _srv_report_shared_untouched, 不要用本变量。
 : "${SHARE_SERVICE:=mihomo-share}"
 : "${CATMI_ENV:=/root/catmi/catmi.env}"
 # 注意: 不要写成 : "${M_LIB:=$(...)}" —— 嵌套双引号会让 bash 解析器提前收尾。

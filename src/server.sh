@@ -758,9 +758,16 @@ uninstall_service() {
     print_title "卸载 Mihomo 服务端"
     # 与客户端同理由: SRV_ROOT 可被环境变量改掉, 这时这两个服务名可能属于
     # 别的 mihomo 实例。unit 文件里写了 ExecStart 路径, 对不上就不碰。
-    local svc="$SRV_SERVICE" shsvc="$SHARE_SERVICE"
+    # ★ 分享单元**不再取 $SHARE_SERVICE**: 它的默认值在两处不一致
+    #   (lib/env.sh: mihomo-share / share/share.sh: proxy-share-service),
+    #   谁生效取决于 source 顺序。一旦取到 proxy-share-service, 而 SRV_ROOT
+    #   又恰好是 unit 文件路径的前缀 (实测 SRV_ROOT=/opt 或 / 就会),
+    #   归属判断会通过, 卸载 M 就把**公共基础服务**删了。
+    #   所以这里只认历史上确实属于本内核的单元名。
+    local svc="$SRV_SERVICE" shsvc="mihomo-share"
     _srv_unit_owned_by_me "$svc"   || { svc="";   print_warn "$SRV_SERVICE 的 unit 不属于 $SRV_ROOT, 不会删除"; }
-    _srv_unit_owned_by_me "$shsvc" || { shsvc=""; print_warn "$SHARE_SERVICE 的 unit 不属于 $SRV_ROOT, 不会删除"; }
+    _srv_unit_owned_by_me "$shsvc" || shsvc=""
+    _srv_report_shared_untouched
     cat <<EOF
   1) 仅卸载服务     停服务+删 unit, 保留配置/证书/out/分享记录
   2) 卸载服务+节点  上面这些, 再删 conf/config.d 下的节点配置
@@ -790,6 +797,29 @@ EOF
     esac
 }
 
+# ---------------------------------------------------------------- 公共基础服务
+# 被 M / SB / X **共用**的单元。卸载任何一个内核都不能带走它:
+# 删了不只是本内核的链接失效 —— 另外两个内核已经发出去的链接会一起断,
+# 而且现场看不出是谁删的。
+_SRV_SHARED_UNITS=(proxy-share-service)
+
+_srv_is_shared_unit() {
+    local s="${1:-}" u
+    for u in "${_SRV_SHARED_UNITS[@]}"; do [[ "$s" == "$u" ]] && return 0; done
+    return 1
+}
+
+# 卸载时把"公共基础服务不动"这件事**说出来**。不说的话用户会以为
+# 面板漏删了, 转头自己去 systemctl disable —— 那才是真正的事故现场。
+_srv_report_shared_untouched() {
+    local u
+    for u in "${_SRV_SHARED_UNITS[@]}"; do
+        [[ -f "/etc/systemd/system/$u.service" ]] || continue
+        print_info "公共基础服务 $u 不在卸载范围内 (M/SB/X 共用, 删了会连带打断其它内核的链接)"
+        print_info "  要单独卸载它: git clone https://github.com/mi1314cat/Share-Service && bash Share-Service/install.sh uninstall"
+    done
+}
+
 # 该 systemd unit 是不是本安装目录的?
 # unit 里写着 ExecStart=<SRV_ROOT>/mihomo, 对不上就不能删 ——
 # 否则 SRV_ROOT 指向别处时会误删另一个 mihomo 实例的服务。
@@ -806,6 +836,11 @@ _srv_unit_owned_by_me() {
 
 _uninstall_unit() {
     local s="$1"
+    # 兜底闸门: 就算调用方算错了名字, 这里也不动公共基础服务。
+    if _srv_is_shared_unit "$s"; then
+        print_warn "$s 是 M/SB/X 共用的公共基础服务, 拒绝删除"
+        return 1
+    fi
     systemctl stop "$s" 2>/dev/null
     systemctl disable "$s" 2>/dev/null
     rm -f "/etc/systemd/system/$s.service"
@@ -819,7 +854,7 @@ _uninstall_unit() {
 _uninstall_all() {
     local svc="${1:-}" shsvc="${2:-}"
     [[ -n "$svc" ]]   || svc=$(_srv_unit_owned_by_me "$SRV_SERVICE"   && echo "$SRV_SERVICE")
-    [[ -n "$shsvc" ]] || shsvc=$(_srv_unit_owned_by_me "$SHARE_SERVICE" && echo "$SHARE_SERVICE")
+    [[ -n "$shsvc" ]] || shsvc=$(_srv_unit_owned_by_me "mihomo-share" && echo "mihomo-share")
     cat <<EOF
 
   即将【永久删除】以下内容 (不可恢复, 建议先备份):
@@ -833,6 +868,7 @@ _uninstall_all() {
                 ├─ share/            分享服务与全部分享记录
                 └─ install_info.env  安装信息 (含域名/IP)
     防火墙    : 只回收本程序登记在 .fw-ports 里的端口, 不动其它规则
+    不含      : 公共基础服务 proxy-share-service (M/SB/X 共用) 及其数据
 
   确认彻底删除? 输入 DELETE 继续 (其它任何输入都取消):
 EOF
