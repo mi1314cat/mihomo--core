@@ -159,19 +159,62 @@ collect_refs() {
     done | sort -u
 }
 
+# 在证书目录里按**公钥内容**找配对私钥 —— 不猜文件名。
+#   目录里的命名五花八门 (fullchain.pem+privkey.pem / cert-01-fullchain.pem+
+#   cert-01-privkey.pem / x_cert.pem+x_key.pem), 按名字猜必然漏, 按内容比对
+#   是唯一可靠的做法。
+find_key_in_dir() { # <证书>
+    local c="${1:-}" k h
+    h=$(cert_pub "$c") || return 1
+    [[ -n "$h" ]] || return 1
+    for k in "$CERT_DIR"/*.key "$CERT_DIR"/*.pem; do
+        [[ -f "$k" ]] || continue
+        grep -q "PRIVATE KEY" "$k" 2>/dev/null || continue
+        [[ "$(key_pub "$k")" == "$h" ]] && { printf '%s' "$k"; return 0; }
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------- 主流程
 main() {
     if [[ ! -d "$CONF_DIR" ]]; then
         bad "✗ 找不到 mihomo 配置目录: $CONF_DIR"; echo "  用 SRV_ROOT=<安装根目录> 覆盖"; return 1
     fi
 
-    local refs=()
+    # ------- 目标清单 = 配置引用的 + 目录里"有 LE 出处"的其它副本 -------
+    #
+    # ★ 为什么连"没被任何节点引用"的副本也要管:
+    #   conf/certs 里常有历史遗留的副本 (cert-01-fullchain.pem 之类)。它们同样
+    #   躺在 mihomo 的证书目录里, 同样会被外部续期甩下 —— 而批量路径的
+    #   find_cert 是按文件名顺序挑的, 很可能**优先挑中它们**。
+    #   只维护"被引用的"会让这些副本静默变陈旧, 然后在某次生成时被选中,
+    #   节点就挂到一份过期证书上。所以判据不是"有没有被引用"，
+    #   而是"它是不是这个目录里的、有 LE 出处的证书副本"。
+    local refs=() targets=()
     mapfile -t refs < <(collect_refs)
-    if ((${#refs[@]} == 0)); then
-        warn "⚠ mihomo 配置里没有引用配置目录内的证书文件 —— 无需同步"
+    local -A have=()
+    local i cert key f dom k
+    for i in "${!refs[@]}"; do
+        IFS=$'\t' read -r cert key <<< "${refs[$i]}"
+        have["$cert"]=1
+        targets+=("${refs[$i]}")
+    done
+    for f in "$CERT_DIR"/*.crt "$CERT_DIR"/*.pem; do
+        [[ -f "$f" ]] || continue
+        [[ -n "${have[$f]:-}" ]] && continue
+        dom=$(cert_domain "$f" 2>/dev/null) || continue
+        [[ -n "$dom" && -s "$SRC/$dom/fullchain.pem" ]] || continue
+        k=$(find_key_in_dir "$f") || { dim "  · $(basename "$f") 有 LE 出处但找不到配对私钥, 跳过"; continue; }
+        have["$f"]=1
+        targets+=("$f"$'\t'"$k")
+    done
+
+    if ((${#targets[@]} == 0)); then
+        warn "⚠ mihomo 配置与证书目录里都没有需要同步的 LE 证书 —— 无需同步"
         echo "  需要证书的协议 (Hysteria2 / TUIC / AnyTLS / Trojan+TLS / VLESS+WS+TLS) 都还没生成?"
         return 0
     fi
+    refs=("${targets[@]}")
 
     echo "════════════════════════════════════════════"
     echo " mihomo 证书同步   (源: $SRC)"
@@ -185,7 +228,7 @@ main() {
         done
     fi
 
-    local cert key dom src_cert src_key i
+    local src_cert src_key
     for i in "${!refs[@]}"; do
         IFS=$'\t' read -r cert key <<< "${refs[$i]}"
 

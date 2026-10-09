@@ -121,6 +121,16 @@ cert_ensure_safe_path() { # <证书> <私钥>  (就地修改 CERT_FILE / KEY_FIL
     local cert="${1:-$CERT_FILE}" key="${2:-$KEY_FILE}"
     [[ -n "$cert" && -f "$cert" ]] || return 1
     if cert_path_in_confdir "$cert"; then
+        # ★ 已经在配置目录里, 也要验一次配对。
+        #
+        # 批量路径 (all.sh) 的证书多半就是从 conf/certs 里挑出来的, 而它在
+        # "已在目录内"时不会走下面的复制分支 —— 旧实现于是**完全不校验**:
+        # find_cert 一旦配错 (它曾用"第 0 张证书 + 第 0 把私钥"的位置兜底),
+        # 配错的一对会一路写进配置, 面板三道关全绿, 直到客户端握手才炸。
+        if [[ -n "$key" && -f "$key" ]] && ! cert_key_match "$cert" "$key"; then
+            print_error "证书与私钥不配对: $cert <-> $key"
+            return 1
+        fi
         return 0
     fi
     # 记下来: 这份证书是不是外部脚本续期的 (决定要不要接上自动同步)

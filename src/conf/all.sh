@@ -475,7 +475,7 @@ ensure_reality() {
 # 所以这里**按文件内容**判断, 不靠文件名。
 find_cert() {
     python3 - "$CERTS_DIR" <<'PYCERT' 2>/dev/null
-import glob, os, re, subprocess, sys
+import glob, hashlib, os, re, subprocess, sys
 
 d = sys.argv[1]
 files = sorted(glob.glob(os.path.join(d, "*.crt")) +
@@ -524,7 +524,7 @@ def cert_real_domain(p):
     return None
 
 def domain_of(p):
-    """配对仍用文件名 (证书/私钥本来就同名), 但**报出来的域名必须是真域名**。
+    """配对不再用文件名, 但**报出来的域名必须是真域名**。
 
     旧实现直接 return 文件名, 于是 conf/certs 里是 fullchain.pem + privkey.pem
     这种通用命名时: 两者配不上 -> 走"第一张+第一把"兜底 -> 域名报成 "fullchain"。
@@ -534,21 +534,61 @@ def domain_of(p):
     """
     return cert_real_domain(p) or name_of(p)
 
-# 按文件名配对 (不能用域名: 私钥没有 SAN, 两边算不出同一个值)
-by_dom = {}
-for k in keys:
-    by_dom.setdefault(name_of(k), k)
-for c in certs:
-    nm = name_of(c)
-    if nm in by_dom:
-        print(f"{c}\t{by_dom[nm]}\t{domain_of(c)}")
-        raise SystemExit
+def _run(args):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
-# 配不上就退回: 第一张证书 + 第一把私钥 (内核会校验是否匹配)
-if certs and keys:
-    print(f"{certs[0]}\t{keys[0]}\t{domain_of(certs[0])}")
-else:
-    sys.stderr.write(f"cert={len(certs)} key={len(keys)} other={len(others)}\n")
+def pub_of_cert(p):
+    out = _run(["openssl", "x509", "-in", p, "-noout", "-pubkey"])
+    return hashlib.sha256(out.encode()).hexdigest() if out.strip() else None
+
+def pub_of_key(p):
+    out = _run(["openssl", "pkey", "-in", p, "-pubout"])
+    return hashlib.sha256(out.encode()).hexdigest() if out.strip() else None
+
+def is_trusted(p):
+    """CA 签发 (subject != issuer) —— 与 cert.sh 的 cert_is_trusted 同判据。"""
+    subj = _run(["openssl", "x509", "-in", p, "-noout", "-subject"]).strip()
+    iss  = _run(["openssl", "x509", "-in", p, "-noout", "-issuer"]).strip()
+    subj = subj.split("=", 1)[1].strip() if "=" in subj else ""
+    iss  = iss.split("=", 1)[1].strip() if "=" in iss else ""
+    return bool(subj) and subj != iss
+
+# ★ 配对按**公钥指纹**真比对 —— 不按文件名, 更不按位置。
+#
+#   原实现先按文件名配, 配不上就退回"第 0 张证书 + 第 0 把私钥"。实测在服务端
+#   真实目录上, 按文件名配对 **0 命中** —— 也就是说那条兜底分支**每次都在走**。
+#   它只看列表位置, 不看两者是否真是一对: 恰好配上就没事, 顺序一变就生成一个
+#   cert/key 不匹配的节点 —— 监听起不来 (内核只会保留上一份有效证书),
+#   而面板的合并/严格校验/mihomo -t 三道关**全绿**。
+key_by_pub = {}
+for k in keys:
+    h = pub_of_key(k)
+    if h:
+        key_by_pub.setdefault(h, k)
+
+matched = []
+for c in certs:
+    h = pub_of_cert(c)
+    if h and h in key_by_pub:
+        matched.append((c, key_by_pub[h]))
+
+# 有真证书就优先用真证书。自签证书会让客户端必须 skip-cert-verify, 且 CDN 档位
+# 直接不可用 —— 目录里同时存在"自签诱饵证书"和"真 LE 证书"时, 不能因为自签那张
+# 文件名排在前面就把它选出来当默认。
+trusted = [x for x in matched if is_trusted(x[0])]
+pick = (trusted or matched)
+
+if pick:
+    c, k = pick[0]
+    print(f"{c}\t{k}\t{domain_of(c)}")
+    raise SystemExit
+
+# 一张都配不上 -> 什么都**不输出** (调用方会退回 scan_certs 的扫描结果)。
+# 绝不用"位置"硬凑一对出来 —— 凑错的那一对会一路绿到底, 只在客户端握手时炸。
+sys.stderr.write(f"no matched pair: cert={len(certs)} key={len(keys)} other={len(others)}\n")
 PYCERT
 }
 
@@ -1976,9 +2016,35 @@ fi
 #     /etc/letsencrypt/live/<域名>/fullchain.pem
 #     allowed paths: [/root/catmi/mihomo/conf]
 # 致命之处是 `mihomo -t` **照样通过** —— 它只验语法, bind 失败只进日志。
-if [[ -n "${CRT:-}" ]] && declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
-   declare -F cert_path_in_confdir >/dev/null 2>&1 && \
-   ! cert_path_in_confdir "$CRT"; then
+#
+# ★ 这里现在分两步, 而且**第一步与证书在哪无关**:
+#     1) 配对校验 —— 不管证书在不在配置目录里都要做
+#     2) 落位     —— 只有在配置目录外才需要复制
+#   原来两步被 `! cert_path_in_confdir "$CRT"` 一起跳过了: 只要 CRT 已经在
+#   conf/certs 内 (批量路径的常态 —— find_cert 就是从那儿找的), 配对**完全不验**。
+#   而 find_cert 曾经用"第 0 张证书 + 第 0 把私钥"的位置兜底, 配错也没人拦,
+#   一直到客户端握手才炸。已在配置目录里的副本同样可能是坏的。
+if [[ -n "${CRT:-}" ]] && declare -F cert_key_match >/dev/null 2>&1; then
+    if ! cert_key_match "$CRT" "$KEY"; then
+        printf "     ${RED}✗${RESET} 证书与私钥不配对: %s <-> %s\n" \
+               "$(basename "$CRT")" "$(basename "${KEY:-<未提供>}")" >&2
+        printf "     ${DIM}配不上的证书写进配置, 节点监听起不来而校验全绿 —— 按无证书处理${RESET}\n" >&2
+        CRT=""; KEY=""; SNI=""
+    elif declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
+         declare -F cert_path_in_confdir >/dev/null 2>&1 && \
+         ! cert_path_in_confdir "$CRT"; then
+        if cert_ensure_safe_path "$CRT" "$KEY"; then
+            [[ -n "${CERT_FILE:-}" && -f "$CERT_FILE" ]] && CRT="$CERT_FILE"
+            [[ -n "${KEY_FILE:-}" && -f "$KEY_FILE" ]] && KEY="$KEY_FILE"
+        else
+            printf "     ${RED}✗${RESET} 证书无法复制进配置目录, 需要证书的协议将跳过\n" >&2
+            CRT=""; KEY=""; SNI=""
+        fi
+    fi
+elif [[ -n "${CRT:-}" ]] && declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
+     declare -F cert_path_in_confdir >/dev/null 2>&1 && \
+     ! cert_path_in_confdir "$CRT"; then
+    # 兜底: 老版本被单独 source 时没有 cert_key_match, 仍按原逻辑复制
     if cert_ensure_safe_path "$CRT" "$KEY"; then
         [[ -n "${CERT_FILE:-}" && -f "$CERT_FILE" ]] && CRT="$CERT_FILE"
         [[ -n "${KEY_FILE:-}" && -f "$KEY_FILE" ]] && KEY="$KEY_FILE"
@@ -1986,6 +2052,21 @@ if [[ -n "${CRT:-}" ]] && declare -F cert_ensure_safe_path >/dev/null 2>&1 && \
         printf "     ${RED}✗${RESET} 证书无法复制进配置目录, 需要证书的协议将跳过\n" >&2
         CRT=""; KEY=""; SNI=""
     fi
+fi
+
+# 证书是不是自签, **以证书内容为准**, 不靠"用户走了哪条路"推断。
+#
+# 原来 CERT_IS_SELF 只在交互式选证书分支里赋值。而自动选择 (find_cert) 与
+# `--quick` 根本不进那个分支 —— CERT_IS_SELF 保持未赋值, 默认按"可信"处理,
+# 于是自签证书也会写 skip-cert-verify=false, 客户端直接拒绝连接。
+if [[ -n "${CRT:-}" ]] && declare -F cert_is_trusted >/dev/null 2>&1; then
+    if cert_is_trusted "$CRT"; then CERT_IS_SELF=0; else CERT_IS_SELF=1; fi
+fi
+
+# 证书来自外部续期 (LE / 符号链接) 时, 顺带确认自动同步在位。
+# 幂等且自带判据 (本机没有 LE 证书时什么都不做)。
+if [[ -n "${CRT:-}" ]] && declare -F cert_sync_ensure_timer >/dev/null 2>&1; then
+    cert_sync_ensure_timer
 fi
 
 # 客户端是否跳过证书校验: **只有自签证书才需要**。
