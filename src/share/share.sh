@@ -463,6 +463,30 @@ share_pick() {
 #
 # 结果写进全局 _SHARE_REVOKED_N, 供调用方决定要不要提示。
 
+# 吊销**全部** M 分享 —— 清空全部节点时用。
+#
+# 与 share_revoke_by_tag 的区别: 那个按协议桶匹配, 这个不分范围一律禁用。
+# 节点全没了, 任何链接拉回去都是一份空配置, 留着只会让客户端反复去拉。
+share_revoke_all() {
+    _SHARE_REVOKED_N=0
+    local toks
+    toks=$(_share_api_list | python3 -c '
+import sys, json
+try: recs = json.load(sys.stdin)
+except Exception: recs = []
+for r in recs:
+    if r.get("enabled", True):          # 已经禁用的不重复禁
+        print(r.get("token", ""))
+' 2>/dev/null)
+    local tok
+    for tok in $toks; do
+        [[ -n "$tok" ]] || continue
+        _share_api update --token "$tok" --enabled false >/dev/null 2>&1 \
+            && _SHARE_REVOKED_N=$((_SHARE_REVOKED_N + 1))
+    done
+    return 0
+}
+
 share_revoke_by_tag() {
     local tag="${1:-}" mode="${2:-prefix}"
     _SHARE_REVOKED_N=0

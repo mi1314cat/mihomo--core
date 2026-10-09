@@ -510,20 +510,18 @@ wipe_all_nodes() {
 
     # 到这一步才算真的清成功, 此时才吊销 token。
     # 节点都没了, 链接留着只会让客户端反复去拉、拉回来一份空配置。
+    #
+    # ★ 改走公共分享服务。原来这里是**直接改本地 share/shares/*.json** ——
+    #   存储搬到公共服务之后那个目录里只剩下 .migrated 文件, 循环匹配到 0 个,
+    #   于是"清空全部节点"**不再吊销任何链接**, 而且一声不吭 (实测发现)。
+    if ! declare -F share_revoke_all >/dev/null 2>&1; then
+        # shellcheck disable=SC1090
+        source "$HERE/share/share.sh" 2>/dev/null || true
+    fi
     local revoked=0
-    if [[ -d "$SRV_ROOT/share/shares" ]]; then
-        local t
-        for t in "$SRV_ROOT/share/shares"/*.json; do
-            [[ -f "$t" ]] || continue
-            python3 -c '
-import json,sys
-p=sys.argv[1]
-try: d=json.load(open(p))
-except Exception: sys.exit(0)
-d["enabled"]=False
-json.dump(d,open(p,"w"),ensure_ascii=False)
-' "$t" 2>/dev/null && revoked=$((revoked+1))
-        done
+    if declare -F share_revoke_all >/dev/null 2>&1; then
+        share_revoke_all
+        revoked=${_SHARE_REVOKED_N:-0}
     fi
     [[ "$revoked" -gt 0 ]] && print_ok "已吊销 $revoked 条分享链接"
 

@@ -851,7 +851,11 @@ node_add() {
             name="$_nn"
         else
             local _n=1 _base="$name"
-            while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$n"; _n=$((_n+1)); done
+            # ★ 这里原来是 `name="${_base}_$n"` —— 变量名写错了一个下划线:
+            #   local 声明的是 _n, 引用的却是 $n。set -u 下直接
+            #   "n: unbound variable" 中断, 于是**重复导入同一个订阅**会失败,
+            #   而这段代码的本意正是"同名时自动改叫 xxx_1"。
+            while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$_n"; _n=$((_n+1)); done
         fi
         print_ok "新组名: $name"
     fi
