@@ -34,9 +34,41 @@ except ImportError:
     print("[ERR] 需要 PyYAML: pip3 install pyyaml", file=sys.stderr)
     sys.exit(2)
 
+# 节点名的旗帜规则只有一份实现 (src/lib/naming.py)。这里按路径引入它,
+# 而不是另抄一个正则 —— 抄一份就是第二个真源, 迟早漂移。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                os.pardir, "lib"))
+try:
+    import naming
+except ImportError:                                              # pragma: no cover
+    naming = None
+
 # out/<proto>_client-<NN>.yaml  →  tag = <proto>
 CLIENT_RE = re.compile(r"^(?P<proto>.+?)_client-(?P<num>\d+)\.yaml$")
 SKIP_PROXY_NAMES = {"DIRECT", "REJECT", "PASS", "COMPATIBLE", "GLOBAL"}
+
+# naming.py 找不到时的兜底 (独立复制出来的 build_sub.py)。规则必须与
+# naming.py 的 FLAG_RE 逐字一致 —— check_all.sh 的分享产物闸门会同时跑
+# 两条路径, 不一致就报红。
+_FLAG_RE = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+
+
+def node_key(name: str) -> str:
+    """节点**身份键**: 去掉地区旗帜后比较。
+
+    为什么不能直接比字符串 (2026-10-10 修, 分享订阅生成 100% 失败):
+        旗帜是服务器的**显示属性**, 于是同一个节点有两个写法 ——
+            conf/config.d/.managed.json : "mAnyTLS01-TLS"      (裸名, 台账)
+            out/*_client-*.yaml         : "🇺🇸 mAnyTLS01-TLS"  (产物, 给人看)
+        原来按等值比较, 交集 0/19 → 19 个**活节点**全被判成"陈旧产物"剔除,
+        build_sub 报"没有任何可用节点", 面板"生成分享内容失败"。
+
+    红线: **不许为了让匹配成功而把旗帜从名字里去掉** (旗帜是用户可见特性)。
+    两侧都过一遍本函数即可, 显示名一个字节都不动。
+    """
+    if naming is not None:
+        return naming.match_key(name)
+    return " ".join(_FLAG_RE.sub("", str(name or "")).split())
 
 # 内嵌 PEM (mTLS 客户端证书/私钥) 必须用字面量块标量输出。
 # 否则 PyYAML 会用单引号折行, 把 PEM 拆成 "空行 + 缩进" 的形式,
@@ -170,14 +202,19 @@ def main() -> int:
     # 判据: conf/config.d/.managed.json 是 merge.py 维护的「当前在跑的
     # listener」名单, 与节点是否存活一一对应; 名单里没有的就是陈旧的。
     #
+    # ★ 比较必须**去旗帜**(node_key): 台账里是裸名, 产物里是带旗帜名
+    #   —— 直接比字符串会得到空交集, 把全部活节点判成陈旧 (实测 19/19)。
+    #
     # 没传 --conf-dir / 名单读不到时**不过滤** —— 宁可多发也不能把整份订阅
     # 变空 (那是更严重的故障)。
     if args.conf_dir:
         alive = live_node_names(os.path.join(args.conf_dir, "config.d"))
         if alive:
+            alive_keys = {node_key(x) for x in alive}
             dropped = 0
             for proto, items in list(buckets.items()):
-                keep = [it for it in items if it.get("name") in alive]
+                keep = [it for it in items
+                        if node_key(it.get("name")) in alive_keys]
                 dropped += len(items) - len(keep)
                 if keep:
                     buckets[proto] = keep
@@ -186,6 +223,13 @@ def main() -> int:
             if dropped:
                 print(f"[清理] 剔除了 {dropped} 个陈旧产物 (节点已删除, "
                       f"但 out/ 里旧文件还在)", file=sys.stderr)
+            total = sum(len(v) for v in buckets.values())
+            if total == 0:
+                # 一个都不剩 = 要么真的全删光了, 要么名单与产物对不上。
+                # 后者是**静默故障**, 必须把两边的写法打出来给人看。
+                print(f"[ERR] 存活名单 {len(alive)} 个名字与 out/ 产物一个都"
+                      f"对不上 —— 订阅会是空的 (不是'没有节点')", file=sys.stderr)
+                print(f"      名单示例: {sorted(alive)[:3]}", file=sys.stderr)
 
     if args.import_dir and os.path.isdir(args.import_dir):
         collect_dir(args.import_dir, "imported", buckets)

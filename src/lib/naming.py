@@ -122,6 +122,32 @@ def ensure_flag(name: str) -> str:
     return (flag + " " + name).strip() if flag else name
 
 
+def strip_flag(name: str) -> str:
+    """去掉名字里的地区旗帜 —— **只给匹配/比较用**。
+
+    为什么必须与 ensure_flag 成对存在:
+        旗帜是**显示属性**, 于是同一个节点在不同地方有两个写法 ——
+        服务端 listener 名写的是裸名 (`mAnyTLS01-TLS`, 见 merge.py 的
+        .managed.json 台账), 客户端产物写的是带旗帜名 (`🇺🇸 mAnyTLS01-TLS`)。
+        任何拿两边做**等值比较**的代码都会得到空交集, 而且是静默的 ——
+        build_sub.py 的"剔除陈旧产物"就是这么把 19/19 个活节点全判成陈旧的
+        (分享订阅生成 100% 失败, 面板只报"没有可分享的节点")。
+
+    红线: **不许为了让比较成功而把旗帜从显示名里去掉** —— 旗帜是用户可见
+    特性。正确做法是两侧都过一遍本函数再比。
+    """
+    return FLAG_RE.sub("", name or "").strip()
+
+
+def match_key(name: str) -> str:
+    """节点身份键: 去旗帜 + 折叠空白。
+
+    两侧都过一遍就能安全比较; 它与显示名无关, 谁都不许拿它当名字写进
+    配置或产物。
+    """
+    return " ".join(strip_flag(name).split())
+
+
 def selftest() -> int:
     """不联网的部分全部验一遍（联网的只在缓存存在时验）。"""
     bad = 0
@@ -155,6 +181,23 @@ def selftest() -> int:
         ck(ensure_flag("\U0001F1FA\U0001F1F8 mAnyTLS01-TLS")
            == "\U0001F1FA\U0001F1F8 mAnyTLS01-TLS", "幂等: 重复调用不会叠两层")
         ck(ensure_flag("") == "", "空名字返回空（不造出一个只有旗帜的名字）")
+
+        # ---- 去旗帜比较 (build_sub.py 的"存活节点"过滤靠它) ----
+        #
+        # 断言写死成 🇺🇸, 与机器所在地无关 (旗帜从上面的临时缓存读)。
+        ck(strip_flag("\U0001F1FA\U0001F1F8 mAnyTLS01-TLS") == "mAnyTLS01-TLS",
+           "strip_flag: 带旗帜名 → 裸名")
+        ck(strip_flag("mAnyTLS01-TLS") == "mAnyTLS01-TLS",
+           "strip_flag: 裸名原样 (幂等)")
+        ck(strip_flag("\U0001F1ED\U0001F1F0 自带旗帜") == "自带旗帜",
+           "strip_flag: 别的国家旗帜同样去掉")
+        ck(match_key("\U0001F1FA\U0001F1F8 mAnyTLS01-TLS")
+           == match_key("  mAnyTLS01-TLS "),
+           "match_key: 带旗帜名 == 裸名 (两侧归一化后能匹配)")
+        ck(match_key("") == "" and match_key(None) == "",
+           "match_key: 空值不炸")
+        ck(strip_flag("\U0001F1FA\U0001F1F8 \U0001F1ED\U0001F1F0 x").strip() == "x",
+           "strip_flag: 连着的两个旗帜都去掉")
         os.environ["M_SKIP_FLAG"] = "1"
         ck(flag_emoji() == "", "M_SKIP_FLAG=1 → 不要旗帜")
         ck(ensure_flag("mTrojan01-REALITY") == "mTrojan01-REALITY",

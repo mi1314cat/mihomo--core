@@ -142,6 +142,10 @@ run_gate "LAN 分发脱敏" python3 src/share/lan_config.py --selftest
 # 节点名的旗帜: 服务端 m_node_tag / 客户端加前缀 / 关旗帜回落 —— 三处都能
 # 把它抹掉, 所以要验"真的接上了", 不只是验函数。
 run_gate "节点命名旗帜" bash tools/check_naming.sh
+# 分享产物: 生成是否成功 (带旗帜名 vs 裸名台账) / 链接端口与监听是否自洽 /
+# 链接里有没有会让整条订阅归零的参数 (obfs=none)。这一批全是**静默失败**:
+# 面板照常显示, 用户拿到空订阅或死链, 没有一处报错指向真正的原因。
+run_gate "分享产物"     bash tools/check_share_products.sh
 
 printf "\n${CYAN}── 幽灵函数 (定义了但没人调) ──${RESET}\n"
 phantom_scan() {
