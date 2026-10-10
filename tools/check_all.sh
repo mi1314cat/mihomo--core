@@ -146,6 +146,12 @@ run_gate "节点命名旗帜" bash tools/check_naming.sh
 # 链接里有没有会让整条订阅归零的参数 (obfs=none)。这一批全是**静默失败**:
 # 面板照常显示, 用户拿到空订阅或死链, 没有一处报错指向真正的原因。
 run_gate "分享产物"     bash tools/check_share_products.sh
+# ★ 对角线: **M 分享 → M 客户端** 这条链不许再断。
+#   已经断过一次 (加旗帜命名 → 裸名台账与带旗帜产物名等值比较 → 交集 0/19 →
+#   分享订阅生成 100% 失败, 用户拿不到任何节点)。这道理是本项目的"印证过的
+#   功能"里最贵的一条: 自己分享给自己都认不出来, 用户没法自己发现。
+#   闸门故意同时覆盖带旗帜名与裸名两种输入。真内核层用 MIHOMO_BIN 启用。
+run_gate "对角线(分享→客户端)" bash tools/check_diagonal.sh
 
 printf "\n${CYAN}── 幽灵函数 (定义了但没人调) ──${RESET}\n"
 phantom_scan() {
