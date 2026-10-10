@@ -483,11 +483,16 @@ hy2_link() {
     else
         q="sni=$CERT_DOMAIN&alpn=h3&pin=$CERT_PIN&upmbps=50&downmbps=200"
     fi
-    # obfs 分量: 与 YAML 同名字段, 服务端/客户端需逐字一致
+    # ---- obfs 分量 ----
+    #
+    # ★ 没有混淆时**一个字节都不写**。原来写 `&obfs=none`, 而 mihomo 只判
+    #   `len(option.Obfs) > 0` 就要求 obfs-password:
+    #       initial proxy provider error: proxy 0 error: missing obfs password
+    #   → **provider 0 节点**。最狠的是它"一票否决"整条订阅: 实测 1 条坏
+    #   hy2 链接 + 8 条好链接放进同一份订阅 → 整条 0 节点, 好节点一起消失。
+    #   不写 obfs 就是"没有混淆", 语义完全等价且不会被解析器拒绝。
     if [[ -n "$HY_OBFS" ]]; then
         obfs_q="&obfs=$HY_OBFS&obfs-password=$HY_OBFS_PASSWORD"
-    else
-        obfs_q="&obfs=none"
     fi
     echo "hysteria2://$pw@$(_uri_h "$ip"):$port?$q$obfs_q#HY2-$num"
 }

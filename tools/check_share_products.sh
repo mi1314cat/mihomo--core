@@ -123,7 +123,7 @@ listeners:
     listen: "0.0.0.0"
     port: 25684
     users:
-      11111111-1111-1111-1111-111111111111: anytlspw
+      someone: anytlspw
 EOF
 cat > "$L2/conf/config.d/trojan-04.yaml" <<'EOF'
 listeners:
@@ -132,7 +132,7 @@ listeners:
     listen: "0.0.0.0"
     port: 25680
     users:
-      - username: 22222222-2222-2222-2222-222222222222
+      - username: someone
         password: trojanpw
 EOF
 # cdn_bindings.tsv 与 conf/ 平级 (生产: $SRV_ROOT/cdn_bindings.tsv, conf 在 $SRV_ROOT/conf)
@@ -208,6 +208,71 @@ printf 'anytls://anytlspw@203.0.113.10:25684?sni=a.com#good\n'   > "$L3/out/anyt
 printf 'trojan://trojanpw@example.com:443?sni=example.com#cdn\n' > "$L3/out/trojan_share-04.txt"
 python3 "$ROOT/src/share/link_check.py" --out-dir "$L3/out" --conf-dir "$L3/conf" \
     >/dev/null 2>&1 && ok "全部自洽时放行 (退出码 0)" || bad "全部自洽却仍报红"
+
+echo
+echo "== ③ 链接里不许有会让整条订阅归零的参数 (obfs=none) =="
+# 现场依据 (RN 真机): out/hysteria2_share-01/02/10/11.txt 四条都写着
+# `&obfs=none` → mihomo 报 `proxy 0 error: missing obfs password` →
+# **provider 0 节点**。最狠的是"一票否决": 1 条坏 hy2 + 8 条好链接放同一份
+# 订阅 → 整条 0 节点, 8 个好节点一起消失 (实测)。
+#
+# 断言方式: 从 hysteria2.sh 里**抽出真实的 hy2_link 函数**跑一遍 —— 不能直接
+# source 那个脚本 (它加载即进交互菜单), 所以用 sed/python 取函数体, 依赖全部
+# 打桩, 只验"生成出来的链接长什么样"。
+extract_fn() { # <函数名> <文件>
+    python3 - "$1" "$2" <<'PYX'
+import re, sys
+name, path = sys.argv[1], sys.argv[2]
+out, depth, started = [], 0, False
+for ln in open(path, encoding="utf-8").read().splitlines():
+    if not started:
+        if re.match(r"^%s\(\)\s*\{" % re.escape(name), ln):
+            started = True
+        else:
+            continue
+    out.append(ln)
+    depth += ln.count("{") - ln.count("}")
+    if depth <= 0:
+        break
+print("\n".join(out))
+PYX
+}
+PROBE="$TMP/hy2probe.sh"
+{
+    echo 'set -u'
+    echo 'calc_pin() { :; }'
+    echo '_uri_h() { printf "%s" "$1"; }'
+    echo 'CERT_FILE=""; CERT_TRUSTED="true"; CERT_DOMAIN="example.com"; CERT_PIN=""'
+    echo 'HY_OBFS=""; HY_OBFS_PASSWORD=""'
+    echo 'm_hy2_up() { echo 60; }'
+    echo 'm_hy2_down() { echo 200; }'
+    extract_fn hy2_link "$ROOT/src/conf/hysteria2.sh"
+    echo 'echo "NOOBFS=$(hy2_link pw 203.0.113.10 25682 01)"'
+    echo 'HY_OBFS="salamander"; HY_OBFS_PASSWORD="pw2"'
+    echo 'echo "OBFS=$(hy2_link pw 203.0.113.10 25682 01)"'
+} > "$PROBE"
+if bash "$PROBE" > "$TMP/hy2probe.out" 2>"$TMP/hy2probe.err"; then
+    NOOBFS=$(grep '^NOOBFS=' "$TMP/hy2probe.out" | cut -d= -f2-)
+    OBFS=$(grep '^OBFS=' "$TMP/hy2probe.out" | cut -d= -f2-)
+    [[ -n "$NOOBFS" ]] || bad "抽不出 hy2_link 的输出 (断言本身失效)"
+    grep -q 'obfs=' <<<"$NOOBFS" && bad "无混淆时链接里写了 obfs= ($NOOBFS)" \
+                                   || ok "无混淆时链接里不写 obfs (一票否决的根因)"
+    ! grep -q 'obfs=none' <<<"$NOOBFS" && ok "链接里没有 obfs=none" \
+                                        || bad "链接里还有 obfs=none"
+    grep -q 'obfs=salamander&obfs-password=pw2' <<<"$OBFS" \
+        && ok "真开了混淆时照写 obfs/obfs-password" || bad "开了混淆反而不写: $OBFS"
+else
+    bad "hy2_link 探针跑不起来 (见 $TMP/hy2probe.err)"
+fi
+# 静态兜底: 源码里再出现这个写法就直接红 (防回归)
+# ⚠ 必须**去掉注释**再判断 —— 注释里正是在解释为什么删掉它, 直接 grep
+#   会把说明文字当成实现 (本项目在"预置不越权"那道闸门里踩过同一个坑)。
+_hy2_code=$(sed 's/#.*//' "$ROOT/src/conf/hysteria2.sh" 2>/dev/null)
+if grep -q 'obfs=none' <<<"$_hy2_code"; then
+    bad "hysteria2.sh 里又有 obfs=none 了"
+else
+    ok "hysteria2.sh 源码里没有 obfs=none"
+fi
 
 printf "\n分享产物闸门: \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m\n" "$PASS" "$FAIL"
 exit $((FAIL > 0))
