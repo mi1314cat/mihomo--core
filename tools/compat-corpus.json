@@ -1,0 +1,1059 @@
+{
+ "_comment": "nodecompat 回归语料。两类来源: (1) RN 真实产物的**形状**（值已脱敏: IP→TEST-NET, 域名→example.com, UUID→占位符）; (2) 覆盖 compat 每条 mihomo 规则的合成用例。真实值不进步: 仓库有发布脱敏闸门。",
+ "cases": [
+  {
+   "id": "real:🇺🇸 mAnyTLS01-TLS",
+   "why": "RN 真实产物 anytls_anytls_client-01.yaml",
+   "node": {
+    "name": "🇺🇸 mAnyTLS01-TLS",
+    "type": "anytls",
+    "server": "192.0.2.1",
+    "port": 25684,
+    "password": "00000000-0000-4000-8000-000000000000",
+    "sni": "n1.example.com",
+    "skip-cert-verify": false,
+    "udp": true,
+    "client-fingerprint": "chrome"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mAnyTLS02-TLS",
+   "why": "RN 真实产物 anytls_client-02.yaml",
+   "node": {
+    "name": "🇺🇸 mAnyTLS02-TLS",
+    "type": "anytls",
+    "server": "192.0.2.1",
+    "port": 28725,
+    "password": "EXAMPLE-TOKEN-NOT-A-CREDENTIAL",
+    "sni": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "idle-session-check-interval": 30,
+    "idle-session-timeout": 30,
+    "udp": true,
+    "skip-cert-verify": false,
+    "alpn": [
+     "h2",
+     "http/1.1"
+    ]
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mAnyTLS03-TLS",
+   "why": "RN 真实产物 anytls_client-03.yaml",
+   "node": {
+    "name": "🇺🇸 mAnyTLS03-TLS",
+    "type": "anytls",
+    "server": "192.0.2.1",
+    "port": 22812,
+    "password": "EXAMPLE-TOKEN-NOT-A-CREDENTIAL",
+    "sni": "n2.example.com",
+    "client-fingerprint": "chrome",
+    "idle-session-check-interval": 30,
+    "idle-session-timeout": 30,
+    "udp": true,
+    "skip-cert-verify": true,
+    "alpn": [
+     "h2",
+     "http/1.1"
+    ]
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mHysteria202-TLS",
+   "why": "RN 真实产物 hysteria2_client-02.yaml",
+   "node": {
+    "name": "🇺🇸 mHysteria202-TLS",
+    "type": "hysteria2",
+    "server": "192.0.2.1",
+    "port": 20309,
+    "up": "50 Mbps",
+    "down": "200 Mbps",
+    "password": "EXAMPLE-TOKEN-NOT-A-CREDENTIAL",
+    "sni": "n3.example.com",
+    "fingerprint": "b8f8fc0516c13230f65c2a4a728daa047353aaf8eadf76263562c60a9baa9a03",
+    "alpn": [
+     "h3"
+    ]
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mHysteria201-TLS",
+   "why": "RN 真实产物 hysteria2_hysteria2_client-01.yaml",
+   "node": {
+    "name": "🇺🇸 mHysteria201-TLS",
+    "type": "hysteria2",
+    "server": "192.0.2.1",
+    "port": 25682,
+    "password": "00000000-0000-4000-8000-000000000000",
+    "sni": "n1.example.com",
+    "skip-cert-verify": false,
+    "up": "30",
+    "down": "200"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS02-REALITY-gRPC",
+   "why": "RN 真实产物 reality_reality-grpc_client-02.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS02-REALITY-gRPC",
+    "type": "vless",
+    "server": "192.0.2.1",
+    "port": 25670,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "grpc",
+    "tls": true,
+    "udp": true,
+    "servername": "n4.example.com",
+    "reality-opts": {
+     "public-key": "uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY",
+     "short-id": "58896ecc5f8bf710"
+    },
+    "client-fingerprint": "chrome",
+    "grpc-opts": {
+     "grpc-service-name": "gs025a08f0"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS03-REALITY-XHTTP",
+   "why": "RN 真实产物 reality_reality-xhttp_client-03.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS03-REALITY-XHTTP",
+    "type": "vless",
+    "server": "192.0.2.1",
+    "port": 25671,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "xhttp",
+    "tls": true,
+    "udp": true,
+    "servername": "n4.example.com",
+    "reality-opts": {
+     "public-key": "uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY",
+     "short-id": "58896ecc5f8bf710"
+    },
+    "client-fingerprint": "chrome",
+    "xhttp-opts": {
+     "mode": "auto",
+     "path": "/xhr-7e11f298",
+     "x-padding-bytes": "100-1000"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS01-REALITY",
+   "why": "RN 真实产物 reality_reality_client-01.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS01-REALITY",
+    "type": "vless",
+    "server": "192.0.2.1",
+    "port": 25669,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "tcp",
+    "tls": true,
+    "udp": true,
+    "flow": "xtls-rprx-vision",
+    "servername": "n4.example.com",
+    "reality-opts": {
+     "public-key": "uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY",
+     "short-id": "58896ecc5f8bf710"
+    },
+    "client-fingerprint": "chrome"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mTrojan05-CDN-gRPC",
+   "why": "RN 真实产物 trojan_cdn-t-grpc_client-05.yaml",
+   "node": {
+    "name": "🇺🇸 mTrojan05-CDN-gRPC",
+    "type": "trojan",
+    "server": "n1.example.com",
+    "port": 443,
+    "username": "",
+    "password": "00000000-0000-4000-8000-000000000000",
+    "network": "grpc",
+    "tls": true,
+    "udp": true,
+    "servername": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "ech-opts": {
+     "enable": true,
+     "query-server-name": "n1.example.com"
+    },
+    "grpc-opts": {
+     "grpc-service-name": "cg0599db34"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mTrojan04-CDN-WS",
+   "why": "RN 真实产物 trojan_cdn-t-ws_client-04.yaml",
+   "node": {
+    "name": "🇺🇸 mTrojan04-CDN-WS",
+    "type": "trojan",
+    "server": "n1.example.com",
+    "port": 443,
+    "username": "",
+    "password": "00000000-0000-4000-8000-000000000000",
+    "network": "ws",
+    "tls": true,
+    "udp": true,
+    "servername": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "ech-opts": {
+     "enable": true,
+     "query-server-name": "n1.example.com"
+    },
+    "ws-opts": {
+     "path": "/cdnws-0ab96db5"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mTrojan02-REALITY-gRPC",
+   "why": "RN 真实产物 trojan_trojan-grpc_client-02.yaml",
+   "node": {
+    "name": "🇺🇸 mTrojan02-REALITY-gRPC",
+    "type": "trojan",
+    "server": "192.0.2.1",
+    "port": 25673,
+    "password": "00000000-0000-4000-8000-000000000000",
+    "udp": true,
+    "sni": "n4.example.com",
+    "reality-opts": {
+     "public-key": "uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY",
+     "short-id": "58896ecc5f8bf710"
+    },
+    "client-fingerprint": "chrome",
+    "network": "grpc",
+    "grpc-opts": {
+     "grpc-service-name": "tg02286ead"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mTrojan03-TLS",
+   "why": "RN 真实产物 trojan_trojan-tls_client-03.yaml",
+   "node": {
+    "name": "🇺🇸 mTrojan03-TLS",
+    "type": "trojan",
+    "server": "192.0.2.1",
+    "port": 25674,
+    "password": "00000000-0000-4000-8000-000000000000",
+    "udp": true,
+    "sni": "n1.example.com",
+    "skip-cert-verify": false
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mTrojan01-REALITY",
+   "why": "RN 真实产物 trojan_trojan_client-01.yaml",
+   "node": {
+    "name": "🇺🇸 mTrojan01-REALITY",
+    "type": "trojan",
+    "server": "192.0.2.1",
+    "port": 25672,
+    "password": "00000000-0000-4000-8000-000000000000",
+    "udp": true,
+    "sni": "n4.example.com",
+    "reality-opts": {
+     "public-key": "uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY",
+     "short-id": "58896ecc5f8bf710"
+    },
+    "client-fingerprint": "chrome"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mTUIC01-TLS",
+   "why": "RN 真实产物 tuicv5_tuicv5_client-01.yaml",
+   "node": {
+    "name": "🇺🇸 mTUIC01-TLS",
+    "type": "tuic",
+    "server": "192.0.2.1",
+    "port": 25683,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "password": "00000000-0000-4000-8000-000000000000",
+    "sni": "n1.example.com",
+    "skip-cert-verify": false,
+    "alpn": [
+     "h3"
+    ],
+    "congestion-controller": "bbr"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS05-CDN-gRPC",
+   "why": "RN 真实产物 vless_cdn-v-grpc_client-05.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS05-CDN-gRPC",
+    "type": "vless",
+    "server": "n1.example.com",
+    "port": 443,
+    "username": "",
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "grpc",
+    "tls": true,
+    "udp": true,
+    "servername": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "ech-opts": {
+     "enable": true,
+     "query-server-name": "n1.example.com"
+    },
+    "grpc-opts": {
+     "grpc-service-name": "cg0523759e"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS04-CDN-WS",
+   "why": "RN 真实产物 vless_cdn-v-ws_client-04.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS04-CDN-WS",
+    "type": "vless",
+    "server": "n1.example.com",
+    "port": 443,
+    "username": "",
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "ws",
+    "tls": true,
+    "udp": true,
+    "servername": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "ech-opts": {
+     "enable": true,
+     "query-server-name": "n1.example.com"
+    },
+    "ws-opts": {
+     "path": "/cdnws-7a34637f"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS01-TLS-WS",
+   "why": "RN 真实产物 vless_vless-ws_client-01.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS01-TLS-WS",
+    "type": "vless",
+    "server": "192.0.2.1",
+    "port": 25675,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "ws",
+    "tls": true,
+    "udp": true,
+    "skip-cert-verify": false,
+    "servername": "n1.example.com",
+    "ws-opts": {
+     "path": "/wss01"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS03-TLS-XHTTP-CDN",
+   "why": "RN 真实产物 vless_xhttp-cdn_client-03.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS03-TLS-XHTTP-CDN",
+    "type": "vless",
+    "server": "n1.example.com",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "xhttp",
+    "tls": true,
+    "udp": true,
+    "servername": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "ech-opts": {
+     "enable": true,
+     "query-server-name": "n1.example.com"
+    },
+    "xhttp-opts": {
+     "mode": "auto",
+     "path": "/xhc-bcd2a955",
+     "x-padding-bytes": "100-1000"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "real:🇺🇸 mVLESS02-TLS-XHTTP",
+   "why": "RN 真实产物 vless_xhttp-tls_client-02.yaml",
+   "node": {
+    "name": "🇺🇸 mVLESS02-TLS-XHTTP",
+    "type": "vless",
+    "server": "192.0.2.1",
+    "port": 25676,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "network": "xhttp",
+    "tls": true,
+    "udp": true,
+    "skip-cert-verify": false,
+    "servername": "n1.example.com",
+    "client-fingerprint": "chrome",
+    "xhttp-opts": {
+     "mode": "auto",
+     "path": "/xhttps-6ecedb76",
+     "x-padding-bytes": "100-1000"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "uri:🇺🇸 AnyTLS-01",
+   "why": "RN 真实分享链接 anytls_share-01.txt",
+   "node": {
+    "name": "🇺🇸 AnyTLS-01",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:50877?sni=cloudflare.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-01"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 AnyTLS-02",
+   "why": "RN 真实分享链接 anytls_share-02.txt",
+   "node": {
+    "name": "🇺🇸 AnyTLS-02",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:28725?sni=n1.example.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-02"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 AnyTLS-03",
+   "why": "RN 真实分享链接 anytls_share-03.txt",
+   "node": {
+    "name": "🇺🇸 AnyTLS-03",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:22812?sni=n2.example.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-03"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 HY2-01",
+   "why": "RN 真实分享链接 hysteria2_share-01.txt",
+   "node": {
+    "name": "🇺🇸 HY2-01",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:21168?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-01"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 HY2-02",
+   "why": "RN 真实分享链接 hysteria2_share-02.txt",
+   "node": {
+    "name": "🇺🇸 HY2-02",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:20309?sni=n3.example.com&alpn=h3&pin=b8f8fc0516c13230f65c2a4a728daa047353aaf8eadf76263562c60a9baa9a03&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-02"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 HY2-10",
+   "why": "RN 真实分享链接 hysteria2_share-10.txt",
+   "node": {
+    "name": "🇺🇸 HY2-10",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:23512?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-10"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 HY2-11",
+   "why": "RN 真实分享链接 hysteria2_share-11.txt",
+   "node": {
+    "name": "🇺🇸 HY2-11",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@[2001:db8::1]:22737?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-11"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 Reality-04",
+   "why": "RN 真实分享链接 reality_share-04.txt",
+   "node": {
+    "name": "🇺🇸 Reality-04",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "vless://00000000-0000-4000-8000-000000000000@192.0.2.1:42099?encryption=none&flow=xtls-rprx-vision&security=reality&sni=n5.example.com&fp=chrome&pbk=uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY&sid=58896ecc5f8bf710&type=tcp#🇺🇸 Reality-04"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 mTrojan01-REALITY",
+   "why": "RN 真实分享链接 trojan_share-01.txt",
+   "node": {
+    "name": "🇺🇸 mTrojan01-REALITY",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "trojan://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:56676?security=reality&sni=n4.example.com&type=tcp&fp=chrome&pbk=JhXVGE-zaHl1NoLQlPftVvcreTaxZ38W22qlEwZKxzw&sid=b30183a33004b11a#🇺🇸 mTrojan01-REALITY"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 TUICv5-01",
+   "why": "RN 真实分享链接 tuicv5_share-01.txt",
+   "node": {
+    "name": "🇺🇸 TUICv5-01",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "tuic://00000000-0000-4000-8000-000000000000:db554c9a63d4b7e62dfdc2fc@192.0.2.1:38899?sni=n1.example.com&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#🇺🇸 TUICv5-01"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 TUICv5-09",
+   "why": "RN 真实分享链接 tuicv5_share-09.txt",
+   "node": {
+    "name": "🇺🇸 TUICv5-09",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "tuic://00000000-0000-4000-8000-000000000000:2aac4f1ed898b9fc1f5e9992@[2001:db8::1]:23451?sni=n1.example.com&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#🇺🇸 TUICv5-09"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "uri:🇺🇸 mVLESS01-TLS",
+   "why": "RN 真实分享链接 vless_share-01.txt",
+   "node": {
+    "name": "🇺🇸 mVLESS01-TLS",
+    "type": "uri",
+    "server": "192.0.2.1",
+    "port": 1,
+    "raw-uri": "vless://00000000-0000-4000-8000-000000000000@n1.example.com:443?encryption=none&security=tls&sni=n1.example.com&fp=chrome&type=tcp#🇺🇸 mVLESS01-TLS"
+   },
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+  },
+  {
+   "id": "syn:ws-reality",
+   "why": "reality 叠在 ws 上: mihomo 的 ws 分支 TLSConfig 不含 Reality, 静默不启用",
+   "node": {
+    "name": "syn-ws-reality",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "ws",
+    "ws-opts": {
+     "path": "/ws"
+    },
+    "reality-opts": {
+     "public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "short-id": "0123456789abcdef"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:reality-no-fp",
+   "why": "有 reality-opts 但缺 client-fingerprint: 配置层过, 拨号才报错",
+   "node": {
+    "name": "syn-reality-no-fp",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "reality-opts": {
+     "public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "short-id": "0123456789abcdef"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:reality-ok",
+   "why": "reality + client-fingerprint: 运行期条件由节点自身满足",
+   "node": {
+    "name": "syn-reality-ok",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "reality-opts": {
+     "public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "short-id": "0123456789abcdef"
+    },
+    "client-fingerprint": "chrome"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:mkcp",
+   "why": "network: kcp —— mihomo 没有 mkcp 实现, 未知 network 静默按 tcp",
+   "node": {
+    "name": "syn-mkcp",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "kcp",
+    "mkcp-opts": {
+     "header": {
+      "type": "wireguard"
+     },
+     "seed": "x"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:kcp-alias",
+   "why": "network 写别名 mkcp",
+   "node": {
+    "name": "syn-kcp-alias",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": false,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "mkcp"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:xhttp",
+   "why": "xhttp 传输 (1.19.22 引入, 1.19.32 回环实测接通)",
+   "node": {
+    "name": "syn-xhttp",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "xhttp",
+    "xhttp-opts": {
+     "mode": "auto",
+     "path": "/xhr-1"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:h2",
+   "why": "network: h2 —— vless 侧无 h2 实现; compat 未收录该组合 (覆盖缺口)",
+   "node": {
+    "name": "syn-h2",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "h2",
+    "h2-opts": {
+     "path": "/h2"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:httpupgrade",
+   "why": "network: httpupgrade",
+   "node": {
+    "name": "syn-httpupgrade",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "httpupgrade",
+    "ws-opts": {
+     "path": "/hu"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:grpc",
+   "why": "network: grpc + reality 组合",
+   "node": {
+    "name": "syn-grpc",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "grpc",
+    "grpc-opts": {
+     "grpc-service-name": "gs1"
+    },
+    "reality-opts": {
+     "public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "short-id": "0123456789abcdef"
+    },
+    "client-fingerprint": "chrome"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:ech",
+   "why": "ech-opts.enable",
+   "node": {
+    "name": "syn-ech",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "ech-opts": {
+     "enable": true,
+     "query-server-name": "a.example.com"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:encryption",
+   "why": "VLESS 后量子 encryption",
+   "node": {
+    "name": "syn-encryption",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "encryption": "mlkem768x25519plus.native.600s.x"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:smux",
+   "why": "节点自带 smux → mux 语义损失",
+   "node": {
+    "name": "syn-smux",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "smux": {
+     "enabled": true,
+     "protocol": "smux"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:flow",
+   "why": "flow=xtls-rprx-vision + tcp + reality",
+   "node": {
+    "name": "syn-flow",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "flow": "xtls-rprx-vision",
+    "reality-opts": {
+     "public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "short-id": "0123456789abcdef"
+    },
+    "client-fingerprint": "chrome"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:unknown-network",
+   "why": "network: quic (compat 收录为 quic, mihomo 无对应规则)",
+   "node": {
+    "name": "syn-unknown-network",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "network": "quic"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:bad-type",
+   "why": "内核完全不认识的协议类型",
+   "node": {
+    "name": "syn-bad-type",
+    "type": "naive",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:snell",
+   "why": "snell: 无 compat 协议规则 → compat 判 UNKNOWN → 回退旧判定",
+   "node": {
+    "name": "syn-snell",
+    "type": "snell",
+    "server": "192.0.2.10",
+    "port": 443,
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "psk": "example-password",
+    "version": "3"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:wireguard",
+   "why": "wireguard: 无 compat 规则 → 回退旧判定",
+   "node": {
+    "name": "syn-wireguard",
+    "type": "wireguard",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true,
+    "private-key": "k"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:ssh",
+   "why": "ssh: 无 compat 规则 → 回退旧判定",
+   "node": {
+    "name": "syn-ssh",
+    "type": "ssh",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:mieru",
+   "why": "mieru: 无 compat 规则 → 回退旧判定",
+   "node": {
+    "name": "syn-mieru",
+    "type": "mieru",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:shadow-tls",
+   "why": "shadow-tls: 无 compat 规则 → 回退旧判定",
+   "node": {
+    "name": "syn-shadow-tls",
+    "type": "shadow-tls",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:trojan-wrong-key",
+   "why": "trojan 写成 servername (内核只认 sni): 旧判定剔除该字段, compat 不报",
+   "node": {
+    "name": "syn-trojan-wrong-key",
+    "type": "trojan",
+    "server": "192.0.2.10",
+    "port": 443,
+    "servername": "a.example.com",
+    "udp": true,
+    "password": "example-password"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:ss-reality",
+   "why": "ss 上挂 reality-opts: mihomo 的 ss 没有该字段, 静默丢弃",
+   "node": {
+    "name": "syn-ss-reality",
+    "type": "ss",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true,
+    "cipher": "aes-128-gcm",
+    "password": "example-password",
+    "reality-opts": {
+     "public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+     "short-id": "0123456789abcdef"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:ss-plain",
+   "why": "裸 ss, 无 TLS",
+   "node": {
+    "name": "syn-ss-plain",
+    "type": "ss",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true,
+    "cipher": "aes-128-gcm",
+    "password": "example-password"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:vmess",
+   "why": "vmess + ws + tls",
+   "node": {
+    "name": "syn-vmess",
+    "type": "vmess",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "alterId": 0,
+    "cipher": "auto",
+    "network": "ws",
+    "ws-opts": {
+     "path": "/v"
+    }
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:hy2",
+   "why": "hysteria2 (无 tls 字段, 天生 TLS)",
+   "node": {
+    "name": "syn-hy2",
+    "type": "hysteria2",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true,
+    "password": "example-password",
+    "up": "50",
+    "down": "200",
+    "sni": "a.example.com",
+    "obfs": "salamander",
+    "obfs-password": "p"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:tuic",
+   "why": "tuic v5",
+   "node": {
+    "name": "syn-tuic",
+    "type": "tuic",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "udp": true,
+    "password": "example-password",
+    "sni": "a.example.com"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:anytls",
+   "why": "anytls",
+   "node": {
+    "name": "syn-anytls",
+    "type": "anytls",
+    "server": "192.0.2.10",
+    "port": 443,
+    "udp": true,
+    "password": "example-password",
+    "sni": "a.example.com",
+    "idle-session-timeout": 30
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:malformed",
+   "why": "缺 server: 连节点都算不上",
+   "node": {
+    "name": "syn-malformed",
+    "type": "vless",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  },
+  {
+   "id": "syn:unknown-key",
+   "why": "带一个内核会静默忽略的键 (username on vless)",
+   "node": {
+    "name": "syn-unknown-key",
+    "type": "vless",
+    "server": "192.0.2.10",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "tls": true,
+    "servername": "a.example.com",
+    "udp": true,
+    "username": "u"
+   },
+   "branch": "mihomo YAML 通路（客户端真实入口）"
+  }
+ ]
+}

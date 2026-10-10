@@ -27,6 +27,15 @@ src/lib/server_extra.sh
 src/lib/simple_proxy.sh
 src/lib/ui.sh
 src/lib/validate.py
+src/lib/nodecompat.py
+src/lib/proxy_node_compat/__init__.py
+src/lib/proxy_node_compat/__main__.py
+src/lib/proxy_node_compat/cli.py
+src/lib/proxy_node_compat/engine.py
+src/lib/proxy_node_compat/model.py
+src/lib/proxy_node_compat/registry.py
+src/lib/proxy_node_compat/uri.py
+src/lib/proxy_node_compat/data/rules.json
 src/lib/webui.sh
 src/conf/AnyTLS.sh
 src/conf/Reality.sh

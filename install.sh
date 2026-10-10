@@ -283,6 +283,11 @@ _FALLBACK_FILES=(
     "src/lib/portcheck.sh" "src/lib/preset.sh" "src/lib/rules_bind.sh"
     "src/lib/simple_proxy.sh" "src/lib/ui.sh" "src/lib/validate.py"
     "src/lib/webui.sh"
+    "src/lib/nodecompat.py"
+    "src/lib/proxy_node_compat/__init__.py" "src/lib/proxy_node_compat/__main__.py"
+    "src/lib/proxy_node_compat/cli.py" "src/lib/proxy_node_compat/engine.py"
+    "src/lib/proxy_node_compat/model.py" "src/lib/proxy_node_compat/registry.py"
+    "src/lib/proxy_node_compat/uri.py" "src/lib/proxy_node_compat/data/rules.json"
     "src/conf/AnyTLS.sh" "src/conf/Reality.sh" "src/conf/TUIC.sh"
     "src/conf/Trojan.sh" "src/conf/VLESS.sh" "src/conf/XRevise.sh"
     "src/conf/all.sh" "src/conf/hysteria2.sh" "src/conf/nginx_apply.py"
@@ -314,6 +319,11 @@ fetch_repo() {  # 把面板需要的文件拉到本地
 
     local f
     for f in "${files[@]}"; do
+        # 清单里出现了**带子目录**的条目 (vendored 的 proxy_node_compat/):
+        # 必须先建父目录。`curl -o <不存在的目录>/x` 只会写失败, 而失败信息
+        # 在这段被 `2>/dev/null` 吞掉, 表现得就像"某个文件下载不下来",
+        # 排查方向完全错。core_mgmt.sh 的更新路径一直是这么做的, 这里补齐。
+        mkdir -p "$(dirname "$base/$f")"
         fetch "$f" "$base/$f" || { err "下载失败: $f"; return 1; }
     done
     chmod +x "$base/src/core_install.sh" 2>/dev/null

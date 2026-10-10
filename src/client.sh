@@ -283,7 +283,6 @@ if not isinstance(ps, list):
     print(changed)
     sys.exit(0)
 
-
 # 旗帜 = 两个连着的区域指示符号。服务端生成的节点名形如
 # "🇺🇸 mAnyTLS01-TLS", 加订阅名前缀时必须**加在旗帜之后**:
 #   🇺🇸 ds-mAnyTLS01-TLS     ← 对
@@ -756,10 +755,107 @@ _add_from_file() {  # <文件> <名字>  —— 校验后落盘
     local src="$1" name="$2"
     # 第 3 个参数传 validate.py 的目录: 这段 python 是从 **stdin** 读的,
     # __file__ 不存在, 只能由调用方给路径。
-    python3 - "$src" "$CLI_PROVIDERS/$name.yaml" "$CLI_LIB" <<'PYIMP'
-import sys, yaml, os, tempfile
+    python3 - "$src" "$CLI_PROVIDERS/$name.yaml" "$CLI_LIB" "$CLI_NODES/$name.compat.json" <<'PYIMP'
+import sys, yaml, os, tempfile, json
 src, dst = sys.argv[1], sys.argv[2]
 _mlib = sys.argv[3] if len(sys.argv) > 3 else ""
+_compat_out = sys.argv[4] if len(sys.argv) > 4 else ""
+
+# ---- 内核能力判定层的引导 ----
+#
+# ⚠ 这段必须放在**最前面**: 下面的"分享链接 (URI) 列表"分支和"proxies: YAML"
+#   分支都要用它, 而前者在文件里位置更靠前。放在后面就会出现
+#   `NameError: name '_nc' is not defined` —— 而且只在 URI 那条路上炸。
+if _mlib and _mlib not in sys.path:
+    sys.path.insert(0, _mlib)
+_compat_records = []
+_nc = None
+try:
+    import nodecompat as _nc
+except Exception as _e:
+    print(f"[WARN] 兼容判定层不可用 ({_e}), 本次只用旧判定", file=sys.stderr)
+
+
+def _compat_one(node):
+    """跑一次判定并记成一条报告记录（判定只发生在 compat 内部一次）。"""
+    _r = _nc.judge(node)
+    return {
+        "name": node.get("name") if isinstance(node, dict)
+                else (str(node).split("#")[-1] or str(node)[:40]),
+        "type": node.get("type") if isinstance(node, dict) else "uri",
+        "verdict": _r["verdict"], "label": _r["label"],
+        "verdict_source": _r["verdict_source"],
+        "legacy": _r["legacy"]["status"],
+        "compat_status": (_r["compat"] or {}).get("status"),
+        "drop": _r["drop"], "reasons": _r["reasons"],
+        "downgrades": _r["downgrades"],
+        # ↓ 这四样必须随结果带出, 不许静默丢字段
+        "losses": (_r["compat"] or {}).get("losses") or [],
+        "unknowns": (_r["compat"] or {}).get("unknowns") or [],
+        "extensions": (_r["compat"] or {}).get("extensions") or [],
+        "raw_uri": (_r["compat"] or {}).get("raw_uri"),
+        "warnings": (_r["compat"] or {}).get("warnings") or [],
+        "reason_codes": (_r["compat"] or {}).get("reason_codes") or [],
+        "levels": (_r["compat"] or {}).get("levels") or {},
+        "rules_applied": (_r["compat"] or {}).get("rules_applied") or [],
+        "evidence": (_r["compat"] or {}).get("evidence") or [],
+        "diagnostics": (_r["compat"] or {}).get("diagnostics") or [],
+        "describe": _nc.describe(_r, limit=4),
+    }
+
+
+def _compat_report(tag):
+    """判定结果**随产物一起落盘**: losses / unknowns / extensions / raw_uri /
+    detected_features 全部带出。不写盘的话这些信息在导入那一刻之后就没了,
+    面板/事后排查都看不到 —— 那和"静默丢字段"是同一件事。"""
+    if _nc is None or not _compat_out:
+        return
+    try:
+        payload = {
+            "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+            "source_kind": tag,          # proxies-yaml / uri-list
+            "engine": _nc.engine(),
+            "disabled_reason": _nc.reason_disabled(),
+            "target": _nc.kernel_target().to_dict(),
+            "registry": {"rules": len(_nc.registry().rules),
+                         "evidence": len(_nc.registry().evidence),
+                         "uri_rules": len(_nc.registry().uri_rules)},
+            "counts": {"total": len(_compat_records),
+                       "tightened": sum(1 for r in _compat_records
+                                        if r["verdict"] != r["legacy"]),
+                       "dropped": sum(1 for r in _compat_records if r["drop"]),
+                       "downgrades": sum(1 for r in _compat_records if r["downgrades"])},
+            "nodes": _compat_records,
+        }
+        _fd, _t = tempfile.mkstemp(dir=os.path.dirname(_compat_out), prefix=".c.")
+        os.close(_fd)
+        with open(_t, "w", encoding="utf-8") as _fh:
+            json.dump(payload, _fh, ensure_ascii=False, indent=1)
+        os.replace(_t, _compat_out)
+    except Exception as _e:                                # 判定报告失败不该拖垮导入
+        print(f"[WARN] 兼容判定报告写入失败: {_e}", file=sys.stderr)
+
+
+def _compat_summary():
+    """把"更严了哪些""保险丝有没有响"讲清楚 —— 支持! 必须能解释为什么。"""
+    if _nc is None or not _compat_records:
+        return
+    _tight = [r for r in _compat_records if r["verdict"] != r["legacy"]]
+    if _tight:
+        print(f"[兼容] 能力判定比旧判定更严 {len(_tight)}/{len(_compat_records)} 个:",
+              file=sys.stderr)
+        for r in _tight[:12]:
+            print(f"       - {r['name']}: {r['legacy']} → {r['label']}"
+                  + (f"  ({r['describe']})" if r["describe"] else ""), file=sys.stderr)
+        if len(_tight) > 12:
+            print(f"       ... 另外 {len(_tight) - 12} 个见 .compat.json", file=sys.stderr)
+    _bad = [r for r in _compat_records if r["downgrades"]]
+    if _bad:
+        print(f"[WARN] {len(_bad)} 个节点的 compat 判定比旧判定更宽, 已被保险丝挡下 "
+              "(这是 bug, 不是特性)", file=sys.stderr)
+    print(f"[兼容] 判定引擎: {_nc.engine()} (回滚: MH_COMPAT_ENGINE=legacy); "
+          f"目标内核: {_nc.kernel_target().to_dict()}", file=sys.stderr)
+
 
 # ---- 分享链接产物 (一行行 URI) 也是合法的订阅来源 (2026-10-10 新增) ----
 #
@@ -785,21 +881,53 @@ _lines = [l.strip() for l in
           open(src, encoding="utf-8").read().splitlines()]
 _lines = [l for l in _lines if l and not l.startswith("#")]
 if _lines and all(_is_uri(l) for l in _lines):
+    # 分享链接这一路也要过能力判定 —— 而且它走的是**保真最高**的入口:
+    # compat 的 parse_uri 直接吃原始字符串, 值一个字节都不重写 (不变式 I1)。
+    # 旧判定对这条路是"不表态"(见 nodecompat.legacy_verdict 的说明),
+    # 所以这里的结论**全部**来自 compat; 保险丝仍然在: compat 说不能用的
+    # 行会被剔掉, 而它永远不会把旧判定剔除的行捞回来。
+    _kept_uri, _dropped_uri = [], []
+    for _l in _lines:
+        if _nc is None:
+            _kept_uri.append(_l)
+            continue
+        _rec = _compat_one(_l)
+        _compat_records.append(_rec)
+        if _rec["drop"]:
+            _dropped_uri.append(_rec)
+        else:
+            _kept_uri.append(_l)
+    if _dropped_uri:
+        for _rec in _dropped_uri:
+            print(f"[过滤] {_rec['name']}: 内核能力判定为不支持, 已剔除"
+                  + (f" —— {_rec['reasons'][0]}" if _rec["reasons"] else ""),
+                  file=sys.stderr)
+    if not _kept_uri:
+        print("[ERR] 剔除后一个可用节点都不剩 —— 这份分享链接与 mihomo 不兼容",
+              file=sys.stderr)
+        sys.exit(1)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     _fd, _tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
     os.close(_fd)
     with open(_tmp, "w", encoding="utf-8") as _fh:
-        _fh.write("\n".join(_lines) + "\n")
+        _fh.write("\n".join(_kept_uri) + "\n")
     os.replace(_tmp, dst)
-    print(f"[OK] 已写入 {dst} ({len(_lines)} 个节点, 分享链接由内核解析)",
+    print(f"[OK] 已写入 {dst} ({len(_kept_uri)} 个节点, 分享链接由内核解析)",
           file=sys.stderr)
     print("[Info] 这是分享链接 (URI) 列表, 不是 proxies: YAML —— 交给 mihomo 自己的解析器",
           file=sys.stderr)
+    _compat_summary()
+    _compat_report("uri-list")
+    if _nc is not None and not _compat_records:
+        print(f"[兼容] 判定引擎: {_nc.engine()} —— {_nc.reason_disabled()}", file=sys.stderr)
     sys.exit(0)
 
 d = yaml.safe_load(open(src, encoding="utf-8"))
+
 if not isinstance(d, dict) or not isinstance(d.get("proxies"), list) or not d["proxies"]:
     print("[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)", file=sys.stderr)
+    print("      若这是单节点分享链接 (xxx://…), 请确认文件里每行都是一条链接;", file=sys.stderr)
+    print("      订阅地址请用面板「分享链接管理」给出的 http://…/share/<token>。", file=sys.stderr)
     sys.exit(1)
 
 # ---- 剔除 mihomo 核心不认识的节点 (2026-10-07 新增) ----
@@ -825,6 +953,20 @@ try:
 except Exception as _e:
     print(f"[WARN] 读不到内核协议表 ({_e}), 跳过协议过滤", file=sys.stderr)
 
+# ---- 内核能力判定 (proxy-node-compat, 2026-10-10 接入) ----
+#
+# 上面那段只回答一个问题: "type 在不在白名单里"。它**不知道**
+#   * 组合:  ws 分支的 TLSConfig 不含 Reality → 写了 reality 也静默不生效;
+#   * 语义:  network: kcp 在 mihomo 里没有实现 → 静默按 tcp 处理;
+#   * 运行期: 有 reality-opts 但缺 client-fingerprint → 配置校验通过、拨号才报错;
+#   * 版本:  xhttp / reality / ech / flow 是 v1.19.x 里逐版加进来的。
+# 这些都是"配了没反应"的静默失败, 正是本项目最主要的缺陷类型。
+#
+# 判定**只发生一次**: 全部结论来自 vendored 的 proxy_node_compat
+# (src/lib/proxy_node_compat/), 本处只消费结果。合并规则是机械的
+# "取更差者" —— compat 只能收紧, 不能放宽; 出现放宽会被挡下并记进 downgrades。
+# 一键回滚: MH_COMPAT_ENGINE=legacy (别名 XBD_COMPAT_ENGINE=legacy)。
+
 # ★ 原来这里是**硬失败**: 只要有任一节点缺 server/port 就整体退出。
 #   问题是外部订阅里混几个"根本不是代理"的东西太正常了 —— sing-box 的
 #   block/dns/selector 这类 outbound 本来就没有 server/port, 它们是配置
@@ -838,9 +980,19 @@ for p in d["proxies"]:
         continue
     t = str(p.get("type", "")).lower()
     if _mihomo_types and t not in _mihomo_types:
-        dropped.append((p.get("name", "?"), t))
-    else:
-        kept.append(p)
+        dropped.append((p.get("name", "?"), t, "mihomo 核心不支持该协议"))
+        continue
+    # ★ 能力判定: 旧判定已经放行的节点, 再过一道 compat。
+    #   注意方向 —— compat **只能收紧**: 它不能把上面刚剔掉的协议捞回来,
+    #   只可能在放行的节点里再剔除(UNSUPPORTED)或标出确定的能力损失。
+    if _nc is not None:
+        _rec = _compat_one(p)
+        _compat_records.append(_rec)
+        if _rec["drop"]:
+            dropped.append((p.get("name", "?"), t,
+                            "内核能力判定: " + (_rec["reasons"][0] if _rec["reasons"] else "不支持")))
+            continue
+    kept.append(p)
 
 if malformed:
     show = ", ".join(malformed[:5]) + (f" 等 {len(malformed)} 个" if len(malformed) > 5 else "")
@@ -849,15 +1001,17 @@ if malformed:
 if dropped:
     # 按类型汇总, 避免 30 个节点刷 30 行
     by_t = {}
-    for nm, t in dropped:
+    for item in dropped:
+        nm, t = item[0], item[1]
         by_t.setdefault(t, []).append(nm)
     for t, names in sorted(by_t.items()):
         show = ", ".join(names[:3]) + (f" 等 {len(names)} 个" if len(names) > 3 else "")
         print(f"[过滤] {t}: mihomo 核心不支持该协议, 已剔除 {len(names)} 个 —— {show}",
               file=sys.stderr)
-if not kept:
-    print("[ERR] 剔除后一个可用节点都不剩 —— 这份订阅与 mihomo 不兼容", file=sys.stderr)
-    sys.exit(1)
+_compat_summary()
+if _nc is None:
+    print(f"[兼容] 判定引擎不可用 —— 本次只用旧判定", file=sys.stderr)
+
 d["proxies"] = kept
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
@@ -879,6 +1033,7 @@ with open(tmp, "w", encoding="utf-8") as fh:
     yaml.safe_dump({"proxies": _ps}, fh, sort_keys=False,
                    allow_unicode=True, default_flow_style=False)
 os.replace(tmp, dst)
+_compat_report("proxies-yaml")
 print(f"[OK] 已写入 {dst} ({len(d['proxies'])} 个节点"
       + (f", 已剔除 {len(dropped) + len(malformed)} 个不兼容" if (dropped or malformed) else "")
       + ")", file=sys.stderr)
@@ -1038,6 +1193,26 @@ node_list() {
         local cnt; cnt=$(m_provider_count "$f")
         local src=""; [[ -f "$CLI_NODES/$name.txt" ]] && src=$(head -1 "$CLI_NODES/$name.txt")
         printf '  \033[1m%-20s\033[0m %s 个节点   来源: %s\n' "$name" "$cnt" "${src:-本地文件}"
+        # 兼容判定摘要 —— 判定结果在导入时就落盘了 (见 _add_from_file),
+        # 这里只是把它显示出来, 不重算 (判定只发生一次)。
+        if [[ -f "$CLI_NODES/$name.compat.json" ]]; then
+            python3 - "$CLI_NODES/$name.compat.json" <<'PYSUM'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+n = d.get("nodes") or []
+cnt = {}
+for r in n:
+    cnt[r.get("label") or r.get("verdict")] = cnt.get(r.get("label") or r.get("verdict"), 0) + 1
+parts = "  ".join(f"{k} {v}" for k, v in sorted(cnt.items(), key=lambda kv: -kv[1]))
+tgt = (d.get("target") or {})
+print(f"      兼容: {parts}   内核 {tgt.get('version') or '?'} · 引擎 {d.get('engine')}")
+if d.get("counts", {}).get("downgrades"):
+    print("      ⚠ 有判定放宽被保险丝挡下 —— 请上报")
+PYSUM
+        fi
         found=1
     done
     [[ $found -eq 0 ]] && print_info "还没有任何节点, 请先「添加节点」"

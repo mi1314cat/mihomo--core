@@ -1,0 +1,2331 @@
+{
+  "_comment": "能力规则。精度由证据决定: 有边界写 segments, 只知道两端写 unknown_range + transition=UNKNOWN, 无版本信息写 evidence_only, 与版本无关写 version_independent。禁止为了让数据好看而补版本号。",
+  "evidence": [
+    {
+      "id": "e-xray-mkcp-src",
+      "type": "SRC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "Xray mKCP header/seed 经历 生效→硬报错→静默丢弃 三段",
+      "how": "research/kernel-xray.md 源码级调研（114 处 src 证据）",
+      "where": "research/kernel-xray.md",
+      "limits": "分段边界来自 release note 与源码，未逐版运行验证"
+    },
+    {
+      "id": "e-xray-mkcp-err",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "Xray 26.3.27 对 mKCP header/seed 硬报错",
+      "how": "xray -test -config（我们自己跑）",
+      "where": "research/empirical/probe-results.json#transport.mkcp_removed_fields",
+      "limits": "只证明 26.3.27 这一版"
+    },
+    {
+      "id": "e-xray-h2-err",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "Xray 26.3.27 已移除 HTTP(h2) transport",
+      "how": "xray -test 报错原文: The feature HTTP transport ... has been removed and migrated to XHTTP",
+      "where": "research/empirical/README.md F1",
+      "limits": "移除的确切版本未验证"
+    },
+    {
+      "id": "e-xray-reality-combo",
+      "type": "DOC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "REALITY 只允许 RAW/XHTTP/gRPC 传输（配置期硬报错）",
+      "how": "官方文档 + 源码",
+      "where": "research/kernel-xray.md",
+      "limits": "未逐组合实测"
+    },
+    {
+      "id": "e-xray-ech-lax",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "Xray 对 echConfigList 内容不做校验（编造的 base64 也 Configuration OK）",
+      "how": "xray -test 喂非法 base64",
+      "where": "research/empirical/README.md F5",
+      "limits": "只说明配置层宽松，不代表运行期可用"
+    },
+    {
+      "id": "e-mihomo-xhttp-loopback",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "mihomo 1.19.32 真正支持 xhttp（回环接通）",
+      "how": "xray 起 xhttp-only 入站 → mihomo 客户端取回 COMPAT-OK",
+      "where": "research/empirical/probe-results.json#loopback.xray_server_xhttp__mihomo_client_xhttp",
+      "limits": "只证明 1.19.32"
+    },
+    {
+      "id": "e-mihomo-xhttp-release",
+      "type": "RELEASE",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "mihomo xhttp 自 v1.19.22 起支持",
+      "how": "release note + 逐 tag 源码比对",
+      "where": "research/kernel-mihomo.md",
+      "limits": "边界来自 release note，未逐版运行"
+    },
+    {
+      "id": "e-mihomo-network-lax",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "mihomo 不校验 network；未知值静默按 tcp（-t 通过且真连通纯 tcp 服务端）",
+      "how": "回环: network=totally-nonsense-transport 仍连通",
+      "where": "research/empirical/probe-results.json#loopback...nonsense_transport",
+      "limits": "证明 1.19.32 的静默行为；其它版本未验证"
+    },
+    {
+      "id": "e-mihomo-ws-reality",
+      "type": "SRC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "mihomo ws 分支构造的 TLSConfig 不含 Reality/ECH → 静默失效",
+      "how": "源码",
+      "where": "research/kernel-mihomo.md",
+      "limits": "静态阅读，未运行验证"
+    },
+    {
+      "id": "e-mihomo-reality-fp",
+      "type": "SRC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "有 reality-opts 但缺 client-fingerprint 时是运行期才报错",
+      "how": "源码",
+      "where": "research/kernel-mihomo.md",
+      "limits": "静态阅读"
+    },
+    {
+      "id": "e-mihomo-fields",
+      "type": "SRC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "vmess/vless 只有 servername；trojan/hysteria2/tuic/anytls 只有 sni（写错静默失效）",
+      "how": "源码字段清单",
+      "where": "research/kernel-mihomo.md",
+      "limits": "静态阅读"
+    },
+    {
+      "id": "e-mihomo-unknownkeys",
+      "type": "SRC",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "未知键永不报错（dataValKeysUnused + 无 remain tag + yaml 未开 KnownFields）",
+      "how": "源码",
+      "where": "research/kernel-mihomo.md §5",
+      "limits": "结构性结论，适用于该实现"
+    },
+    {
+      "id": "e-singbox-never-xhttp",
+      "type": "SRC",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "sing-box 全树 grep xhttp|splithttp 0 命中，任何版本都不存在",
+      "how": "源码全树检索（v1.14.2 tarball）",
+      "where": "research/kernel-singbox.md",
+      "limits": "只检索了 v1.14.2 树"
+    },
+    {
+      "id": "e-singbox-kcp",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "sing-box 未知 transport 硬报错: unknown transport type: kcp",
+      "how": "sing-box check",
+      "where": "research/empirical/probe-results.json#transport.mkcp",
+      "limits": "1.14.2"
+    },
+    {
+      "id": "e-singbox-ss-tls",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "sing-box 的 shadowsocks 出站没有 tls 字段 → ss+reality 无法表达",
+      "how": "sing-box check 报错: outbounds[0].tls: json: unknown field \"tls\"",
+      "where": "research/empirical/anyreality.md",
+      "limits": "1.14.2"
+    },
+    {
+      "id": "e-singbox-utls",
+      "type": "DOC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "Reality/uTLS 需要 with_utls；hysteria2/tuic 需要 with_quic；缺标签是运行期 FATAL",
+      "how": "文档 + 自建二进制对比实验",
+      "where": "research/kernel-singbox.md",
+      "limits": "官方二进制会打印 Tags:，可直接读"
+    },
+    {
+      "id": "e-singbox-ech-pem",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "sing-box tls.ech.config 要 PEM（喂 base64 → invalid ECH configs pem）",
+      "how": "sing-box check 两种写法对比",
+      "where": "research/empirical/README.md F4",
+      "limits": "1.14.2"
+    },
+    {
+      "id": "e-sip002",
+      "type": "DOC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "ss:// 是 SIP002 引用格式，没有表达 Reality 参数的语义",
+      "how": "规范 + 我们仓库实现（conf/Shadowsocks.sh:395 明确写'无标准 ss:// URI 语义'）",
+      "where": "xray--core/conf/Shadowsocks.sh",
+      "limits": "规范层面结论"
+    },
+    {
+      "id": "e-probe-suite",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "63 条真内核探针: 三家对下列协议/传输的配置校验全部通过",
+      "how": "tools/probe/probe.py（xray -test / mihomo -t / sing-box check），控制组全绿",
+      "where": "research/empirical/probe-results.json",
+      "limits": "只证明被测的那些版本"
+    },
+    {
+      "id": "e-xray-mux-doc",
+      "type": "DOC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "Xray 文档明确: 使用 XHTTP 时不要启用 mux.cool；mux 只对 TCP/UDP 语义有效；#716 分享规范里没有任何 mux 参数（属客户端私有扩展）",
+      "how": "源码级调研（infra/conf/xray.go MuxConfig.Build + outbound.html + #716 参数表）",
+      "where": "research/kernel-xray.md L172/L264/L282/L306",
+      "limits": "文档与源码层面；未逐内核实测 mux 运行效果"
+    },
+    {
+      "id": "e-mux-not-isomorphic",
+      "type": "SRC",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "三方 mux 不是同一个东西: Xray=mux.cool(固定域名 v1.mux.cool:9527) / mihomo=smux / sing-box=multiplex(h2mux,smux,yamux)；sing-box 对 mux.cool 直接 FATAL",
+      "how": "三家源码字段与协议名 + sing-box check 实测",
+      "where": "research/kernel-xray.md L172-174, research/kernel-singbox.md L275-281",
+      "limits": "协议名与字段层面已确证；跨内核实际互通性未做回环"
+    },
+    {
+      "id": "e-xray-sharelink-encryption",
+      "type": "DOC",
+      "confidence": "MEDIUM",
+      "date": "2026-10-10",
+      "claim": "分享链接规范的 encryption 参数对应 VLESS settings.encryption, 取值 none / mlkem768x25519plus…（后量子加密）; VLESS 侧该字段必填（留空 → 配置加载失败）",
+      "how": "官方分享链接规范 #716 参数表 + 跨 tag 源码比对（mlkem768x25519plus 在 v25.7.26 不存在、v25.9.11 存在）",
+      "where": "research/kernel-xray.md L88-89/L248；XTLS/Xray-core discussion #716",
+      "limits": "该**取值**进入分享链接规范的确切时间未核实 → uri_rule 的 spec_added_at 留 null（UNKNOWN）, 不猜日期"
+    },
+    {
+      "id": "e-vlessenc-runtime",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "VLESS 后量子 encryption（mlkem768x25519plus）: Xray 26.3.27 与 mihomo 1.19.32 真生效（回环取回载荷）；sing-box 1.14.2 完全无此字段",
+      "how": "三家真内核回环: xray(enc)→xray(dec) 与 mihomo(enc)→xray(dec) 均取回 TUNNEL-PAYLOAD-OK；sing-box 配置三处全拒（含 encryption:\"none\"）；跨内核 sing-box→xray 因服务端要求 dec 而失败，对 decryption=none 的服务端则成功（唯一变量）",
+      "where": "research/empirical/vless-encryption-mlkem.md",
+      "limits": "只证明这三个版本；mihomo 引入版本、xorpub/random 形态互通性未验证"
+    },
+    {
+      "id": "e-vlessenc-discriminator",
+      "type": "CONFIG_VALIDATION",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "mihomo 对 encryption 是**真解析**而非静默忽略：未知键/未知 transport → -t 通过；非法 encryption 值 → test failed（invaild vless encryption value）",
+      "how": "用同一份配置做对照（未知键 vs 非法值）",
+      "where": "research/empirical/vless-encryption-mlkem.md §2",
+      "limits": "该判别法只对'有值校验的字段'有效"
+    },
+    {
+      "id": "e-cross-matrix",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "跨内核 60 用例矩阵（回环 + 死端口负对照）: ss+reality 只有 Xray 能用; ws+reality 只有 sing-box 能通; xhttp 系 sing-box 完全没有; 三方 mux 不同构, 跨内核搬运必损; vision+security=none 三家都是配置过、运行期报错",
+      "how": "xray 作服务端 + 三家作客户端逐组合回环; 3 控制组 + 3 死代理负对照; mihomo mode=global 假 PASS 已靠负对照抓出并修正",
+      "where": "research/empirical/cross-kernel-matrix.md",
+      "limits": "三个内核各一个版本 (26.3.27 / 1.19.32 / 1.14.2); 部分方向 (mihomo·singbox 作 ss+reality 服务端) 未测"
+    },
+    {
+      "id": "e-xray-hysteria2-outbound",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "Xray 26.3.27 有 hysteria 出站（settings.version=2 即 Hysteria2），实测端到端 204",
+      "how": "CC(armbian/arm64) 上 xray run -test → Configuration OK；临时实例（SOCKS 入口 + protocol=hysteria 出站） curl https://www.gstatic.com/generate_204 → HTTP 204 (1.40s)，出口 <CDN_IP>。控制组：protocol=hysteria9 → unknown config id；protocol=hysteria 且 version=1 → version != 2",
+      "where": "research/integration/x-client-integration.md §CC 实测",
+      "limits": "只验证**出站**方向与 26.3.27 这一版；入站方向与更早版本未验证"
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "xray.mkcp.header_seed",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:mkcp"
+      },
+      "segments": [
+        {
+          "range": "<= 26.1.23",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "note": "老字段生效"
+        },
+        {
+          "range": ">= 26.2.6, <= 26.9.8",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_REMOVED",
+          "note": "字段已移除, 配置期直接报错（用户看得见）"
+        },
+        {
+          "range": ">= 26.9.30",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_drop",
+          "reason_code": "KERNEL_REMOVED",
+          "losses": [
+            {
+              "feature": "standard:mkcp.header_seed",
+              "what": "结构体字段仍在, 但 Build 不读不校验 → 静默不生效",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "> 26.1.23, < 26.2.6",
+          "why": "两端各有证据, 中间无任何一版被验证"
+        },
+        {
+          "range": "> 26.9.8, < 26.9.30",
+          "why": "两端各有证据, 中间无任何一版被验证"
+        }
+      ],
+      "evidence": [
+        "e-xray-mkcp-src",
+        "e-xray-mkcp-err"
+      ]
+    },
+    {
+      "rule_id": "xray.transport.http_h2",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.http_h2"
+      },
+      "segments": [
+        {
+          "range": ">= 26.0.0",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_REMOVED",
+          "note": "26.x 已移除 HTTP transport，迁移到 XHTTP"
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 26.0.0",
+          "why": "移除发生在 26.x, 但具体版本未验证"
+        }
+      ],
+      "evidence": [
+        "e-xray-h2-err"
+      ]
+    },
+    {
+      "rule_id": "xray.tls.allow_insecure",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:tls.allow_insecure"
+      },
+      "segments": [
+        {
+          "range": ">= 26.7.11",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_REMOVED",
+          "note": "allowInsecure 无条件硬报错"
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 26.7.11",
+          "why": "26.2.6–26.5.9 期间是时间闸门（系统时间 < 2026-06-01 UTC 才生效）；引擎未实现 evaluated_at, 故一律 UNKNOWN"
+        }
+      ],
+      "evidence": [
+        "e-xray-mkcp-src"
+      ]
+    },
+    {
+      "rule_id": "xray.combo.reality_transports",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vless",
+        "all_of_features": [
+          "standard:reality"
+        ]
+      },
+      "constraint": {
+        "allowed_transports": [
+          "standard:transport.tcp",
+          "standard:xhttp",
+          "standard:transport.grpc"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "version_independent": true,
+      "reason_code": "SEMANTIC_MISMATCH",
+      "message": "REALITY 只允许 RAW / XHTTP / gRPC 传输（其它组合配置期硬报错）",
+      "evidence": [
+        "e-xray-reality-combo"
+      ]
+    },
+    {
+      "rule_id": "xray.ech.config_lax",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:ech"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "UNKNOWN"
+          },
+          "warnings": [
+            {
+              "code": "CONFIG_VALIDATION_LAX",
+              "detail": "Xray 只做 base64 解码层面的接受, 内容合法性留给运行时"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-xray-ech-lax"
+      ]
+    },
+    {
+      "rule_id": "mihomo.transport.xhttp",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:xhttp"
+      },
+      "segments": [
+        {
+          "range": ">= 1.19.22",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "warnings": [
+            {
+              "code": "VERSION_NOT_EXACTLY_PROBED",
+              "detail": "只回环验证过 1.19.32；1.19.22–1.19.31 未逐版验证"
+            }
+          ]
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.19.22",
+          "why": "xhttp 自 1.19.22 引入（release note）；更低版本的 network 值不被校验，会静默按 tcp —— 但我们没有那一版的可运行证据，故不写死结论"
+        }
+      ],
+      "evidence": [
+        "e-mihomo-xhttp-loopback",
+        "e-mihomo-xhttp-release"
+      ]
+    },
+    {
+      "rule_id": "mihomo.transport.mkcp",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:mkcp"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_ignore",
+          "losses": [
+            {
+              "feature": "standard:mkcp",
+              "what": "mihomo 无 mkcp 实现；network 值不被校验 → 静默按 tcp 处理",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-mihomo-network-lax"
+      ]
+    },
+    {
+      "rule_id": "mihomo.combo.ws_reality",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "all_of_features": [
+          "standard:reality",
+          "standard:transport.ws"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_ignore",
+          "losses": [
+            {
+              "feature": "standard:reality",
+              "what": "ws 分支的 TLSConfig 不含 Reality → 静默不启用",
+              "impact": "SECURITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-mihomo-ws-reality"
+      ]
+    },
+    {
+      "rule_id": "mihomo.reality.runtime_condition",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:reality"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "runtime_condition": {
+            "client_fingerprint_present": true
+          },
+          "reason_code": "RUNTIME_CONDITION_NOT_MET",
+          "note": "有 reality-opts 但缺 client-fingerprint 时, 配置层无法发现, 拨号才报错"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-mihomo-reality-fp"
+      ]
+    },
+    {
+      "rule_id": "mihomo.fieldname.sni_vs_servername",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:tls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "warnings": [
+            {
+              "code": "FIELD_NAME_TRAP",
+              "detail": "vmess/vless 只有 servername；trojan/hysteria2/tuic/anytls 只有 sni —— 写错不报错只静默失效"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-mihomo-fields",
+        "e-mihomo-unknownkeys"
+      ]
+    },
+    {
+      "rule_id": "singbox.xhttp.never",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:xhttp"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_NEVER_SUPPORTED"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-singbox-never-xhttp"
+      ]
+    },
+    {
+      "rule_id": "singbox.mkcp.never",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:mkcp"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_NEVER_SUPPORTED"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-singbox-kcp"
+      ]
+    },
+    {
+      "rule_id": "singbox.ss_reality.never",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:shadowsocks",
+        "all_of_features": [
+          "standard:reality"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_NEVER_SUPPORTED",
+          "note": "shadowsocks 出站没有 tls 字段: unknown field \"tls\""
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-singbox-ss-tls"
+      ]
+    },
+    {
+      "rule_id": "singbox.reality.build_tags",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:reality"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "requires_build_tags": [
+            "with_utls"
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-singbox-utls"
+      ]
+    },
+    {
+      "rule_id": "singbox.ech.representation",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:ech"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "version_independent": true,
+      "mismatch": "semantic_mismatch",
+      "message": "sing-box 的 tls.ech.config 要 PEM（-----BEGIN ECH CONFIGS-----），不是 base64；喂 base64 会 FATAL: invalid ECH configs pem",
+      "evidence": [
+        "e-singbox-ech-pem"
+      ]
+    },
+    {
+      "rule_id": "mihomo.support.xhttp",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:xhttp"
+      },
+      "segments": [
+        {
+          "range": ">= 1.19.32",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "note": "xhttp 回环实测接通"
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.19.32",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "xray.support.xhttp",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:xhttp"
+      },
+      "segments": [
+        {
+          "range": ">= 26.3.27",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 26.3.27",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "xray.support.tls",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:tls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.support.tls",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:tls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.support.tls",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:tls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "xray.support.transport_ws",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.ws"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.support.transport_ws",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.ws"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.support.transport_ws",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.ws"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "xray.support.transport_grpc",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.grpc"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.support.transport_grpc",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.grpc"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.support.transport_grpc",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.grpc"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.support.transport_httpupgrade",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.httpupgrade"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.support.transport_httpupgrade",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:transport.httpupgrade"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.support.reality",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:reality"
+      },
+      "segments": [
+        {
+          "range": ">= 1.19.32",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.19.32",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "singbox.support.reality",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:reality"
+      },
+      "segments": [
+        {
+          "range": ">= 1.14.2",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.14.2",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "mihomo.support.ech",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:ech"
+      },
+      "segments": [
+        {
+          "range": ">= 1.19.32",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.19.32",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "singbox.support.ech",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:ech"
+      },
+      "segments": [
+        {
+          "range": ">= 1.14.2",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.14.2",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "singbox.support.flow",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:flow"
+      },
+      "segments": [
+        {
+          "range": ">= 1.14.2",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.14.2",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "mihomo.support.flow",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:flow"
+      },
+      "segments": [
+        {
+          "range": ">= 1.19.32",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.19.32",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "xray.support.flow",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:flow"
+      },
+      "segments": [
+        {
+          "range": ">= 26.3.27",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          }
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 26.3.27",
+          "why": "未逐版验证"
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "xray.protocol.vless",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vless"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "xray.protocol.vmess",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vmess"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "xray.protocol.trojan",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:trojan"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "xray.protocol.shadowsocks",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:shadowsocks"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.vless",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vless"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.vmess",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vmess"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.trojan",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:trojan"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.shadowsocks",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:shadowsocks"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.hysteria2",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:hysteria2"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.tuic",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:tuic"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "mihomo.protocol.anytls",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:anytls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.vless",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vless"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.vmess",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:vmess"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.trojan",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:trojan"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.shadowsocks",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:shadowsocks"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.hysteria2",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:hysteria2"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.tuic",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:tuic"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "singbox.protocol.anytls",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:anytls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          }
+        }
+      ],
+      "evidence": [
+        "e-probe-suite"
+      ],
+      "version_independent": true
+    },
+    {
+      "rule_id": "xray.protocol.tuic.never",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:tuic"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_NEVER_SUPPORTED"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "xray.protocol.anytls.never",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:anytls"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_NEVER_SUPPORTED"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-probe-suite"
+      ]
+    },
+    {
+      "rule_id": "xray.mux.semantics",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:mux"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_ignore",
+          "losses": [
+            {
+              "feature": "standard:mux",
+              "what": "三方 mux 不同构（Xray=mux.cool / mihomo=smux / sing-box=multiplex），跨内核搬运无法保证语义一致；Xray 官方文档明确「使用 XHTTP 时不要启用 mux.cool」",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "mismatch": "semantic_mismatch",
+      "message": "mux 在三个内核里不是同一个东西；Xray 建议用 XHTTP 自带的多路复用（xhttpSettings.extra.xmux）而不是 mux.cool",
+      "evidence": [
+        "e-mux-not-isomorphic",
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "rule_id": "mihomo.mux.semantics",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:mux"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_ignore",
+          "losses": [
+            {
+              "feature": "standard:mux",
+              "what": "三方 mux 不同构（Xray=mux.cool / mihomo=smux / sing-box=multiplex），跨内核搬运无法保证语义一致；Xray 官方文档明确「使用 XHTTP 时不要启用 mux.cool」",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "mismatch": "semantic_mismatch",
+      "message": "mux 在三个内核里不是同一个东西；Xray 建议用 XHTTP 自带的多路复用（xhttpSettings.extra.xmux）而不是 mux.cool",
+      "evidence": [
+        "e-mux-not-isomorphic",
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "rule_id": "singbox.mux.semantics",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:mux"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_ignore",
+          "losses": [
+            {
+              "feature": "standard:mux",
+              "what": "三方 mux 不同构（Xray=mux.cool / mihomo=smux / sing-box=multiplex），跨内核搬运无法保证语义一致；Xray 官方文档明确「使用 XHTTP 时不要启用 mux.cool」",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "mismatch": "semantic_mismatch",
+      "message": "mux 在三个内核里不是同一个东西；Xray 建议用 XHTTP 自带的多路复用（xhttpSettings.extra.xmux）而不是 mux.cool",
+      "evidence": [
+        "e-mux-not-isomorphic",
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "rule_id": "xray.vless.encryption",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:vless.encryption"
+      },
+      "segments": [
+        {
+          "range": ">= 26.3.27",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "note": "出站 users[].encryption；入站用 settings.decryption；入站 clients[].encryption 被禁。畸形值会 panic（上游 bug）"
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 26.3.27",
+          "why": "未逐版验证；该特性较新"
+        }
+      ],
+      "evidence": [
+        "e-vlessenc-runtime"
+      ]
+    },
+    {
+      "rule_id": "mihomo.vless.encryption",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:vless.encryption"
+      },
+      "segments": [
+        {
+          "range": ">= 1.19.32",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "note": "proxies[].encryption；非法值会被拒绝（区别于未知键的静默忽略）。写成 none/空 → 静默无效、运行期才失败"
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 1.19.32",
+          "why": "引入版本未查证"
+        }
+      ],
+      "evidence": [
+        "e-vlessenc-runtime",
+        "e-vlessenc-discriminator"
+      ]
+    },
+    {
+      "rule_id": "singbox.vless.encryption.never",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "feature": "standard:vless.encryption"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "KERNEL_NEVER_SUPPORTED",
+          "note": "VLESSUser 只有 Name/UUID/Flow，出站连 users[] 都没有；DisallowUnknownFields 下连 encryption:\"none\" 都拒"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-vlessenc-runtime"
+      ]
+    },
+    {
+      "rule_id": "xray.combo.ss_reality",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:shadowsocks",
+        "all_of_features": [
+          "standard:reality"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "note": "回环实测通过; 错 publicKey 必失败 → reality 真被校验"
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-cross-matrix"
+      ]
+    },
+    {
+      "rule_id": "mihomo.combo.ss_reality",
+      "target": {
+        "kernel": "mihomo",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:shadowsocks",
+        "all_of_features": [
+          "standard:reality"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "silent_ignore",
+          "losses": [
+            {
+              "feature": "standard:reality",
+              "what": "ss 上不存在 reality-opts 字段 → 静默丢弃; 打 reality 服务端必失败、打裸 ss 服务端成功",
+              "impact": "SECURITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-cross-matrix"
+      ]
+    },
+    {
+      "rule_id": "xray.combo.ws_reality",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "all_of_features": [
+          "standard:reality",
+          "standard:transport.ws"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "UNSUPPORTED",
+            "runtime": "UNSUPPORTED"
+          },
+          "failure_mode": "hard_error",
+          "reason_code": "SEMANTIC_MISMATCH",
+          "note": "REALITY only supports RAW, XHTTP and gRPC for now."
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-cross-matrix"
+      ]
+    },
+    {
+      "rule_id": "xray.combo.flow_without_tls",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "all_of_features": [
+          "standard:flow",
+          "standard:transport.tcp"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "runtime_fail",
+          "reason_code": "RUNTIME_CONDITION_NOT_MET",
+          "losses": [
+            {
+              "feature": "standard:flow",
+              "what": "xtls-rprx-vision 在 security∉{tls,reality} 时配置层通过、运行期才报错",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-cross-matrix"
+      ]
+    },
+    {
+      "rule_id": "xray.combo.xhttp_muxcool",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "all_of_features": [
+          "standard:mux",
+          "standard:xhttp"
+        ]
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED_WITH_LOSS"
+          },
+          "failure_mode": "runtime_fail",
+          "reason_code": "SEMANTIC_MISMATCH",
+          "losses": [
+            {
+              "feature": "standard:mux",
+              "what": "XHTTP 与 mux.cool 同开会运行期失败: common/mux: unexpected network TCP（新版服务端只接受纯 XUDP）",
+              "impact": "CONNECTIVITY"
+            }
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-cross-matrix"
+      ]
+    },
+    {
+      "rule_id": "xray.protocol.hysteria2",
+      "target": {
+        "kernel": "xray",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:hysteria2"
+      },
+      "segments": [
+        {
+          "range": ">= 26.3.27",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED"
+          },
+          "note": "Xray 的**出站**协议名是 hysteria（settings.version=2 即 Hysteria2），传输写 streamSettings.network=hysteria；实测端到端 204"
+        }
+      ],
+      "transition": "UNKNOWN",
+      "unknown_range": [
+        {
+          "range": "< 26.3.27",
+          "why": "未逐版验证；该特性较新"
+        }
+      ],
+      "evidence": [
+        "e-xray-hysteria2-outbound"
+      ]
+    }
+  ],
+  "uri_rules": [
+    {
+      "uri_rule_id": "uri.vless.reality",
+      "scheme": "vless",
+      "feature": "standard:reality",
+      "representation": "FULL",
+      "evidence": [
+        "e-xray-reality-combo"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.vless.xhttp",
+      "scheme": "vless",
+      "feature": "standard:xhttp",
+      "representation": "FULL",
+      "evidence": [
+        "e-xray-h2-err"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.vless.ech",
+      "scheme": "vless",
+      "feature": "standard:ech",
+      "representation": "PARTIAL",
+      "loss": [
+        {
+          "field": "standard:ech.query_server_name",
+          "what": "ech 参数只带 ConfigList，查询域名等需另行约定"
+        }
+      ],
+      "spec_added_at": "2025-07-26",
+      "evidence": [
+        "e-singbox-ech-pem"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.ss.reality",
+      "scheme": "ss",
+      "feature": "standard:reality",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:reality.public_key",
+          "what": "ss:// (SIP002) 无法表达 reality 参数"
+        },
+        {
+          "field": "standard:reality.short_id",
+          "what": "同上"
+        },
+        {
+          "field": "standard:reality.server_names",
+          "what": "同上"
+        }
+      ],
+      "workaround": "本项目 vendor 扩展: fragment 里带 mi1314cat 参数（非标准，需对端认识）",
+      "evidence": [
+        "e-sip002"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.vless.mux",
+      "scheme": "vless",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.vmess.mux",
+      "scheme": "vmess",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.trojan.mux",
+      "scheme": "trojan",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.ss.mux",
+      "scheme": "ss",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.hysteria2.mux",
+      "scheme": "hysteria2",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.tuic.mux",
+      "scheme": "tuic",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.anytls.mux",
+      "scheme": "anytls",
+      "feature": "standard:mux",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:mux.enabled",
+          "what": "分享链接规范里没有 mux 参数（客户端私有扩展）, 导入即丢失"
+        },
+        {
+          "field": "standard:mux.protocol",
+          "what": "mux 实现名（mux.cool/smux/h2mux）无法从链接表达"
+        }
+      ],
+      "evidence": [
+        "e-xray-mux-doc"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.vless.encryption",
+      "scheme": "vless",
+      "feature": "standard:vless.encryption",
+      "representation": "FULL",
+      "carrier": {
+        "keys": [
+          "encryption"
+        ]
+      },
+      "spec_added_at": null,
+      "note": "encryption 是 #716 规范里的 VLESS 必填字段（默认 none）, vless:// 能完整表达; 但后量子取值 mlkem768x25519plus… 的确切进规范时间未核实 → spec_added_at 留 null（UNKNOWN, 不猜）。老客户端按 SIP002 精神静默忽略不认识的取值 → 加密能力降级, 而不是 URI 表达不了。",
+      "evidence": [
+        "e-xray-sharelink-encryption",
+        "e-vlessenc-runtime"
+      ]
+    }
+  ]
+}
