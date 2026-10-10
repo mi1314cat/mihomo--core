@@ -476,10 +476,17 @@ m_naming_py() {
     printf '%s' "src/lib/naming.py"
 }
 
+# M_ROOT 已经设过就尊重它（闸门/测试要指向临时目录），否则按安装根推断。
+# 不尊重的话"用临时缓存跑一遍"这种验证根本做不了 —— 它会去读真实缓存，
+# 于是测试结果取决于这台机器在哪个国家（实测: 本地 🇺🇸 全绿, 换台机器 🇨🇳 全红）。
+m_root_dir() {
+    printf '%s' "${M_ROOT:-${SRV_ROOT:-${CLI_ROOT:-/root/catmi/mihomo}}}"
+}
+
 m_flag_emoji() {
     local py; py=$(m_naming_py)
     [[ -f "$py" ]] || return 0
-    M_ROOT="${SRV_ROOT:-${CLI_ROOT:-/root/catmi/mihomo}}" python3 "$py" flag 2>/dev/null
+    M_ROOT="$(m_root_dir)" python3 "$py" flag 2>/dev/null
 }
 
 # 名字里没有旗帜就补一个；有就原样返回。幂等, 可以重复调用。
@@ -488,8 +495,8 @@ m_with_flag() {
     [[ -n "$name" ]] || return 0
     local py; py=$(m_naming_py)
     if [[ -f "$py" ]]; then
-        M_ROOT="${SRV_ROOT:-${CLI_ROOT:-/root/catmi/mihomo}}" \
-            python3 "$py" ensure "$name" 2>/dev/null || printf '%s' "$name"
+        M_ROOT="$(m_root_dir)" python3 "$py" ensure "$name" 2>/dev/null \
+            || printf '%s' "$name"
     else
         printf '%s' "$name"
     fi

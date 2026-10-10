@@ -25,17 +25,21 @@ fi
 # ---- 2. m_node_tag 真的带旗帜（用临时缓存, 不联网）----
 TMPD=$(mktemp -d /tmp/.m-naming-XXXXXX)
 mkdir -p "$TMPD/share-state"
-printf '%s' "🇺🇸" > "$TMPD/share-state/flag"
+# ★ 旗帜写死成这个值, 断言也用它 —— 不能直接断言 "🇺🇸":
+#   第一版就是这么写的, 于是在本机 (🇺🇸) 全绿、在另一台机器 (🇨🇳) 全红,
+#   而代码是同一份。闸门的结果不许取决于跑在哪台机器上。
+FLAG="🇺🇸"
+printf '%s' "$FLAG" > "$TMPD/share-state/flag"
 run_tag() { # <M_TAG_PREFIX> <参数…>
     local pfx="$1"; shift
     M_ROOT="$TMPD" M_TAG_PREFIX="$pfx" SELF_DIR="$PWD/src" \
         bash -c 'source src/lib/env.sh 2>/dev/null; m_node_tag "$@"' _ "$@" 2>/dev/null
 }
 GOT=$(run_tag m AnyTLS 01 tls)
-[[ "$GOT" == "🇺🇸 mAnyTLS01-TLS" ]] && ok "m_node_tag 带旗帜 ($GOT)" \
+[[ "$GOT" == "$FLAG mAnyTLS01-TLS" ]] && ok "m_node_tag 带旗帜 ($GOT)" \
     || bad "m_node_tag 带旗帜 (得到 '$GOT')"
 GOT=$(run_tag m VLESS 12 reality XHTTP CDN)
-[[ "$GOT" == "🇺🇸 mVLESS12-REALITY-XHTTP-CDN" ]] && ok "带后缀的形态也正确 ($GOT)" \
+[[ "$GOT" == "$FLAG mVLESS12-REALITY-XHTTP-CDN" ]] && ok "带后缀的形态也正确 ($GOT)" \
     || bad "带后缀的形态 ($GOT)"
 # 幂等: 同一个名字过两遍不许叠成两个旗帜
 TWICE=$(M_ROOT="$TMPD" bash -c 'source src/lib/env.sh 2>/dev/null; a=$(m_node_tag AnyTLS 01 tls); m_with_flag "$a"' 2>/dev/null)
@@ -47,7 +51,7 @@ GOT=$(M_ROOT="$TMPD" M_SKIP_FLAG=1 bash -c 'source src/lib/env.sh 2>/dev/null; m
     || bad "M_SKIP_FLAG=1 (得到 '$GOT')"
 # 前缀可改（M_TAG_PREFIX）
 GOT=$(run_tag "hk-" AnyTLS 01 tls)
-[[ "$GOT" == "🇺🇸 hk-AnyTLS01-TLS" ]] && ok "前缀可自定义 ($GOT)" \
+[[ "$GOT" == "$FLAG hk-AnyTLS01-TLS" ]] && ok "前缀可自定义 ($GOT)" \
     || bad "前缀可自定义 (得到 '$GOT')"
 
 # ---- 3. 客户端加订阅前缀时, 旗帜必须留在最前面 ----
