@@ -463,6 +463,38 @@ m_cert_gc() {
 #
 # 统一前缀 m: 客户端里 mihomo-core 生成的节点一律以 m 开头, 和别的项目/手工
 # 加的节点一眼分得开。要改前缀设 M_TAG_PREFIX 即可, 留空则不加。
+# ---------------------------------------------------------------- 旗帜
+#
+# 旗帜: **它是服务器的属性, 不是名字的一部分** —— 客户端按订阅名改写
+# 节点名时会经过它, 一不小心就抹掉了 (踩过: 用户改个短名字, 旗帜没了)。
+# 实现只有一份, 在 src/lib/naming.py; 这里只是 shell 包装。
+m_naming_py() {
+    local d
+    for d in "${SELF_DIR:-}/lib" "${SRC_LIB:-}" "$(dirname "${BASH_SOURCE[0]:-$0}")"; do
+        [[ -n "$d" && -f "$d/naming.py" ]] && { printf '%s' "$d/naming.py"; return 0; }
+    done
+    printf '%s' "src/lib/naming.py"
+}
+
+m_flag_emoji() {
+    local py; py=$(m_naming_py)
+    [[ -f "$py" ]] || return 0
+    M_ROOT="${SRV_ROOT:-${CLI_ROOT:-/root/catmi/mihomo}}" python3 "$py" flag 2>/dev/null
+}
+
+# 名字里没有旗帜就补一个；有就原样返回。幂等, 可以重复调用。
+m_with_flag() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || return 0
+    local py; py=$(m_naming_py)
+    if [[ -f "$py" ]]; then
+        M_ROOT="${SRV_ROOT:-${CLI_ROOT:-/root/catmi/mihomo}}" \
+            python3 "$py" ensure "$name" 2>/dev/null || printf '%s' "$name"
+    else
+        printf '%s' "$name"
+    fi
+}
+
 m_node_tag() {
     local proto="$1" idx="$2" form="${3:-plain}"
     # 第 4 个之后**全部**并进 extra, 不能只取 $4。
@@ -516,6 +548,13 @@ m_node_tag() {
     else
         tag="${pfx}${proto}${idx}-${base}"
     fi
+    # ★ 旗帜在这里加, 是**唯一出口** —— 节点名有四个渲染出口 (listener /
+    #   client yaml / 分享链接 / 列表显示), 全都经过这个函数, 所以一处就够。
+    #   实测 (RN 真机) 之前是 `mAnyTLS01-TLS`: 多台服务器都叫这个名, 客户端里
+    #   根本分不出哪条是哪个地区的。
+    #   加在最前面, 且**幂等** —— m_node_tag 会被重复调用 (兜底分支、重建路径),
+    #   叠成两个旗帜比不加还糟。
+    tag=$(m_with_flag "$tag")
     printf -- "%s\n" "$tag"
 }
 

@@ -18,6 +18,7 @@ src/lib/envtool.py
 src/lib/fw.sh
 src/lib/lan_dispatch.sh
 src/lib/merge.py
+src/lib/naming.py
 src/lib/portcheck.sh
 src/lib/preset.sh
 src/lib/rules_bind.sh

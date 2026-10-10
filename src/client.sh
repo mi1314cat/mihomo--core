@@ -232,7 +232,7 @@ node_prefix_names() {   # <provider 文件> <前缀>
     local f="$1" tag="$2"
     [[ -f "$f" && -n "$tag" ]] || return 0
     python3 - "$f" "$tag" <<'PY'
-import sys, yaml
+import re, sys, yaml
 path, tag = sys.argv[1], sys.argv[2]
 try:
     d = yaml.safe_load(open(path, encoding="utf-8")) or {}
@@ -241,14 +241,28 @@ except Exception:
 ps = d.get("proxies")
 if not isinstance(ps, list):
     sys.exit(0)
+
+# 旗帜 = 两个连着的区域指示符号。服务端生成的节点名形如
+# "🇺🇸 mAnyTLS01-TLS", 加订阅名前缀时必须**加在旗帜之后**:
+#   🇺🇸 ds-mAnyTLS01-TLS     ← 对
+#   ds-🇺🇸 mAnyTLS01-TLS     ← 错 (旗帜跑到名字中间, 列表里
+#                                              看不出地区, 而且前缀排序全乱)
+# 认不出来就按老规矩加在最前面 —— 从别的来源（无旗帜的订阅/手工节点）导入
+# 时行为和以前一字不差。
+FLAG = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
 changed = 0
 for p in ps:
     if not isinstance(p, dict):
         continue
     n = p.get("name")
-    if not isinstance(n, str) or not n or n.startswith(tag + "-"):
+    if not isinstance(n, str) or not n:
         continue
-    p["name"] = "%s-%s" % (tag, n)
+    m = FLAG.match(n)
+    flag = (m.group(0) + " ") if m else ""
+    body = n[m.end():].lstrip() if m else n
+    if body.startswith(tag + "-"):        # 幂等: 已经加过前缀
+        continue
+    p["name"] = "%s%s-%s" % (flag, tag, body)
     changed += 1
 if changed:
     yaml.safe_dump(d, open(path, "w", encoding="utf-8"),
