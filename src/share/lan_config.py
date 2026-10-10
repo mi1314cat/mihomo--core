@@ -35,6 +35,13 @@ import os
 import re
 import sys
 
+# PyYAML 只在"改写组"这一步用得到 (项目里 build_sub.py / verify_sub.py 本来就
+# 依赖它)。缺了也不让整个分发挂掉: 那一步会退化成原样返回。
+try:
+    import yaml
+except ImportError:                                              # pragma: no cover
+    yaml = None
+
 # 分发前必须剥掉的段 —— 换台机器全都对不上:
 #   mixed-port / port / socks-port / redir-port / tproxy-port
 #       端口是接收设备自己的事, 带过去要么冲突要么把本机代理暴露出去
@@ -56,6 +63,15 @@ DROP_SECTIONS = (
     "mixed-port", "port", "socks-port", "redir-port", "tproxy-port",
     "allow-lan", "bind-address", "external-controller", "external-ui",
     "secret", "log-level", "mode", "profile",
+    # proxy-providers: 每一项都是 `type: file` + `path: ./providers/<hash>.yaml`
+    # —— 那是**发送端**的相对路径, 接收设备上根本不存在。实测 (真机, 把分发
+    # 出来的配置直接喂给 mihomo):
+    #     level=error msg="initial proxy provider <hash> error:
+    #         fswatch: watch /tmp/lantest/providers no such file or directory"
+    # 于是所有 `use: [<hash>]` 的组都是空的 —— 配置里明明有 17 个节点,
+    # 组里一个都没有, 用户看到的是"导入成功, 但没有可用节点"。
+    # 只删它还不够: 组的 `use:` 必须同时改写成具体节点名, 见 rewrite_group_use()。
+    "proxy-providers",
 )
 
 # 段内还要剥掉的键 —— 段本身有用 (要留着), 但这一行换台设备就是错的。
@@ -80,16 +96,113 @@ FRAGMENT_GLOBS = ("config.d/*.yaml", "providers/*.yaml")
 NODE_RE = re.compile(r"^\s*-\s*name:", re.M)
 
 
-def collect_fragments(confdir: str) -> str:
+def collect_fragments(confdir: str) -> tuple[str, dict]:
+    """返回 (片段文本, {provider 名: [节点名…]})。
+
+    provider 名取文件名去掉 .yaml —— 与 proxy-providers 里的键、以及
+    `providers/<hash>.yaml` 的文件名三者一致 (实测: 键 = 文件名 = 组里 use 的值)。
+    这份映射用来把 `use: [<provider>]` 改写成具体节点名。
+    """
     merged = ""
+    provider_nodes: dict[str, list] = {}
     for pat in FRAGMENT_GLOBS:
         for f in sorted(glob.glob(os.path.join(confdir, pat))):
             try:
                 with open(f, encoding="utf-8") as fh:
-                    merged += fh.read() + "\n"
+                    body = fh.read()
             except OSError as e:
                 sys.stderr.write(f"跳过 {f}: {e}\n")
-    return merged
+                continue
+            merged += body + "\n"
+            if os.path.basename(os.path.dirname(f)) != "providers":
+                continue
+            stem = os.path.basename(f)[:-5]
+            try:
+                doc = yaml.safe_load(body) or {}
+                names = [p.get("name") for p in (doc.get("proxies") or [])
+                         if isinstance(p, dict) and p.get("name")]
+            except yaml.YAMLError:
+                names = []
+            if names:
+                provider_nodes[stem] = names
+    return merged, provider_nodes
+
+
+def rewrite_group_use(main_text: str, provider_nodes: dict) -> str:
+    """把 `use: [<provider>]` 改写成具体节点名, 让接收设备真的有节点可用。
+
+    为什么必须做: `proxy-providers` 被剥掉之后 (它的 path 是发送端的相对路径),
+    组里的 `use:` 指向一个不存在的 provider —— 组是空的。而节点其实就在配置
+    末尾的 `proxies:` 里, 只是没有任何组引用它们。
+
+    做法: 用 PyYAML 解析主配置 → 只改 proxy-groups → 把这一段**重新 dump**
+    后贴回原文 (其余部分仍是原始文本, 注释与顺序不动)。
+    解析不了就原样返回, 并在 stderr 说明 —— 分发一份"组是空的"配置,
+    也好过因为一个格式问题整个分发不可用。
+    """
+    if not provider_nodes:
+        return main_text
+    try:
+        doc = yaml.safe_load(main_text) or {}
+    except yaml.YAMLError as e:
+        sys.stderr.write(f"主配置解析失败, 跳过组改写: {e}\n")
+        return main_text
+    groups = doc.get("proxy-groups")
+    if not isinstance(groups, list) or not groups:
+        return main_text
+
+    changed = False
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        used = g.pop("use", None)
+        if not used:
+            continue
+        used = used if isinstance(used, list) else [used]
+        names: list = []
+        for prov in used:
+            got = provider_nodes.get(str(prov))
+            if not got:
+                sys.stderr.write(f"组 {g.get('name')} 引用的 provider 没有节点: {prov}\n")
+                continue
+            for n in got:
+                if n not in names:
+                    names.append(n)
+        if names:
+            # 保持原有的 proxies 在前, 追加 provider 里的节点 (去重)
+            rest = [x for x in (g.get("proxies") or []) if x not in names]
+            g["proxies"] = rest + names
+            changed = True
+    if not changed:
+        return main_text
+
+    lines = main_text.splitlines()
+    start = end = None
+    for i, line in enumerate(lines):
+        if line.startswith("proxy-groups:"):
+            start = i
+            continue
+        # 段结束 = 下一个顶层键。**列表项不算** —— `- name: ds` 也是顶格且带
+        # 冒号, 第一版按这个条件找, 于是只替换掉了 `proxy-groups:` 那一行,
+        # 原来的列表留在原地, 结果组出现两次 (mihomo 直接报
+        # "ProxyGroup ds: duplicate group name")。
+        if start is not None and i > start and line and not line[0].isspace() \
+                and ":" in line and not line.lstrip().startswith("-"):
+            end = i
+            break
+    if start is None:
+        return main_text
+    if end is None:
+        end = len(lines)
+    dumped = yaml.safe_dump(groups, allow_unicode=True, sort_keys=False,
+                            default_flow_style=False, width=4096).rstrip()
+    note = ("# proxy-groups: `use: [provider]` 已展开成具体节点名 ——\n"
+            "# proxy-providers 的 path 是发送端本机路径, 接收设备上没有那个文件。\n")
+    # ★ dump 出来的是**列表本身**, 不带顶层键 —— 而这里替换掉的整段包含
+    #   `proxy-groups:` 那一行, 所以必须把键补回来, 否则组没有键头,
+    #   整段变成上一段的缩进内容 (第一次写就漏了, 输出里组直接消失)。
+    block = note + "proxy-groups:\n" + dumped
+    return "\n".join(lines[:start] + block.splitlines() + lines[end:])
 
 
 def strip_local_sections(main_text: str, nested=None) -> str:
@@ -142,9 +255,12 @@ def build(root: str) -> tuple[str, int]:
         except OSError as e:
             raise RuntimeError(f"读不到主配置 {main_path}: {e}") from e
 
-    merged = collect_fragments(confdir)
+    merged, provider_nodes = collect_fragments(confdir)
+    kept = strip_local_sections(main_text)
+    # 剥掉 proxy-providers 之后, 组里的 use 必须展开成节点名, 否则组是空的
+    kept = rewrite_group_use(kept, provider_nodes)
     # 节点片段拼在主配置之后 —— 规则仍以主配置为准 (Mihomo 先匹配先赢)
-    result = strip_local_sections(main_text) + "\n" + merged
+    result = kept + "\n" + merged
     return result, len(NODE_RE.findall(merged))
 
 
@@ -204,6 +320,76 @@ rules:
     ck("listen: 1.1.1.1" not in strip_local_sections(deep)
        and "listen: 1.2.3.4" in strip_local_sections(deep),
        "只剥 dns 的直接子键, 不误伤更深层的同名键")
+
+    # ---- 组改写: use: [provider] → 具体节点名 ----
+    # 剥掉 proxy-providers 之后, 组里 use 指向的 provider 在接收设备上不存在
+    # (path 是发送端的相对路径), 实测 mihomo 直接报
+    #   "initial proxy provider <hash> error: fswatch: watch .../providers no such file"
+    # 于是组是空的 —— 配置里有 17 个节点, 组里一个都没有。
+    if yaml is None:
+        ck(False, "需要 PyYAML 才能验证组改写")
+    else:
+        main = ("proxy-providers:\n"
+                "  prov-a:\n    type: file\n    path: ./providers/prov-a.yaml\n"
+                "proxy-groups:\n"
+                "- name: ds\n  type: select\n  use:\n  - prov-a\n"
+                "- name: AUTO\n  type: url-test\n  use:\n  - prov-a\n"
+                "rules:\n- MATCH,PROXY\n")
+        kept2 = strip_local_sections(main)
+        ck("proxy-providers" not in kept2, "proxy-providers 整段剥掉（path 是发送端的）")
+        out = rewrite_group_use(kept2, {"prov-a": ["n1", "n2"]})
+        doc = yaml.safe_load(out)
+        names = [g.get("name") for g in doc["proxy-groups"]
+                 if isinstance(g, dict)]
+        ck(names == ["ds", "AUTO"], f"组没有重复/丢失 ({names})")
+        ck(all(g.get("proxies") == ["n1", "n2"] for g in doc["proxy-groups"]),
+           "use 已展开成具体节点名")
+        ck(all("use" not in g for g in doc["proxy-groups"]), "use 字段已移除")
+        ck(doc.get("rules") == ["MATCH,PROXY"] and "proxy-groups:" in out,
+           "段尾判定正确（后面的 rules 没被吞掉, 键头还在）")
+        ck(rewrite_group_use(kept2, {}) == kept2, "没有 provider 时原样返回")
+        ck(rewrite_group_use("proxy-groups:\n- name: a\n  type: select\n", {"p": ["n"]})
+           == "proxy-groups:\n- name: a\n  type: select\n", "没有 use 时不改动")
+
+        # ★ 端到端（build 级）: 光验函数不够 —— 函数对但**没接上**是这里的
+        #   典型 bug（本项目已经栽过好几次）。所以真造一份 conf/ 跑 build()。
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="lan-cfg-check-")
+        try:
+            os.makedirs(os.path.join(tmp, "conf", "providers"), exist_ok=True)
+            with open(os.path.join(tmp, "conf", "config.yaml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("mixed-port: 7890\ndns:\n  enable: true\n"
+                         "  listen: 0.0.0.0:1053\n"
+                         "proxy-providers:\n  prov-a:\n    type: file\n"
+                         "    path: ./providers/prov-a.yaml\n"
+                         "proxy-groups:\n- name: ds\n  type: select\n"
+                         "  use:\n  - prov-a\n"
+                         "rules:\n- MATCH,PROXY\n")
+            with open(os.path.join(tmp, "conf", "providers", "prov-a.yaml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("proxies:\n- name: n1\n  type: vless\n"
+                         "- name: n2\n  type: vless\n")
+            text, n = build(tmp)
+            doc2 = yaml.safe_load(text)
+            if not isinstance(doc2, dict):
+                doc2 = {}
+            ck(n == 2, f"build() 数出节点数 ({n})")
+            ck("listen" not in text, "build() 输出里没有 dns.listen")
+            # 断言用解析后的文档, 不用子串 —— 输出里的说明注释本身也写着
+            # "proxy-providers" 这个词, 子串检查会把自己的注释当成泄漏。
+            ck("proxy-providers" not in doc2,
+               "build() 输出里没有 proxy-providers 段")
+            groups2 = [g for g in (doc2.get("proxy-groups") or [])
+                       if isinstance(g, dict)]
+            ck([g.get("proxies") for g in groups2] == [["n1", "n2"]],
+               "build() 真的接上了组改写（不是只有函数对）")
+            ck([p.get("name") for p in (doc2.get("proxies") or [])] == ["n1", "n2"],
+               "节点片段仍拼在配置里")
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
     print(f"\n脱敏自检: {'PASS' if bad == 0 else str(bad) + ' 项失败'}")
     return 1 if bad else 0
 
