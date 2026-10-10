@@ -153,7 +153,7 @@ run_gate "分享产物"     bash tools/check_share_products.sh
 #   闸门故意同时覆盖带旗帜名与裸名两种输入。真内核层用 MIHOMO_BIN 启用。
 run_gate "对角线(分享→客户端)" bash tools/check_diagonal.sh
 
-printf "\n${CYAN}── 幽灵函数 (定义了但没人调) ──${RESET}\n"
+printf "\n${CYAN}── 函数接线 (幽灵函数 / 未定义调用) ──${RESET}\n"
 phantom_scan() {
     python3 - <<'PY'
 import io, os, re, sys
@@ -332,6 +332,19 @@ PY
 run_gate "预置不越权"   preset_scope
 
 run_gate "幽灵函数"     phantom_scan
+
+# ★ 上面查的是"定义了但没人调"; 这里查**反过来**的那一半: "调了但没定义"。
+#
+# 已经真实翻车: src/conf/hysteria2.sh 有 7 处调用 `extract_cert_domain`,
+# 而真名是 `cert_extract_domain` (src/lib/cert.sh:230) —— 少了 `cert_` 前缀,
+# 这个名字在整个 git 历史里从未存在过。后果是**静默失败**: bash 只在执行到
+# 那一行时才 command not found, 而调用点写着 `$(... 2>/dev/null)`, 报错被吞,
+# 面板照常打印"已套用", 重建出来的 hy2 节点 SNI 是空的。
+#
+# 定义与调用分处两个文件是本项目的正常用法 (各 lib 互相 source), 所以
+# bash -n / shellcheck 都看不见这类断线, 只能机械地把"命令位置的名字"和
+# "全仓库的定义"对一遍。
+run_gate "调用有定义"   bash tools/check_called_defined.sh
 
 printf "\n"
 if (( failed )); then

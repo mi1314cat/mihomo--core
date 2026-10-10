@@ -429,7 +429,7 @@ safe_read_prompt() {
 check_copy_staleness() {
     local cert="${1:-}" src
     [[ -n "$cert" && -f "$cert" && "$cert" == "$CERT_DIR"/* ]] || return 0
-    local dom; dom=$(extract_cert_domain "$cert")
+    local dom; dom=$(cert_extract_domain "$cert")
     local src_crt="$HOME_WEBCERTS/${dom}_cert.pem"
     src_key="$HOME_WEBCERTS/${dom}_key.pem"
     [[ -f "$src_crt" ]] || return 0
@@ -616,7 +616,7 @@ load_server_meta() {
     CERT_FILE=$(grep -E '^[[:space:]]*certificate:' "$in_file" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
     KEY_FILE=$(grep -E '^[[:space:]]*private-key:' "$in_file" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
     if [[ -f "$CERT_FILE" ]]; then
-        CERT_DOMAIN=$(extract_cert_domain "$CERT_FILE")
+        CERT_DOMAIN=$(cert_extract_domain "$CERT_FILE")
         if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
     else
         CERT_DOMAIN=$(basename "$CERT_FILE" | sed 's/cert-//; s/\.crt//')
@@ -648,7 +648,7 @@ add_config() {
     # -> 真/外部证书必须复制副本到 conf/certs/
     if [[ "$CERT_FILE" != "$CERT_DIR"/* ]]; then
         local cdom dst_crt dst_key
-        dom=$(extract_cert_domain "$CERT_FILE")
+        dom=$(cert_extract_domain "$CERT_FILE")
         dst_crt="$CERT_DIR/cert-$dom.crt"; dst_key="$CERT_DIR/key-$dom.key"
         cp -f "$CERT_FILE" "$dst_crt" && cp -f "$KEY_FILE" "$dst_key"
         SRC_CERT="$CERT_FILE"; SRC_KEY="$KEY_FILE"
@@ -749,7 +749,7 @@ list_configs() {
         local cert
         cert=$(grep -E '^[[:space:]]*certificate:' "$f" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
         local dom
-        dom=$(extract_cert_domain "$cert" 2>/dev/null)
+        dom=$(cert_extract_domain "$cert" 2>/dev/null)
 
         check_copy_staleness "$cert" 2>/dev/null || cert="$cert  ⚠副本已过期(源已续期)"
         local obfs
@@ -813,7 +813,7 @@ delete_config() {
         # 只删本脚本自签的证书; 外部证书保留原文件
         if [[ "$cert_file" == "$CERT_DIR"/cert-* ]]; then
             local dom
-            dom=$(extract_cert_domain "$cert_file")
+            dom=$(cert_extract_domain "$cert_file")
             # 即使是自签, 也可能有别的节点在用同一份 —— 实测一个 cert 被
             # 5 个节点共用, 删掉会让其余 TLS 节点全部 parse certificate
             # failed, 而面板当时还显示"运行中"。m_cert_gc 会先查引用。
@@ -857,7 +857,7 @@ rebuild_client() {
 
     # 先刷新可能过期的证书副本
     local dom src_crt src_key syncc
-    dom=$(extract_cert_domain "$CERT_FILE")
+    dom=$(cert_extract_domain "$CERT_FILE")
     src_crt="$HOME_WEBCERTS/${dom}_cert.pem"; src_key="$HOME_WEBCERTS/${dom}_key.pem"
     if [[ -f "$src_crt" && "$CERT_FILE" == "$CERT_DIR"/* ]] && ! cmp -s "$src_crt" "$CERT_FILE"; then
         cp -f "$src_crt" "$CERT_FILE" && cp -f "$src_key" "$KEY_FILE"
@@ -893,7 +893,7 @@ rebuild_client_silent() {
     load_server_meta "$in_file" || return 1
 
     local dom src_crt src_key
-    dom=$(extract_cert_domain "$CERT_FILE" 2>/dev/null)
+    dom=$(cert_extract_domain "$CERT_FILE" 2>/dev/null)
     src_crt="$HOME_WEBCERTS/${dom}_cert.pem"; src_key="$HOME_WEBCERTS/${dom}_key.pem"
     [[ -f "$src_crt" && "$CERT_FILE" == "$CERT_DIR"/* ]] && { cmp -s "$src_crt" "$CERT_FILE" || { cp -f "$src_crt" "$CERT_FILE"; cp -f "$src_key" "$KEY_FILE"; }; }
 
