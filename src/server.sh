@@ -1348,10 +1348,18 @@ _ca_pick_family() {
     print_ok "连接地址已设为 $(m_addr_family_label)"
 
     # 换地址族要改产物里的 server 和分享链接里的 @host
+    #
+    # ★ 旧地址必须按"要切到哪一族"取**另一族**的地址。
+    #   原来固定写 oldip=$(m_addr4_real): 从 IPv6 切回 IPv4 时, 它本来就等于
+    #   newip, 下面整块判断被跳过 —— 状态文件改成了 v4、产物一个字节没动,
+    #   而且一句话都不说 (静默失败: 用户以为切了, 客户端里还是旧地址)。
     local want newip oldip n_art
     want=$(m_addr_family_get)
-    if [[ "$want" == "v6" ]]; then newip=$(m_addr6_real 2>/dev/null); else newip=$(m_addr4_real 2>/dev/null); fi
-    oldip=$(m_addr4_real 2>/dev/null)
+    if [[ "$want" == "v6" ]]; then
+        newip=$(m_addr6_real 2>/dev/null); oldip=$(m_addr4_real 2>/dev/null)
+    else
+        newip=$(m_addr4_real 2>/dev/null); oldip=$(m_addr6_real 2>/dev/null)
+    fi
     n_art=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
     if [[ -n "$newip" && -n "$oldip" && "$newip" != "$oldip" && "$n_art" -gt 0 ]]; then
         echo >&2
@@ -1362,6 +1370,11 @@ _ca_pick_family() {
             local n; n=$(m_artifacts_apply_addr "$newip" "$oldip")
             (( n > 0 )) && print_ok "已更新 $n 处产物与分享链接" || print_warn "没有需要改的产物"
             _ca_regen_sub
+            # 已发出去的分享/订阅链接里存的是**内容快照**, 不刷新的话客户端拉到的
+            # 还是旧地址族的配置 (指纹与旗帜那两处都刷了, 这里原来漏了)。
+            if declare -F share_refresh_all >/dev/null 2>&1; then
+                share_refresh_all >/dev/null 2>&1 && print_ok "分享链接内容已刷新"
+            fi
         else
             print_info "已保留现有产物 (以后生成的用新地址)"
         fi

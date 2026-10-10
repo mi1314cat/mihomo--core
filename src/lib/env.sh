@@ -1654,7 +1654,7 @@ m_artifacts_apply_flag() { # [1=只报告]
     printf '%s' "${n:-0}"
 }
 
-# 把产物里的 server: / 分享链接的 @host:port 统一换成 <ip>。
+# 把产物里的 server: / 分享链接的 @host:port / 订阅 URL 的主机统一换成 <ip>。
 #
 # CDN 节点例外: 它们连的是 Cloudflare 边缘域名而不是源站 IP, 换地址族不该
 # 动它们 —— 改了反而连不上。所以只改当前确实等于旧地址的那些。
@@ -1674,16 +1674,32 @@ m_artifacts_apply_addr() { # <新IP> <旧IP> [1=不交互]
     #   与端口的冒号混在一起, 客户端根本解析不出主机地址。share.sh 里的
     #   _share_host() 本来就管这件事, 这里必须用同一套规则 ——
     #   另写一份就是第二个真源, 迟早漂移。
-    local newh
+    #
+    # ★ 匹配时也必须用**链接里实际写着的形态**。旧地址是 IPv6 时, 链接里写的是
+    #   @[2001:db8::1]:443 —— 拿裸地址去匹配永远不中: 切 v6→v4 时 YAML 改得到、
+    #   链接一处不改, 产物和链接对不上, 而且不报错。方括号进正则要转义, 否则
+    #   [2001:db8::1] 会被当成字符组。
+    local newh oh
     if declare -F _share_host >/dev/null 2>&1; then
-        newh=$(_share_host "$new")
+        newh=$(_share_host "$new"); oh=$(_share_host "$old")
     else
         case "$new" in *:*) newh="[$new]" ;; *) newh="$new" ;; esac
+        case "$old" in *:*) oh="[$old]" ;; *) oh="$old" ;; esac
     fi
-    local ore; ore=${old//./\\.}
+    local ore; ore=${oh//./\\.}; ore=${ore//\[/\\[}; ore=${ore//\]/\\]}
     for f in "$SRV_OUT"/*_share-*.txt; do
         grep -qE "@${ore}([:?][0-9]*)?" "$f" 2>/dev/null || continue
         sed -i -E "s/@${ore}([:?])/@${newh}\\1/g" "$f" 2>/dev/null || continue
+        n=$((n + 1))
+    done
+    # 订阅 URL (share_tag-*.txt): 主机在 http://<host>:<port>/ 里。
+    #
+    # ★ 这一份产物以前完全不在扫描范围内 (只 glob 了 *_share-*.txt, 而订阅 URL
+    #   叫 share_tag-*.txt): 客户端配置与分享链接都切到新族了, 订阅地址还停在
+    #   旧族 —— 客户端拿旧地址去拉订阅直接连不上, 现场看不出是谁的问题。
+    for f in "$SRV_OUT"/share_tag-*.txt; do
+        grep -qE "//${ore}([:/])" "$f" 2>/dev/null || continue
+        sed -i -E "s|//${ore}([:/])|//${newh}\\1|g" "$f" 2>/dev/null || continue
         n=$((n + 1))
     done
     shopt -u nullglob
