@@ -456,8 +456,10 @@ render_client_yaml() {
         echo "    type: hysteria2"
         echo "    server: $server_ip"
         echo "    port: $port"
-        echo "    up: \"50 Mbps\""
-        echo "    down: \"200 Mbps\""
+        # 带宽: 默认 上行 60 / 下行 200 (用户偏好 150~200), 用户设过就以用户的为准。
+        # ⚠ 裸数字 = Mbps。写成 "60 mbps" (小写 m) 不匹配内核正则 → 静默变 0。
+        echo "    up: \"$(m_hy2_up)\""
+        echo "    down: \"$(m_hy2_down)\""
         echo "    password: $password"
         echo "    sni: $CERT_DOMAIN"
         if [[ "$CERT_TRUSTED" == "true" || -z "$CERT_PIN" ]]; then
@@ -477,18 +479,29 @@ render_client_yaml() {
 hy2_link() {
     local pw="$1" ip="$2" port="$3" num="$4"
     calc_pin "$CERT_FILE"
+    # ---- 带宽 (P-6: 上行 60 / 下行 150~200) ----
+    #
+    # ★ 参数名必须写 `up` / `down`: mihomo 的 hysteria2 URI 解析器只认这两个
+    #   (common/convert/converter.go 的 hysteria2 分支), `upmbps`/`downmbps`
+    #   是**已废弃的 hysteria v1** 才认的名字 —— 写在 hy2 链接里会被静默忽略
+    #   (实测: 旧链接的 upmbps=50 被 mihomo 整条丢掉, 客户端用默认值)。
+    #   两家内核认的名字不一样 (sing-box 面板认 upmbps/downmbps), 所以两个
+    #   都写: 各自取自己认识的那个, 多出来的是普通未知参数 (X 内核已实测
+    #   两家都不会因此报错)。
+    local up down upm downm
+    up=$(m_hy2_up); down=$(m_hy2_down); upm="$up"; downm="$down"
     local q obfs_q=""
     if [[ "$CERT_TRUSTED" == "true" ]]; then
-        q="sni=$CERT_DOMAIN&insecure=0&alpn=h3&upmbps=50&downmbps=200"
+        q="sni=$CERT_DOMAIN&insecure=0&alpn=h3&up=$up&down=$down&upmbps=$upm&downmbps=$downm"
     else
-        q="sni=$CERT_DOMAIN&alpn=h3&pin=$CERT_PIN&upmbps=50&downmbps=200"
+        q="sni=$CERT_DOMAIN&alpn=h3&pin=$CERT_PIN&up=$up&down=$down&upmbps=$upm&downmbps=$downm"
     fi
     # ---- obfs 分量 ----
     #
     # ★ 没有混淆时**一个字节都不写**。原来写 `&obfs=none`, 而 mihomo 只判
     #   `len(option.Obfs) > 0` 就要求 obfs-password:
     #       initial proxy provider error: proxy 0 error: missing obfs password
-    #   → **provider 0 节点**。最狠的是它"一票否决"整条订阅: 实测 1 条坏
+    #   → **provider 0 节点**。最狠的是它是"一票否决"整条订阅: 实测 1 条坏
     #   hy2 链接 + 8 条好链接放进同一份订阅 → 整条 0 节点, 好节点一起消失。
     #   不写 obfs 就是"没有混淆", 语义完全等价且不会被解析器拒绝。
     if [[ -n "$HY_OBFS" ]]; then

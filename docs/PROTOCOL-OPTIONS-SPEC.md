@@ -146,7 +146,8 @@ proxies:
   - name: Hysteria2-N
     type: hysteria2
     server/port/password/sni
-    up: "50 Mbps" ; down: "200 Mbps"    # 硬编码
+    up: "60" ; down: "200"              # 默认 上行 60 / 下行 150~200 (Mbps);
+                                        # 可在面板「客户端产物设置 → 6) hysteria2 带宽」改, 用户设过就以用户的为准
     skip-cert-verify: false   或   fingerprint: $CERT_PIN
     alpn: [h3]
 ```
@@ -371,7 +372,7 @@ proxies:
 | `port` | S | ✅ | `:43` | 无 omitempty；与 `ports` 至少要有一个，否则 `invalid port`（`:266-268`） |
 | `password` | S | (在 users) | `:48` | |
 | `sni` | S* | ❌ | `:53` | 非空覆盖 `server` 作为 TLS ServerName（`:165-168`） |
-| `up` / `down` | A | ✅ | `:46-47` | 现在硬编码 `"50 Mbps"`/`"200 Mbps"`（快照 `hysteria2.sh:445-446`）；语法（`100 Mbps` / `50 mbps` / 纯数字=Mbps）见 `common/utils/mbps.go:9-46` |
+| `up` / `down` | A | ✅ | `:46-47` | 默认 **上行 60 / 下行 200**（用户偏好 150~200，见 `M_HY2_UP_DEFAULT`/`M_HY2_DOWN_DEFAULT`），用户改过就用 `.hy2-bandwidth` 里的值；语法（`100 Mbps` / `50 mbps` / 纯数字=Mbps）见 `common/utils/mbps.go:9-46`。⚠️ 链接侧只认 `up=`/`down=`，`upmbps=`/`downmbps=` 是 hysteria v1 的名字（写了会被静默忽略） |
 | `obfs` / `obfs-password` | **A** | ✅ | `:49-50` | **完全对称**，枚举 `salamander` / `gecko`，见 §2.2.1 |
 | `obfs-min-packet-size` / `obfs-max-packet-size` | B | ✅ | `:51-52` | **仅 gecko 生效**（`:158-159`）；配 salamander 静默无效 |
 | `ports` | **A** | ❌ | `:44` | 原生端口跳跃，**比项目现在的 iptables DNAT 更优**；语法（最多 28 段）见 `common/utils/ranges.go:17-28` 与 `:65-87` |
@@ -1147,8 +1148,8 @@ proxies:
     sni: example.com
     obfs: salamander          # ⚠️ 与服务端逐字一致
     obfs-password: <同一个>
-    up: "50 Mbps"
-    down: "200 Mbps"
+    up: "60"
+    down: "200"
 ```
 菜单建议直接给 **关 / salamander / gecko** 三选一。⚠️ **不要**单独暴露 `obfs-password`（不配 `obfs` 时静默忽略，`adapter/outbound/hysteria2.go:149`）；`obfs-min/max-packet-size` 只在 gecko 下有意义（`:158-159`）。
 

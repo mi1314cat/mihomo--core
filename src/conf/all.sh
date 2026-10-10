@@ -1646,8 +1646,8 @@ proxies:
     password: $UUID
     sni: $SNI
     skip-cert-verify: $CERT_SKIP_VERIFY
-    up: "30"
-    down: "200"
+    up: "$(m_hy2_up)"
+    down: "$(m_hy2_down)"
 EOF
 }
 

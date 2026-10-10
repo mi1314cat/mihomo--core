@@ -1267,6 +1267,8 @@ client_artifact_menu() {
         echo >&2
         ui_kv_ascii "当前指纹"   "$(m_fp_get)"
         ui_kv_ascii "当前地址族" "$(m_addr_family_label)"
+        local _bu _bd; read -r _bu _bd <<<"$(m_hy2_bw_get)"
+        ui_kv_ascii "hy2 带宽" "上行 ${_bu} / 下行 ${_bd} Mbps"
         ui_kv_ascii "本机 IPv4"  "$(m_addr4_real 2>/dev/null || echo '(无)')"
         ui_kv_ascii "本机 IPv6"  "$(m_addr6_real  2>/dev/null || echo '(无)')"
         m_warp_active && print_warn "检测到 WARP/隧道接口 —— 其上的地址已排除, 不会被写进产物"
@@ -1278,6 +1280,7 @@ client_artifact_menu() {
         ui_menu 3 "导出全部节点与订阅链接"
         ui_menu 4 "清理陈旧产物 (孤儿 / 死链)"
         ui_menu 5 "给已有节点名补地区旗帜 (重写产物与分享链接)"
+        ui_menu 6 "hysteria2 带宽 (上行/下行, 默认 60/200)"
         ui_menu 0 "返回"
         printf "请选择: " >&2
         local c; read -r c || return 0
@@ -1288,6 +1291,7 @@ client_artifact_menu() {
             3) export_all_nodes ;;
             4) _ca_clean_orphan ;;
             5) _ca_apply_flag ;;
+            6) _ca_pick_hy2_bw ;;
             0) return 0 ;;
             *) ui_invalid "$c" ;;
         esac
@@ -1329,6 +1333,53 @@ _ca_apply_flag() {
         share_refresh_all >/dev/null 2>&1 && print_ok "分享链接内容已刷新"
     fi
     print_info "客户端下次更新订阅即可看到带旗帜的节点名"
+}
+
+# hysteria2 带宽 (上行/下行, Mbps)。
+#
+# 用户偏好: 上行 60 / 下行 150~200。默认 60/200, **但用户设过就以用户的为准**
+# (状态文件 .hy2-bandwidth, 新建节点与"同步改已有产物"两条路都读它)。
+#
+# ⚠ 单位与字段名不许写错 (跨内核对照结论):
+#   · YAML: 裸数字 = Mbps; "60 mbps" (小写 m) 不匹配内核正则 → **静默变 0**
+#   · 链接: mihomo 的 hy2 解析器只认 `up=`/`down=`; `upmbps=`/`downmbps=`
+#     是已废弃 hysteria v1 的名字 → 写了会被**静默忽略**(客户端用默认值)。
+_ca_pick_hy2_bw() {
+    print_title "hysteria2 带宽 (客户端产物)"
+    local up down; read -r up down <<<"$(m_hy2_bw_get)"
+    ui_kv_ascii "当前" "上行 ${up} Mbps / 下行 ${down} Mbps"
+    print_info "用户偏好: 上行 60 · 下行 150~200 (下行默认取 200)"
+    echo >&2
+    printf '  上行 Mbps [回车=%s]: ' "$up" >&2
+    local a; read -r a; a=$(clean_input "${a:-}"); [[ -n "$a" ]] && up="$a"
+    printf '  下行 Mbps [回车=%s]: ' "$down" >&2
+    local b; read -r b; b=$(clean_input "${b:-}"); [[ -n "$b" ]] && down="$b"
+
+    m_hy2_bw_set "$up" "$down" || {
+        print_error "数值不合法 (上行 ${up} / 下行 ${down})"
+        print_info "上行应在 $(sed 's/ /~/;s/$/ Mbps/' <<<"$M_HY2_UP_RANGE"), 下行应在 $(sed 's/ /~/;s/$/ Mbps/' <<<"$M_HY2_DOWN_RANGE")"
+        print_info "必须是纯数字 —— 写成 \"60 mbps\" 内核会**静默按 0** 处理"
+        return 1
+    }
+    print_ok "已设为 上行 ${up} / 下行 ${down} Mbps (只对之后新建的节点生效, 除非同步改已有产物)"
+
+    local n_art; n_art=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    (( n_art > 0 )) || return 0
+    local n; n=$(m_artifacts_apply_hy2_bw 1)      # 先只报告
+    if [[ "${n:-0}" == "0" ]]; then
+        print_ok "现有产物已经是这个带宽, 无需改动"
+        return 0
+    fi
+    printf "  要改 %s 处已有产物 (hysteria2 节点), 同步重生成订阅? ${DIM}[Y/n]: ${RESET}" "$n" >&2
+    local c; read -r c
+    case "$(clean_input "${c:-y}")" in n|N) print_info "已保留现有产物 (以后生成的用新值)"; return 0 ;; esac
+    n=$(m_artifacts_apply_hy2_bw)
+    (( n > 0 )) && print_ok "已更新 $n 处产物 (YAML 与分享链接)" || print_warn "没有需要改的产物"
+    _ca_regen_sub
+    # 已发出去的分享订阅内容也要跟着更新 (token 与地址不变)
+    if declare -F share_refresh_all >/dev/null 2>&1; then
+        share_refresh_all >/dev/null 2>&1 && print_ok "分享链接内容已刷新"
+    fi
 }
 
 _ca_pick_fp() {

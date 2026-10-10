@@ -274,5 +274,53 @@ else
     ok "hysteria2.sh 源码里没有 obfs=none"
 fi
 
+echo
+echo "== ④ hysteria2 带宽默认值 (上行 60 / 下行 150~200) =="
+# 用户偏好就是这一组数。两条红线:
+#   · 默认必须落在区间内 (上行 60 / 下行 200)
+#   · **不许硬编码覆盖用户自己的设置** —— 用户设过就读 .hy2-bandwidth
+#   · 参数名不许写错: mihomo 的 hy2 解析器只认 `up=`/`down=`, upmbps/downmbps
+#     是已废弃 hysteria v1 的名字 (写了会被**静默忽略** —— 实测踩过)
+BW="$TMP/bw"; mkdir -p "$BW"
+{
+    echo 'set -u'
+    echo 'calc_pin() { :; }'
+    echo '_uri_h() { printf "%s" "$1"; }'
+    echo 'CERT_FILE=""; CERT_TRUSTED="true"; CERT_DOMAIN="example.com"; CERT_PIN=""'
+    echo 'HY_OBFS=""; HY_OBFS_PASSWORD=""'
+    echo "SRV_ROOT=$BW"
+    # 真实实现 (不许用桩): 设置读取是"用户设了就以用户为准"的唯一实现
+    extract_fn m_hy2_bw_state_file "$ROOT/src/lib/env.sh"
+    extract_fn m_hy2_bw_get "$ROOT/src/lib/env.sh"
+    extract_fn m_hy2_up "$ROOT/src/lib/env.sh"
+    extract_fn m_hy2_down "$ROOT/src/lib/env.sh"
+    echo 'M_HY2_UP_DEFAULT=60; M_HY2_DOWN_DEFAULT=200'
+    echo 'M_HY2_UP_RANGE="30 100"; M_HY2_DOWN_RANGE="150 200"'
+    extract_fn hy2_link "$ROOT/src/conf/hysteria2.sh"
+    echo 'echo "DEFAULT=$(hy2_link pw 203.0.113.10 25682 01)"'
+    echo 'printf "45 170\n" > "$SRV_ROOT/.hy2-bandwidth"'
+    echo 'echo "USERSET=$(hy2_link pw 203.0.113.10 25682 01)"'
+} > "$BW/probe.sh"
+if bash "$BW/probe.sh" > "$BW/out" 2>"$BW/err"; then
+    DEF=$(grep '^DEFAULT=' "$BW/out" | cut -d= -f2-)
+    USR=$(grep '^USERSET=' "$BW/out" | cut -d= -f2-)
+    grep -q 'up=60&down=200' <<<"$DEF" && ok "默认链接带宽 = 上行 60 / 下行 200" \
+                                        || bad "默认带宽不对: $DEF"
+    grep -q 'upmbps=60&downmbps=200' <<<"$DEF" \
+        && ok "同时写了两家内核认识的参数名 (up/down + upmbps/downmbps)" \
+        || bad "缺 upmbps/downmbps (sing-box 系客户端会丢带宽)"
+    grep -q 'upmbps=50\|downmbps=50' <<<"$DEF" && bad "还在写旧的 50" || ok "旧的 50/200 已不再出现"
+    grep -q 'up=45&down=170' <<<"$USR" \
+        && ok "用户设过就用用户的 (45/170), 没有被默认值覆盖" \
+        || bad "用户设置被硬编码覆盖了: $USR"
+else
+    bad "带宽探针跑不起来 (见 $BW/err)"
+fi
+grep -q 'm_hy2_up' "$ROOT/src/conf/all.sh" \
+    && ok "批量生成 (all.sh) 也走同一组带宽值" || bad "all.sh 里还是写死的带宽"
+_hy2bw=$(grep -c 'm_hy2_up' "$ROOT/src/conf/hysteria2.sh" || true)
+(( _hy2bw >= 2 )) && ok "客户端 YAML 与分享链接都读同一处设置" \
+                  || bad "hysteria2.sh 里只有 $_hy2bw 处引用设置"
+
 printf "\n分享产物闸门: \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m\n" "$PASS" "$FAIL"
 exit $((FAIL > 0))

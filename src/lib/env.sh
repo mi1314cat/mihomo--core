@@ -741,6 +741,50 @@ m_auto_website() {   # <尝试次数-默认 3>  → stdout: 一个域名; 失败
 M_UTLS_FINGERPRINTS=(chrome firefox edge safari 360 qq ios android random randomized)
 M_DEFAULT_FP="chrome"
 
+# ---------- hysteria2 带宽 (上行/下行, 单位 Mbps) ----------
+#
+# 用户偏好: **上行 60, 下行 150~200**。默认取 60 / 200 (区间上沿), 但**不覆盖
+# 用户自己的设置**: 设过一次就写进状态文件, 之后一切生成路径都先读它。
+#
+# ⚠ 单位与字段名不许写错 (跨内核实测结论):
+#   · mihomo 的 hysteria2 URI 解析器只认**裸数字** `up` / `down` (单位 Mbps);
+#     `upmbps` / `downmbps` 只对已废弃的 hysteria v1 生效 —— 写在 hy2 链接里
+#     会被静默忽略 (客户端按自己的默认值跑, 没有任何报错)。
+#   · 客户端 YAML 里是 `up: "60"` / `down: "200"` (裸数字 = Mbps); 写成
+#     "60 mbps" (小写 m) 不匹配内核的正则, **静默变 0**。见 docs/PROTOCOL-OPTIONS-SPEC.md。
+M_HY2_UP_DEFAULT=60
+M_HY2_DOWN_DEFAULT=200
+# 区间下限/上限: 下行允许 150~200, 上行允许 30~100 (超出就是笔误)
+M_HY2_UP_RANGE="30 100"
+M_HY2_DOWN_RANGE="150 200"
+
+m_hy2_bw_state_file() { printf '%s' "${SRV_ROOT:-/root/catmi/mihomo}/.hy2-bandwidth"; }
+
+# 读一项: 返回 "<up> <down>"
+m_hy2_bw_get() {
+    local up="" down=""
+    if [[ -f "$(m_hy2_bw_state_file)" ]]; then
+        read -r up down < "$(m_hy2_bw_state_file)" 2>/dev/null || true
+    fi
+    [[ "$up" =~ ^[0-9]+$ ]] || up="$M_HY2_UP_DEFAULT"
+    [[ "$down" =~ ^[0-9]+$ ]] || down="$M_HY2_DOWN_DEFAULT"
+    printf '%s %s' "$up" "$down"
+}
+m_hy2_up()   { m_hy2_bw_get | awk '{print $1}'; }
+m_hy2_down() { m_hy2_bw_get | awk '{print $2}'; }
+
+# 写一项。两个都必须合法 (裸数字且落在区间内), 否则拒绝 —— 宁可报错,
+# 也不要写一个"静默变 0"的值进去。
+m_hy2_bw_set() { # <up> <down>
+    local up="${1:-}" down="${2:-}" u_min u_max d_min d_max
+    read -r u_min u_max <<<"$M_HY2_UP_RANGE"
+    read -r d_min d_max <<<"$M_HY2_DOWN_RANGE"
+    [[ "$up" =~ ^[0-9]+$ ]] && (( up >= u_min && up <= u_max )) || return 1
+    [[ "$down" =~ ^[0-9]+$ ]] && (( down >= d_min && down <= d_max )) || return 1
+    printf '%s %s\n' "$up" "$down" > "$(m_hy2_bw_state_file)"
+    return 0
+}
+
 m_fp_state_file() { printf '%s' "${SRV_ROOT:-/root/catmi/mihomo}/.fp"; }
 m_fp_get() {
     local v=""; [[ -f "$(m_fp_state_file)" ]] && v=$(head -1 "$(m_fp_state_file)" 2>/dev/null | tr -d '[:space:]')
@@ -1689,6 +1733,61 @@ m_artifacts_apply_flag() { # [1=只报告]
     local args=(--out "$SRV_OUT")
     [[ -z "$dry" ]] && args+=(--apply)
     n=$(python3 "$py" "${args[@]}" 2>/dev/null | tail -1)
+    printf '%s' "${n:-0}"
+}
+
+# 把**已有**产物里的 hysteria2 带宽改成当前设置。
+#
+# 为什么需要: 用户改了带宽, 只影响"之后新建的节点"; 已有节点的产物里还写着
+# 旧值 —— 面板上看起来设置生效了, 实际一个字节都没变 (这类"设了不生效"是
+# 本项目最主要的缺陷类型)。
+#
+# ★ 只碰 hysteria2 节点: YAML 里 type: hysteria2 的 up/down 两行, 以及
+#   hysteria2:// 链接里的 up/down/upmbps/downmbps 四个参数。别的协议一个
+#   字节不动 (up/down 在别处是别的语义)。
+m_artifacts_apply_hy2_bw() { # [1=只报告]
+    local dry="" n py
+    [[ "${1:-}" == "1" ]] && dry="--dry-run"
+    local up down; up=$(m_hy2_up); down=$(m_hy2_down)
+    n=$(python3 - "$SRV_OUT" "$up" "$down" $dry <<'PYH'
+import glob, os, re, sys
+out_dir, up, down = sys.argv[1], sys.argv[2], sys.argv[3]
+dry = len(sys.argv) > 4 and sys.argv[4] == "--dry-run"
+n = 0
+for f in sorted(glob.glob(os.path.join(out_dir, "*_client-*.yaml"))):
+    try:
+        txt = open(f, encoding="utf-8").read()
+    except OSError:
+        continue
+    if "type: hysteria2" not in txt:
+        continue
+    new = re.sub(r"(?m)^([ \t]*up:[ \t]*)\S.*$", '\\g<1>"%s"' % up, txt, count=1)
+    new = re.sub(r"(?m)^([ \t]*down:[ \t]*)\S.*$", '\\g<1>"%s"' % down, new, count=1)
+    if new != txt:
+        n += 1
+        if not dry:
+            tmp = f + ".tmp"
+            open(tmp, "w", encoding="utf-8").write(new)
+            os.replace(tmp, f)
+for f in sorted(glob.glob(os.path.join(out_dir, "*_share-*.txt"))):
+    try:
+        txt = open(f, encoding="utf-8").read()
+    except OSError:
+        continue
+    if "hysteria2://" not in txt:
+        continue
+    new = txt
+    for key, val in (("up", up), ("down", down), ("upmbps", up), ("downmbps", down)):
+        new = re.sub(r"([?&])%s=[^&#\s]*" % key, r"\g<1>%s=%s" % (key, val), new)
+    if new != txt:
+        n += 1
+        if not dry:
+            tmp = f + ".tmp"
+            open(tmp, "w", encoding="utf-8").write(new)
+            os.replace(tmp, f)
+print(n)
+PYH
+)
     printf '%s' "${n:-0}"
 }
 
