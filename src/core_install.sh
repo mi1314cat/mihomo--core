@@ -89,13 +89,13 @@ _own_mixed_port() {
     # settings.env 优先: 那是面板在端口冲突顺延后写下的**最终值**
     f="$root/settings.env"
     if [[ -f "$f" ]]; then
-        p=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\{2,5\}\)["]*$/\1/p' "$f" 2>/dev/null | head -1)
+        p=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\{2,5\}\)["]*$/\1/p' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
     fi
     # 退而读生成好的 config.yaml
     f="$root/conf/config.yaml"
     if [[ -f "$f" ]]; then
-        p=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\{2,5\}\)$/\1/p' "$f" 2>/dev/null | head -1)
+        p=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\{2,5\}\)$/\1/p' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
     fi
     return 1
@@ -108,13 +108,13 @@ _sys_file_proxies() {
              "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$HOME/.curlrc"; do
         [[ -f "$f" ]] || continue
         # 取 = 或空格赋值的 http_proxy / https_proxy, 且行首不是注释
-        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | head -1)
+        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$v" ]] && printf '%s\n' "$v"
     done
     # /etc/profile.d/*.sh 是最常见的"只写在这里"的位置
     for f in /etc/profile.d/*.sh; do
         [[ -f "$f" ]] || continue
-        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | head -1)
+        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$v" ]] && printf '%s\n' "$v"
     done
     # git 的 http.proxy
@@ -212,9 +212,9 @@ _route_proxy_from_file() {
         local)
             # mixed-port 从 settings.env / config.yaml 读, 读不到才退 7890
             local mp="" root="${INSTALL_DIR:-/root/catmi/mihomo}"
-            mp=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\+\)["]*$/\1/p' "$root/settings.env" 2>/dev/null | head -1)
+            mp=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\+\)["]*$/\1/p' "$root/settings.env" 2>/dev/null | awk 'NR==1')
             [[ "$mp" =~ ^[0-9]+$ ]] || \
-                mp=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\+\)$/\1/p' "$root/conf/config.yaml" 2>/dev/null | head -1)
+                mp=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\+\)$/\1/p' "$root/conf/config.yaml" 2>/dev/null | awk 'NR==1')
             [[ "$mp" =~ ^[0-9]+$ ]] || mp=7890
             printf 'http://127.0.0.1:%s' "$mp"; return 0 ;;
         custom)
@@ -410,7 +410,9 @@ _kernel_extract() {  # $1=源文件  $2=目标路径
             fi
             # zip 里可能套一层目录 (mihomo-linux-arm64/mihomo), 递归找那个二进制
             local inner
-            inner=$(unzip -Z1 "$src" 2>/dev/null | grep -E '^[^/]+/mihomo$|^mihomo$' | head -1)
+            # 同 xargo.sh: `| head -1` 会让 unzip 吃 SIGPIPE（141）,
+            # 本脚本开着 set -euo pipefail, 解压到一半整个安装就死了。
+            inner=$(unzip -Z1 "$src" 2>/dev/null | grep -E '^[^/]+/mihomo$|^mihomo$' | awk 'NR==1')
             if [[ -n "$inner" ]]; then
                 unzip -p "$src" "$inner" > "$dst" 2>/dev/null \
                     || { warn "从 zip 中提取 $inner 失败"; return 1; }
@@ -626,7 +628,7 @@ for u in "${DL}/${BASE}.gz.sha256" \
     else
         curl -fsSL --max-time 15 -o "$TMP/sum.txt" "$u" 2>/dev/null || continue
     fi
-    EXPECT=$(grep -oiE '[0-9a-f]{64}' "$TMP/sum.txt" 2>/dev/null | head -1)
+    EXPECT=$(grep -oiE '[0-9a-f]{64}' "$TMP/sum.txt" 2>/dev/null | awk 'NR==1')
     [[ -n "$EXPECT" ]] && break
 done
 if [[ -n "$EXPECT" ]]; then

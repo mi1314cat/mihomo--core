@@ -51,6 +51,9 @@ run_gate "yaml 取值守卫" bash tools/check_yaml_guard.sh
 # 这一类 bug 全部是**静默失败** (列表变空 → 循环不跑 → 检查器打印"没问题"),
 # 已经踩过三次 (share 的 NF==2、cdn 的 -F'|'、以及被 2>/dev/null 吞掉的 flag 错)。
 run_gate "接口一致"     bash tools/check_interfaces.sh
+# `set -euo pipefail` + 命令替换里的 `| head` = 随机猝死（上游吃 SIGPIPE 141）。
+# X 内核客户端实测 12 次死 4 次, 用户只看到版本号闪一下就回命令行。
+run_gate "管道早退"     bash tools/check_pipe_early.sh
 
 # pre-push 钩子是否已安装。
 #
