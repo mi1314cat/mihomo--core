@@ -490,11 +490,15 @@ hy2_link() {
     #   两家都不会因此报错)。
     local up down upm downm
     up=$(m_hy2_up); down=$(m_hy2_down); upm="$up"; downm="$down"
+    # ★ 自签证书节点的 pin 参数名必须是 `pinSHA256`, **不认 `pin`**:
+    #   mihomo 的 hysteria2 URI 分支只读 sni / insecure / alpn / pinSHA256 /
+    #   down / up (common/convert/converter.go:72-104, X 内核侧已逐行核对)。
+    #   写 `pin=` 会被**静默忽略** → 自签节点回到"校验证书"路径 → 连不上。
     local q obfs_q=""
     if [[ "$CERT_TRUSTED" == "true" ]]; then
         q="sni=$CERT_DOMAIN&insecure=0&alpn=h3&up=$up&down=$down&upmbps=$upm&downmbps=$downm"
     else
-        q="sni=$CERT_DOMAIN&alpn=h3&pin=$CERT_PIN&up=$up&down=$down&upmbps=$upm&downmbps=$downm"
+        q="sni=$CERT_DOMAIN&alpn=h3&pinSHA256=$CERT_PIN&up=$up&down=$down&upmbps=$upm&downmbps=$downm"
     fi
     # ---- obfs 分量 ----
     #

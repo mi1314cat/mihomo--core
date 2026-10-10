@@ -300,6 +300,8 @@ BW="$TMP/bw"; mkdir -p "$BW"
     echo 'echo "DEFAULT=$(hy2_link pw 203.0.113.10 25682 01)"'
     echo 'printf "45 170\n" > "$SRV_ROOT/.hy2-bandwidth"'
     echo 'echo "USERSET=$(hy2_link pw 203.0.113.10 25682 01)"'
+    echo 'CERT_TRUSTED="false"; CERT_PIN="abc123"'
+    echo 'echo "PINNED=$(hy2_link pw 203.0.113.10 25682 01)"'
 } > "$BW/probe.sh"
 if bash "$BW/probe.sh" > "$BW/out" 2>"$BW/err"; then
     DEF=$(grep '^DEFAULT=' "$BW/out" | cut -d= -f2-)
@@ -313,6 +315,12 @@ if bash "$BW/probe.sh" > "$BW/out" 2>"$BW/err"; then
     grep -q 'up=45&down=170' <<<"$USR" \
         && ok "用户设过就用用户的 (45/170), 没有被默认值覆盖" \
         || bad "用户设置被硬编码覆盖了: $USR"
+    PINNED=$(grep '^PINNED=' "$BW/out" | cut -d= -f2-)
+    grep -q 'pinSHA256=abc123' <<<"$PINNED" \
+        && ok "自签节点的 pin 参数名 = pinSHA256 (mihomo 只认这个)" \
+        || bad "pin 参数名不对 (<pin=> 会被内核静默忽略): $PINNED"
+    { [[ -n "$PINNED" ]] && grep -qE '[?&]pin=' <<<"$PINNED"; } \
+        && bad "还在写内核不认的 pin=" || ok "没有写内核不认的 pin="
 else
     bad "带宽探针跑不起来 (见 $BW/err)"
 fi
