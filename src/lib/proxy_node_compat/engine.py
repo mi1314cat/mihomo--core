@@ -292,7 +292,7 @@ def evaluate(profile: NodeProfile, target: Target,
         _apply_segment(rule, seg, acc, target, facts, facts_why)
 
     # ---------------- 3. URI 表达力（独立第三张表）
-    _apply_uri_rules(profile, scheme, acc, registry)
+    _apply_uri_rules(profile, scheme, acc, registry, target)
 
     # ---------------- 3.4 未知命名空间的 feature: 必须 UNKNOWN
     covered = set()
@@ -374,15 +374,25 @@ def _scheme_of(profile: NodeProfile) -> str | None:
 
 
 def _apply_uri_rules(profile: NodeProfile, scheme: str | None,
-                     acc: _Acc, registry: Registry) -> None:
-    """URI 层独立判定: 内核支持 ≠ URI 能表达。"""
+                     acc: _Acc, registry: Registry, target: Target) -> None:
+    """URI 层独立判定: 内核支持 ≠ URI 能表达。
+
+    ★ 2026-10-10 补 `target_kernel`: "URI 表达力"有两层 ——
+      ① 链接格式本身装不装得下该参数(全局行);
+      ② **某个内核的链接解析实现**读不读它(逐内核行, 见 registry.uri_rule)。
+      实测的 ② 级事故: mihomo 的 trojan 分支不读 pbk/sid —— 同一条
+      trojan+REALITY 链接, mihomo 走链接 000(日志里连 REALITY 都没进),
+      走 YAML(显式 reality-opts) 204; 而 Xray / sing-box 用同一条链接都正常。
+    """
     if scheme is None:
         acc.set_level("uri", "UNKNOWN")
         acc.note_unknown("层级 uri", "不知道原始格式, 无法判断表达力")
         return
     known = False
     for feat in profile.features:
-        rule = registry.uri_rule(scheme, feat.id)
+        # 传 target.kernel: 带 target_kernel 的行只对该内核的解析器生效
+        # (mihomo 不读 trojan 链接里的 pbk/sid, 同一条链接 Xray/sing-box 照用)。
+        rule = registry.uri_rule(scheme, feat.id, target.kernel)
         if rule is None:
             continue
         known = True

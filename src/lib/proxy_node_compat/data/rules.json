@@ -260,6 +260,36 @@
       "how": "CC(armbian/arm64) 上 xray run -test → Configuration OK；临时实例（SOCKS 入口 + protocol=hysteria 出站） curl https://www.gstatic.com/generate_204 → HTTP 204 (1.40s)，出口 <CDN_IP>。控制组：protocol=hysteria9 → unknown config id；protocol=hysteria 且 version=1 → version != 2",
       "where": "research/integration/x-client-integration.md §CC 实测",
       "limits": "只验证**出站**方向与 26.3.27 这一版；入站方向与更早版本未验证"
+    },
+    {
+      "id": "e-mihomo-trojan-uri-reality",
+      "type": "BEHAVIOR",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "mihomo (v1.19.32 与当前 Meta 分支) 的 trojan 分享链接解析器不读 security/pbk/sid → reality-opts 永远缺失, trojan+REALITY 链接导入后只按裸 TLS 拨号必然失败; 引擎本身支持(显式 reality-opts 的 YAML 实测 204)",
+      "how": "源码: common/convert/converter.go 的 `case \"trojan\"` 全文不出现 security/pbk/sid/reality(与 upstream Meta 分支逐字 diff 相同), 而 vless 走 common/convert/v.go handleVShareLink 会读 pbk/sid; 回环对照实验(RN 上 mihomo v1.19.32, 目标 127.0.0.1:29602): A 链接导入 provider → HTTP 000 且日志无任何 REALITY 行; B 同节点 YAML 显式 reality-opts → 日志 'REALITY Authentication: true' + HTTP 204; C 同一份 YAML 去掉 reality-opts(= URI 解析器产出的形状) → 000; D vless+REALITY 走同一条 URI 通道 → 日志出现 REALITY 行(证明 URI→reality 通道本身可用, 差别只在解析器读不读 pbk/sid)",
+      "where": "research/known-issues/x-hysteria-import-and-unlocated.md",
+      "limits": "只测 mihomo v1.19.32 与当前 Meta 分支源码; 未来版本是否补上未验证; 未测 vmess+reality 的 URI 路径"
+    },
+    {
+      "id": "e-singbox-buildtags-quic-naive",
+      "type": "SRC",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "sing-box 的 hysteria/hysteria2/tuic 出站由 `//go:build with_quic` 门控（缺 tag 的构建里同样类型直接报 C.ErrQUICNotIncluded），naive 出站由 `//go:build with_naive_outbound` 门控（stub 报 'naive outbound is not included in this build, rebuild with -tags with_naive_outbound'）",
+      "how": "源码（v1.14.2）: include/quic.go(//go:build with_quic) registerQUICOutbounds 注册 hysteria/hysteria2/tuic; include/quic_stub.go(!with_quic) 对同样三类注册返回 C.ErrQUICNotIncluded; include/naive_outbound.go(//go:build with_naive_outbound) vs include/naive_outbound_stub.go(!with_naive_outbound) 同理。构建侧证据（CC 真机 `sing-box version`）: sing-box 1.14.2 打印 17 个 tag（含 with_utls/with_quic/with_naive_outbound）, RN 同 + with_purego。反向验证（门禁钉住）: 同一内核把 build_tags 说成 [] → Reality 立刻 BUILD_NOT_ENABLED（singbox.reality.build_tags 要求 with_utls）⇒ 机制本身有效, 缺的只是这三条规则没配上",
+      "where": "research/integration/sb-client-integration.md §4.2/§5; /tmp/xsrc/singbox v1.14.2 include/quic.go · include/quic_stub.go · include/naive_outbound.go · include/naive_outbound_stub.go",
+      "limits": "没有缺 with_quic / with_naive_outbound 的真实内核二进制可测（CC/RN 官方构建都带这两个 tag, CC 有 go1.22 但无上游源码 → 无法自编译反证）⇒ 结论来自源码门控 + stub 报错文本, 不是端到端实测; sing-box 的完整 build tag 清单未穷举（只核了这三个出站涉及的 tag）"
+    },
+    {
+      "id": "e-mihomo-vless-uri-encryption-flow",
+      "type": "RUNTIME_TEST",
+      "confidence": "HIGH",
+      "date": "2026-10-10",
+      "claim": "mihomo v1.19.32 的 **vless 分享链接解析路径读 `encryption` 与 `flow`**（\"mihomo 的 vless URI 分支不读 encryption/flow\" 已被证伪）; 同一条 vless+REALITY+mlkem 链接经 proxy-provider(URI 通道) 与等价 YAML 的端到端结果一致: 204 + XTLS Vision",
+      "how": "源码: common/convert/converter.go:237-242 `case \"vless\"` 把 query 的 flow/encryption 写进 proxy map; 本机 v1.19.32 快照与 raw.githubusercontent v1.19.32 逐字 diff 为空, 同 tag 上游单测 converter_test.go:181-189 断言两者都被解析。真机(RN, mihomo 1.19.32 生产二进制, -d /tmp/mhv* 独立实例, 目标改写成 127.0.0.1:50330 = 本机 REALITY-01 inbound): A 链接经 provider → delay 146/204/231ms + curl 204 + 日志 17-18 行 XTLS Vision; B 项目自带 out/reality-client-01.yaml(同字段) → 198/240ms + 204 + 18 行; C 从链接删 flow → 000; D 删 encryption → 000; E 两者都删 → 000。转发对照(证明字段真进了配置, 不是被静默吞掉): 链接写 encryption=deadbeef-not-a-real-encryption-value → provider 报 'proxy 0 error: invaild vless encryption value: deadbeef-not-a-real-encryption-value'; 写 flow=zzzzzzzzzzzzzzzzzz → 报 'unsupported xtls flow type: zzzzzzzzzzzzzzzz'。同一实例内 provider(链接) 与 inline(YAML) 的 /proxies 标志逐字相同(type=Vless/udp/uot/xudp 均 true)",
+      "where": "research/known-issues/compat-canonical-sync.md §3",
+      "limits": "只测 mihomo v1.19.32(与当前 Meta 分支该段逐字相同) 与 TCP+REALITY+XTLS Vision 这一形态; vmess:// 的 URI 路径未测; 未找到 v1.20+ 的行为差异证据"
     }
   ],
   "rules": [
@@ -1632,11 +1662,15 @@
             "config": "SUPPORTED",
             "runtime": "SUPPORTED",
             "semantic": "SUPPORTED"
-          }
+          },
+          "requires_build_tags": [
+            "with_quic"
+          ]
         }
       ],
       "evidence": [
-        "e-probe-suite"
+        "e-probe-suite",
+        "e-singbox-buildtags-quic-naive"
       ],
       "version_independent": true
     },
@@ -1656,11 +1690,15 @@
             "config": "SUPPORTED",
             "runtime": "SUPPORTED",
             "semantic": "SUPPORTED"
-          }
+          },
+          "requires_build_tags": [
+            "with_quic"
+          ]
         }
       ],
       "evidence": [
-        "e-probe-suite"
+        "e-probe-suite",
+        "e-singbox-buildtags-quic-naive"
       ],
       "version_independent": true
     },
@@ -2116,6 +2154,34 @@
       "evidence": [
         "e-xray-hysteria2-outbound"
       ]
+    },
+    {
+      "rule_id": "singbox.protocol.naive",
+      "target": {
+        "kernel": "singbox",
+        "distribution": "upstream"
+      },
+      "selector": {
+        "protocol": "standard:naive"
+      },
+      "segments": [
+        {
+          "range": "*",
+          "verdict": {
+            "config": "SUPPORTED",
+            "runtime": "SUPPORTED",
+            "semantic": "SUPPORTED"
+          },
+          "requires_build_tags": [
+            "with_naive_outbound"
+          ]
+        }
+      ],
+      "version_independent": true,
+      "evidence": [
+        "e-singbox-buildtags-quic-naive"
+      ],
+      "message": "compat 目前没有 naive:// 的 scheme 解析（uri.py 的 scheme 表里没有 naive*）⇒ 这条规则今天匹配不到任何输入, 是**预留的 tag 约束**: 一旦 naive 能进 profile, 缺 with_naive_outbound 的构建必须判 BUILD_NOT_ENABLED, 不许默认 SUPPORTED"
     }
   ],
   "uri_rules": [
@@ -2324,7 +2390,34 @@
       "note": "encryption 是 #716 规范里的 VLESS 必填字段（默认 none）, vless:// 能完整表达; 但后量子取值 mlkem768x25519plus… 的确切进规范时间未核实 → spec_added_at 留 null（UNKNOWN, 不猜）。老客户端按 SIP002 精神静默忽略不认识的取值 → 加密能力降级, 而不是 URI 表达不了。",
       "evidence": [
         "e-xray-sharelink-encryption",
-        "e-vlessenc-runtime"
+        "e-vlessenc-runtime",
+        "e-mihomo-vless-uri-encryption-flow"
+      ]
+    },
+    {
+      "uri_rule_id": "uri.trojan.reality@mihomo",
+      "scheme": "trojan",
+      "feature": "standard:reality",
+      "target_kernel": "mihomo",
+      "representation": "NONE",
+      "loss": [
+        {
+          "field": "standard:reality.public_key",
+          "what": "mihomo 的 trojan 分支解析器不读 pbk → 拿不到公钥"
+        },
+        {
+          "field": "standard:reality.short_id",
+          "what": "同上不读 sid → 拿不到 shortId"
+        },
+        {
+          "field": "standard:reality.server_names",
+          "what": "sni 读得到, 但没有 reality-opts 时只按**裸 TLS** 拨号: 握手完成(REALITY 服务端把未认证客户端转发给目标站), 流量却进了 fallback → 必然连不通, 且错误信息与\"节点挂了\"无从区分"
+        }
+      ],
+      "workaround": "改用 mihomo YAML 形态(reality-opts 显式写) —— 本项目 out/trojan-client-*.yaml 产物本来就是对的(逐字带 public-key/short-id)",
+      "note": "trojan:// 链接**本身**能表达 reality(vless/sing-box/Xray 都读); 表达不出的是 mihomo 的 URI 解析实现 → 这一行必须按内核分叉, 不能进全局 uri_rules(否则会把 Xray/sing-box 判错)。",
+      "evidence": [
+        "e-mihomo-trojan-uri-reality"
       ]
     }
   ]

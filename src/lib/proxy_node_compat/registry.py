@@ -206,11 +206,28 @@ class Registry:
         return any(r.target.get("kernel") == kernel
                    and r.target.get("distribution") == distribution for r in self.rules)
 
-    def uri_rule(self, scheme: str, feature: str) -> dict | None:
+    def uri_rule(self, scheme: str, feature: str,
+                 kernel: str | None = None) -> dict | None:
+        """取 (scheme × feature) 的 URI 表达力规则。
+
+        `target_kernel` 存在的意义: "URI 表达力"分两层 ——
+          (1) 链接格式本身装不装得下这个参数(全局, 不带 target_kernel)
+          (2) 某个内核的链接解析**实现**读不读它(带 target_kernel, 只对该内核生效)
+        例: mihomo 的 trojan 分支不读 pbk/sid, 而同一条 trojan:// 链接
+        Xray/sing-box 都能用 —— 那一行绝不能外溢。
+        未给 kernel 时忽略所有带 target_kernel 的行(不猜, 不拿别家的结论顶替)。
+        """
+        fallback = None
         for u in self.uri_rules:
-            if u.get("scheme") == scheme and u.get("feature") == feature:
-                return u
-        return None
+            if u.get("scheme") != scheme or u.get("feature") != feature:
+                continue
+            if u.get("target_kernel"):
+                if kernel is not None and u["target_kernel"] == kernel:
+                    return u
+                continue
+            if fallback is None:
+                fallback = u
+        return fallback
 
     def uri_rules_for_scheme(self, scheme: str) -> list[dict]:
         return [u for u in self.uri_rules if u.get("scheme") == scheme]

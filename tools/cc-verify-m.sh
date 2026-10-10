@@ -34,12 +34,16 @@ RN=${RN:-rn}
 TUNNEL_PORT=${TUNNEL_PORT:-18899}
 WORK=/tmp/mvm
 ROOT="$WORK/cli"
-PASS=0; FAIL=0
+PASS=0; FAIL=0; FIND=0
 
 ok()   { printf "  \033[32m✓\033[0m %s\n" "$1"; PASS=$((PASS+1)); }
 bad()  { printf "  \033[31m✗\033[0m %s\n" "$1"; FAIL=$((FAIL+1)); }
 hdr()  { printf "\n\033[1m%s\033[0m\n" "$1"; }
 note() { printf "    %s\n" "$1"; }
+# 「发现」与「失败」分开: 发现 = 这次验收**顺带查出来的既有缺陷**（不在本次改动
+# 范围内, 但它是个真问题, 必须看得见）；失败 = 本次接入自己的断言没过。
+# 把两者混在一起会让"接入是否安全"这个结论被无关缺陷污染。
+find_() { printf "  \033[33m⚠ 发现\033[0m %s\n" "$1"; FIND=$((FIND+1)); }
 dump() { if [[ -f "$1" ]]; then sed 's/^/    /' "$1" | awk 'NR<=20'; fi; return 0; }
 
 # 让内核自己 bind 0 号端口, 拿一个真正空闲的
@@ -133,7 +137,12 @@ fi
 # 真实单节点分享链接也一起导出: 客户端现在能吃这一路 (URI 列表),
 # 而这一路在 compat 里是**保真最高**的入口 (parse_uri, 值一字节不改)。
 cat /root/catmi/mihomo/out/*_share-*.txt 2>/dev/null | grep -v '^[[:space:]]*$' > /tmp/mrnsub/uris.txt || true
-echo "uri_count=$(wc -l < /tmp/mrnsub/uris.txt)"
+# 再存一份**只去掉 `&obfs=none`** 的同一批链接。为什么需要它:
+#   mihomo 的 file-provider 转换器遇到 `obfs=none` 会认为缺 obfs-password,
+#   于是**整批**失败（12 条只加载 0 条, 而 -t 仍报 successful）。原样那份留着
+#   复现这个问题, 修正那份用来真正测出 URI 通路的逐节点连通性。
+sed 's/&obfs=none//g' /tmp/mrnsub/uris.txt > /tmp/mrnsub/uris-fixed.txt || true
+echo "uri_count=$(wc -l < /tmp/mrnsub/uris.txt) fixed_count=$(wc -l < /tmp/mrnsub/uris-fixed.txt)"
 cd /tmp/mrnsub
 nohup python3 -m http.server $TUNNEL_PORT --bind 127.0.0.1 >/tmp/mrnsub.log 2>&1 &
 echo \$! > /tmp/mrnsub/server.pid
@@ -243,6 +252,24 @@ else
     bad "拉取 RN 分享链接列表失败 HTTP $uc"
 fi
 
+hdr "2c. 分享链接通路（修正版: 去掉 &obfs=none）—— 用于真正测出逐节点连通性"
+FIXURL="http://127.0.0.1:$TUNNEL_PORT/uris-fixed.txt"
+fc=$(curl -s -o "$WORK/uris-fixed.txt" -w '%{http_code}' --max-time 10 "$FIXURL")
+if [[ "$fc" == 200 && -s "$WORK/uris-fixed.txt" ]]; then
+    ok "拉到修正版链接列表 ($(wc -l <"$WORK/uris-fixed.txt") 条)"
+    SRC="$SRC" CLI_ROOT="$ROOT" PORT_MIXED="$MIXED" PORT_CTRL="$CTRL" BIND_ADDR=127.0.0.1 \
+    CLI_BIN="$MIHOMO" CLI_SERVICE=mvm-nothing bash -c '
+        source "$SRC/client.sh"
+        CLI_CONF="$CLI_ROOT/conf"; CLI_PROVIDERS="$CLI_CONF/providers"
+        CLI_NODES="$CLI_ROOT/nodes"; CLI_UI="$CLI_ROOT/ui"
+        CLI_SUBS="$CLI_ROOT/subscriptions.json"; CLI_SERVICE=mvm-nothing
+        node_add
+    ' <<< "$(printf '%s\n\n\n' "$FIXURL")" >"$WORK/import-uri2.log" 2>&1
+    grep -q "\[OK\] 已写入" "$WORK/import-uri2.log" && ok "修正版导入成功" || bad "修正版导入失败"
+else
+    bad "拉取修正版链接列表失败 HTTP $fc"
+fi
+
 # ---------------------------------------------------------------- 3
 hdr "3. 逐节点三列对照: 旧判定 vs compat vs 真实连通性"
 SRC="$SRC" CLI_ROOT="$ROOT" PORT_MIXED="$MIXED" PORT_CTRL="$CTRL" BIND_ADDR=127.0.0.1 \
@@ -272,6 +299,28 @@ else
     bad "内核启动失败"; dump "$WORK/run.log"
 fi
 SECRET=$(cat "$ROOT/.secret" 2>/dev/null)
+# provider 是**异步**加载的: 内核刚起来时分组里的 all 还是空的, 这时去选节点
+# 一律失败（而且是静默的）。等分组里真的出现节点再开始。
+_prev=-1; _stable=0; _n=0
+for _i in $(seq 1 40); do
+    _n=$(curl -s -m 5 -H "Authorization: Bearer $SECRET" "http://127.0.0.1:$CTRL/proxies" \
+         | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)["proxies"]
+except Exception:
+    print(0); raise SystemExit
+print(sum(len(v.get("all") or []) for k,v in d.items()
+          if v.get("type")=="Selector" and k!="GLOBAL"))' 2>/dev/null)
+    if [[ -n "$_n" && "$_n" == "$_prev" && "$_n" -gt 0 ]]; then
+        _stable=$((_stable + 1))
+        [[ "$_stable" -ge 3 ]] && break
+    else
+        _stable=0
+    fi
+    _prev="$_n"
+    sleep 1
+done
+note "分组里可见节点数: ${_n:-0}（连续 3 次不再变化才继续 —— provider 是异步加载的）"
 ac=$(curl -s -o /dev/null -w '%{http_code}' -m 8 -H "Authorization: Bearer $SECRET" \
      "http://127.0.0.1:$CTRL/version")
 [[ "$ac" == 200 ]] && ok "控制 API 认我们的 secret (HTTP 200 @ $CTRL)" \
@@ -283,11 +332,14 @@ _mi=0
 for _side in "$ROOT"/nodes/*.compat.json; do
     [[ -f "$_side" ]] || continue
     _mi=$((_mi + 1))
-    python3 - "$_side" "http://127.0.0.1:$CTRL" "$SECRET" "$MIXED" \
+    _prov="$ROOT/conf/providers/$(basename "$_side" .compat.json).yaml"
+    python3 - "$_side" "http://127.0.0.1:$CTRL" "$SECRET" "$MIXED" "$_prov" \
+        "$ROOT/conf/config.yaml" \
         >"$WORK/matrix$_mi.tsv" 2>"$WORK/matrix$_mi.err" <<'PYC'
-import json, subprocess, sys, time, urllib.parse, urllib.request
+import json, os, re, subprocess, sys, time, urllib.parse, urllib.request
+import yaml
 
-side, api, secret, mixed = sys.argv[1:5]
+side, api, secret, mixed, prov_file, conf_file = sys.argv[1:7]
 recs = json.load(open(side, encoding="utf-8"))["nodes"]
 H = {"Authorization": "Bearer " + secret}
 TEST = "http://www.gstatic.com/generate_204"
@@ -311,13 +363,126 @@ allp = get("/proxies").get("proxies") or {}
 groups = [n for n, v in allp.items() if v.get("type") == "Selector" and n != "GLOBAL"]
 
 
+FLAG = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+
+
+def _body(name):
+    """去掉地区旗帜, 得到节点的"身份"部分。"""
+    s = (name or "").strip()
+    m = FLAG.match(s)
+    return s[m.end():].lstrip() if m else s
+
+
+# ---- provider → 组名 / 组内真实节点名: 从**产物本身**读出来, 不猜 ----
+#
+# 判定报告里记的是**导入那一刻**的节点名; 之后 node_add 会给组内节点加
+# `<订阅名>-` 前缀（同名服务器要分得开）。而"哪个组对应哪个 provider"更是
+# 生成配置时才算出来的。这两件事都能从产物里**精确**读出来:
+#   * 组名     ← conf/config.yaml 的 proxy-groups 里 use: [<provider>] 那一条
+#   * 节点名   ← providers/<provider>.yaml 本体（YAML 型读 proxies[].name,
+#               URI 型读 `#` 片段 —— 前缀就是加在片段里的）
+# 早先版本靠"按名字全局猜", 结果是同一个名字存在于两个 provider 时选错组,
+# 矩阵把别的节点的连通性当成本节点的结果（静默假通过）。
+PROV = os.path.basename(prov_file)[:-5] if prov_file.endswith(".yaml") else prov_file
+
+GROUP = None
+try:
+    _cfg = yaml.safe_load(open(conf_file, encoding="utf-8")) or {}
+    for _g in _cfg.get("proxy-groups") or []:
+        if PROV in (_g.get("use") or []):
+            GROUP = _g.get("name")
+            break
+except Exception as _e:
+    print("group-lookup failed: %r" % (_e,), file=sys.stderr)
+
+ALL_OF_GROUP = []
+NAMES = []
+try:
+    _raw = open(prov_file, encoding="utf-8").read()
+    try:
+        _d = yaml.safe_load(_raw)
+    except Exception:
+        _d = None
+    if isinstance(_d, dict) and isinstance(_d.get("proxies"), list):
+        NAMES = [n.get("name") for n in _d["proxies"] if isinstance(n, dict)]
+    else:
+        for _l in _raw.splitlines():
+            _s = _l.strip()
+            if _s and not _s.startswith("#") and "#" in _s:
+                NAMES.append(urllib.parse.unquote(_s.split("#", 1)[1]))
+except Exception as _e:
+    print("names-lookup failed: %r" % (_e,), file=sys.stderr)
+print("provider=%r group=%r names=%d" % (PROV, GROUP, len(NAMES)), file=sys.stderr)
+# 诊断: provider 文件里有 N 个名字, 组里实际可见 M 个 —— 差集就是内核自己没接住的
+try:
+    _alls = get("/proxies/" + urllib.parse.quote(GROUP)).get("all") or [] if GROUP else []
+    _missing = [n for n in NAMES if n not in _alls]
+    ALL_OF_GROUP = _alls
+    print("group_all=%d / provider_names=%d; 组里没有的: %r"
+          % (len(_alls), len(NAMES), _missing[:8]), file=sys.stderr)
+except Exception as _e:
+    print("group-dump failed: %r" % (_e,), file=sys.stderr)
+
+
+def _body(name):
+    """去掉地区旗帜, 得到节点的"身份"部分。"""
+    s = (name or "").strip()
+    m = FLAG.match(s)
+    return s[m.end():].lstrip() if m else s
+
+
+def resolve(node):
+    """判定报告里的名字 → provider 里真实存在的节点名（先精确, 再去前缀）。"""
+    if node in NAMES:
+        return node
+    want = _body(node)
+    hit = [c for c in NAMES if _body(c) == want]
+    if not hit:
+        hit = [c for c in NAMES if _body(c).endswith(want)]
+    return sorted(hit, key=len)[0] if hit else node
+
+
 def pick(node):
-    """PROXY → 组 → 节点 这条链一路选中; 选不动不算错（组可能不存在）。"""
-    for g in groups + ["PROXY"]:
-        try:
-            put("/proxies/" + urllib.parse.quote(g), {"name": node})
-        except Exception:
-            pass
+    """把出网路径真正切到目标节点上, 并**读回校验整条链**。
+
+    ★ 出网链是 PROXY → <该 provider 的组> → 节点。只把叶子组设成目标节点
+      **不算数**: PROXY 默认停在 AUTO（一个跨全部节点的 url-test 组）, 流量
+      根本不经过叶子组 —— 矩阵会打印"每个节点都 204", 而实际走的一直是同一个
+      节点。这是本项目最怕的静默假通过, 所以两段都要设、都要读回。
+    """
+    target = resolve(node)
+    if not GROUP:
+        print("PICKFAIL %r: 找不到 provider %r 对应的组" % (node, PROV), file=sys.stderr)
+        return "UNSELECTED", target
+    why = []
+    # 1) 叶子组 → 目标节点
+    try:
+        put("/proxies/" + urllib.parse.quote(GROUP), {"name": target})
+    except Exception as e:
+        why.append("leaf-put=%s" % (str(e)[:26],))
+    # 2) PROXY → 该叶子组（这才是"流量真的走这条链"的一步）
+    try:
+        put("/proxies/PROXY", {"name": GROUP})
+    except Exception as e:
+        why.append("proxy-put=%s" % (str(e)[:26],))
+    # 3) 两段都读回
+    try:
+        leaf = get("/proxies/" + urllib.parse.quote(GROUP))
+        if leaf.get("now") != target:
+            why.append("leaf.now=%r" % (str(leaf.get("now"))[:20],))
+    except Exception as e:
+        why.append("leaf-get=%s" % (str(e)[:26],))
+    try:
+        top = get("/proxies/PROXY")
+        if top.get("now") != GROUP:
+            why.append("PROXY.now=%r" % (str(top.get("now"))[:20],))
+    except Exception as e:
+        why.append("proxy-get=%s" % (str(e)[:26],))
+    if not why:
+        return "ok", target
+    print("PICKFAIL %r -> %r (组 %r) :: %s"
+          % (node, target, GROUP, " | ".join(why)), file=sys.stderr)
+    return "UNSELECTED", target
 
 
 def curl_proxy(url, timeout=15):
@@ -338,17 +503,34 @@ def exit_ip(timeout=15):
     return (p.stdout or "").strip()
 
 
-print("legacy\tcompat\tmerged\tsource\treal_http\treal_time\texit_ip\tlosses\tname")
+# "组里有节点"还不够: provider 加载失败时组里会剩一个 COMPATIBLE 占位项。
+# 真正要看的是"provider 文件里的名字有没有出现在组里"。
+_loaded = [n for n in NAMES if n in ALL_OF_GROUP]
+if not _loaded:
+    # 内核一个节点都没加载出来 —— 这是**发现**, 不是"矩阵跑失败"。
+    # 绝不能产出"看起来正常"的行（那正是静默假通过）。
+    print("GROUP_EMPTY provider=%r group=%r names=%d 组内可见=%r"
+          % (PROV, GROUP, len(NAMES), ALL_OF_GROUP[:3]), file=sys.stderr)
+    raise SystemExit(0)
+print("legacy\tcompat\tmerged\tsource\treal_http\treal_time\texit_ip\tlosses"
+      "\tselected\tname\tconfig_name")
 for r in recs:
-    pick(r["name"])
+    sel, actual = pick(r["name"])
+    if sel != "ok":
+        time.sleep(1.0)
+        sel, actual = pick(r["name"])
     time.sleep(0.3)
-    code, t = curl_proxy(TEST)
+    code, tt = curl_proxy(TEST)
     ip = exit_ip() if code[:1] == "2" else ""
     print("\t".join([str(r["legacy"]), str(r["compat_status"]), str(r["verdict"]),
-                     str(r["verdict_source"]), code, t, ip or "-",
-                     str(len(r["losses"])), r["name"]]))
+                     str(r["verdict_source"]), code, tt, ip or "-",
+                     str(len(r["losses"])), sel, r["name"], actual]))
 PYC
-    if [[ -s "$WORK/matrix$_mi.err" ]]; then
+    if grep -q GROUP_EMPTY "$WORK/matrix$_mi.err" 2>/dev/null; then
+        find_ "provider `$(basename "$_side" .compat.json)` 内核**一个节点都没加载出来**（客户端却打印了"已写入 N 个节点"）"
+        grep -E "GROUP_EMPTY|group_all=" "$WORK/matrix$_mi.err" | sed 's/^/      /'
+        grep -oE "initial proxy provider [^\"]*" "$WORK/run.log" 2>/dev/null | sort -u | awk 'NR<=3' | sed 's/^/      内核: /'
+    elif [[ -s "$WORK/matrix$_mi.err" ]]; then
         note "$(basename "$_side") 的矩阵脚本 stderr:"; dump "$WORK/matrix$_mi.err"
     fi
 done
@@ -363,13 +545,17 @@ for f in sorted(glob.glob(os.path.join(work, "matrix*.tsv"))):
     if not rows:
         continue
     print("    ── %s（%d 个节点）──" % (os.path.basename(f), len(rows)))
-    print("    %-28s %-20s %-19s %-9s %-6s %s"
-          % ("节点", "旧判定", "compat", "合并", "真实", "出口 IP"))
+    print("    %-28s %-20s %-19s %-9s %-6s %-11s %s"
+          % ("节点", "旧判定", "compat", "合并", "真实", "选择", "出口 IP"))
     for r in rows:
         real = r["real_http"][:3]
         flag = "✅" if real in ("200", "204") else ("·" if real == "000" else "✗")
-        print("    %-28s %-20s %-19s %-9s %s %-4s %s"
-              % (r["name"][:28], r["legacy"], r["compat"], r["merged"], flag, real, r["exit_ip"]))
+        sel = r.get("selected", "?")
+        mark = "OK" if sel == "ok" else "⚠" + sel
+        ren = "" if r.get("config_name") in (None, "", r["name"]) else "  (配置名: %s)" % r["config_name"]
+        print("    %-28s %-20s %-19s %-9s %s %-4s %-11s %s%s"
+              % (r["name"][:28], r["legacy"], r["compat"], r["merged"], flag, real,
+                 mark, r["exit_ip"], ren))
     total += len(rows)
 print("    " + "-" * 104)
 print("    合计 %d 个节点（两条通路）" % total)
@@ -388,6 +574,10 @@ import csv, glob, os, sys
 rows = []
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "matrix*.tsv"))):
     rows += list(csv.DictReader(open(f, encoding="utf-8"), delimiter="\t"))
+unsel = [r for r in rows if r.get("selected") not in (None, "", "ok")]
+if unsel:
+    print("    ⛔ %d 个节点的选择没生效 —— 它们的真实连通性数字不作数: %s"
+          % (len(unsel), [r["name"][:22] for r in unsel]))
 fake_uns, relaxed, tighten, wins, hidden_fail = [], [], [], [], []
 for r in rows:
     real = r["real_http"][:3]
@@ -416,9 +606,10 @@ if hidden_fail:
           % len(hidden_fail))
     for r in hidden_fail:
         print("      - %s（HTTP %s）" % (r["name"][:34], r["real_http"][:3]))
-sys.exit(1 if (fake_uns or relaxed) else 0)
+sys.exit(1 if (fake_uns or relaxed or unsel) else 0)
 PYD
-    [[ $? -eq 0 ]] && ok "无假 UNSUPPORTED、无静默放宽" || bad "存在假 UNSUPPORTED 或静默放宽"
+    [[ $? -eq 0 ]] && ok "无假 UNSUPPORTED、无静默放宽、无选择失效" \
+                   || bad "存在假 UNSUPPORTED / 静默放宽 / 选不中的节点"
 else
     bad "矩阵为空, 本节不成立"
 fi
@@ -509,6 +700,124 @@ for case in ctrl-baseline net-kcp net-bogus ws-plus-reality reality-no-fingerpri
         2>&1 | sed 's/^/    /'
 done
 
+# ---------------------------------------------------------------- 5b
+hdr "5b. 真机对照: 同一个 trojan+REALITY 节点, 链接形态 vs YAML 形态"
+# compat 有一条**只对 mihomo 生效**的 URI 表达力规则:
+#   uri.trojan.reality@mihomo —— mihomo 的 trojan 链接解析器不读 pbk/sid,
+#   于是"经过链接导入"和"经过 YAML 导入"是**两个结果**。
+# 这条正好落在 M 客户端新增的分享链接通路上, 所以必须真机对照, 不能只信规则。
+mkdir -p "$WORK/tr"
+URI_LINE=$(grep -m1 '^trojan://' "$WORK/uris.txt" 2>/dev/null || true)
+if [[ -n "$URI_LINE" ]]; then
+    printf '%s\n' "$URI_LINE" > "$WORK/tr/raw-uri.txt"
+    # RN 的 out/*_share-*.txt 与 out/*_client-*.yaml 可能是**不同批次**的产物
+    # （实测端口就不一样）。所以不按 server:port 配对, 按**节点名**配对, 再把
+    # 链接的 host:port 改写成 YAML 对端的 —— 这样唯一的变量就只剩"导入形态"。
+    python3 - "$WORK/tr/raw-uri.txt" "$ROOT/conf/providers" "$WORK/tr" <<'PYR'
+import glob, os, sys, urllib.parse, yaml
+uri = open(sys.argv[1], encoding="utf-8").read().strip()
+frag = urllib.parse.unquote(uri.split("#", 1)[1]) if "#" in uri else ""
+body = frag.strip()
+for c in ("\U0001F1E6",):
+    pass
+import re
+FLAG = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+m = FLAG.match(body)
+if m:
+    body = body[m.end():].lstrip()
+peer = None
+for f in glob.glob(sys.argv[2] + "/*.yaml"):
+    try:
+        d = yaml.safe_load(open(f, encoding="utf-8"))
+    except Exception:
+        continue
+    if not isinstance(d, dict):
+        continue
+    for n in d.get("proxies") or []:
+        nm = n.get("name") or ""
+        mm = FLAG.match(nm)
+        b = nm[mm.end():].lstrip() if mm else nm
+        # 对端名也可能带客户端加的 <tag>- 前缀（生成配置时才加的），两种都认
+        if (n.get("type") == "trojan" and n.get("reality-opts")
+                and (b == body or b.endswith(body))):
+            peer = n
+if peer is None:
+    print("    NO_YAML_PEER (同名的 YAML trojan+reality 节点没找到)")
+    sys.exit(0)
+# 把链接指到同一个活着的 server:port 上
+u = urllib.parse.urlsplit(uri)
+host = peer["server"] if ":" not in str(peer["server"]) else "[%s]" % peer["server"]
+fixed = urllib.parse.urlunsplit(
+    (u.scheme, u.username and (u.username + (":" + u.password if u.password else "") +
+                               "@" + host + ":" + str(peer["port"])) or u.netloc,
+     u.path, u.query, u.fragment))
+open(os.path.join(sys.argv[3], "one-uri.txt"), "w", encoding="utf-8").write(fixed + "\n")
+yaml.safe_dump({"proxies": [dict(peer, name="exp-trojan-yaml")]},
+               open(os.path.join(sys.argv[3], "one-yaml.yaml"), "w"),
+               sort_keys=False, allow_unicode=True)
+print("    配对: 链接原文 %s:%s  ←→  YAML %r %s:%s (reality-opts=%s)"
+      % (u.hostname, u.port, peer["name"], peer["server"], peer["port"],
+         bool(peer.get("reality-opts"))))
+if str(u.port) != str(peer["port"]):
+    print("    ⚠ 两者端口不同 —— RN 的 out/*_share-*.txt 与 out/*_client-*.yaml 不是同一批次"
+          "（P-M3 那类产物过期）; 下面把链接改写到对端的活端口, 让变量只剩\"导入形态\"")
+PYR
+    if [[ -f "$WORK/tr/one-uri.txt" && -f "$WORK/tr/one-yaml.yaml" ]]; then
+        for _case in uri yaml; do
+            _f="$WORK/tr/one-$_case.txt"; [[ "$_case" == "yaml" ]] && _f="$WORK/tr/one-yaml.yaml"
+            _p=$(pick_port)
+            MIHOMO_BIN="$MIHOMO" python3 - "$_f" "$_case" "$_p" <<'PYX' 2>&1 | sed 's/^/    /'
+import os, shutil, subprocess, sys, time, yaml
+src, kind, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+d = "/tmp/mvm/tr/" + kind
+shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+txt = open(src, encoding="utf-8").read()
+cfg = {"mixed-port": port, "external-controller": "127.0.0.1:0", "log-level": "info",
+       "rules": ["MATCH,P"]}
+if kind == "yaml":
+    node = dict((yaml.safe_load(txt) or {}).get("proxies")[0]); node["name"] = "N"
+    cfg["proxies"] = [node]
+    cfg["proxy-groups"] = [{"name": "P", "type": "select", "proxies": ["N"]}]
+else:
+    # 走 URI 形态: 与客户端给内核的输入**逐字节相同**（provider 文件）
+    pdir = os.path.join(d, "prov"); os.makedirs(pdir)
+    with open(os.path.join(pdir, "u.txt"), "w", encoding="utf-8") as fh:
+        fh.write(txt if txt.endswith("\n") else txt + "\n")
+    cfg["proxy-providers"] = {"u": {"type": "file", "path": pdir + "/u.txt",
+                                    "health-check": {"enable": False}}}
+    cfg["proxy-groups"] = [{"name": "P", "type": "select", "use": ["u"]}]
+with open(os.path.join(d, "config.yaml"), "w") as fh:
+    yaml.safe_dump(cfg, fh, sort_keys=False, allow_unicode=True)
+b = os.environ["MIHOMO_BIN"]
+t = subprocess.run([b, "-t", "-d", d], capture_output=True, text=True)
+cfg_ok = "successful" in (t.stdout + t.stderr).lower()
+lg = open(os.path.join(d, "run.log"), "w")
+pr = subprocess.Popen([b, "-d", d], stdout=lg, stderr=subprocess.STDOUT)
+time.sleep(6)
+r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                    "-x", "http://127.0.0.1:%d" % port, "--max-time", "20",
+                    "http://www.gstatic.com/generate_204"], capture_output=True, text=True)
+pr.terminate()
+try:
+    pr.wait(timeout=5)
+except Exception:
+    pr.kill()
+lg.close()
+log = open(os.path.join(d, "run.log"), encoding="utf-8", errors="replace").read()
+print("形态=%-4s config_ok=%-5s 真实HTTP=%-4s 日志出现 REALITY 行=%d"
+      % (kind, cfg_ok, (r.stdout or "000").strip(),
+         sum(1 for line in log.splitlines() if "REALITY" in line.upper())))
+PYX
+        done
+        ok "trojan+REALITY 的两种导入形态已真机对照（结论见报告）"
+    else
+        note "配对失败, 对照跳过"
+        bad "trojan+REALITY 对照没做成（这条规则正落在分享链接通路上, 必须验）"
+    fi
+else
+    note "本批分享链接里没有 trojan://, 对照跳过"
+fi
+
 # ---------------------------------------------------------------- 6
 hdr "6. 一键回滚开关"
 RB_MIXED=$(pick_port); RB_CTRL=$(pick_port)
@@ -549,5 +858,6 @@ errs=$(grep -ci "level=error\|level=fatal" "$WORK/run.log" 2>/dev/null || echo 0
 [[ "$errs" == "0" ]] && ok "内核实例无 error/fatal 日志" || note "内核日志有 $errs 条 error/fatal"
 
 printf "\n\033[1m结果\033[0m\n"
-printf "  \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m\n" "$PASS" "$FAIL"
+printf "  \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m / \033[33m%d 项既有缺陷发现\033[0m\n" \
+       "$PASS" "$FAIL" "$FIND"
 exit $((FAIL > 0))

@@ -307,12 +307,22 @@ def parse_uri(uri: str) -> NodeProfile:
                                     provenance=Provenance.URI))
 
     # ---- VLESS 后量子加密（gap: 原来只在 raw.fields 里, profile 里看不见 → 漏判/假阳性）
-    if proto_id == "standard:vless" and q.get("encryption") not in (None, ""):
+    # `encryption=none` 是分享链接规范的**哨兵值**（#716: 该字段必填、默认 none = 不做
+    # VLESS Encryption）—— 它不是"要求后量子加密", 绝不能建成 feature: 否则每一条
+    # 常规 vless 链接都会被 `singbox.vless.encryption.never` 判成假 UNSUPPORTED
+    # （SB 接入实测: CC 上 13 条真实链接 2 条中招, 且两条都实测 204 可用）。
+    # 只有非空、非 none 的取值才是真特性（mlkem768x25519plus… / aes-128-gcm …）。
+    enc_value = q.get("encryption")
+    if (proto_id == "standard:vless"
+            and enc_value not in (None, "")
+            and str(enc_value).strip().lower() != "none"):
         profile.add_feature(Feature(
             id="standard:vless.encryption", presence=Presence.EXPLICIT,
             provenance=Provenance.URI,
             params={"encryption": Field.explicit(q["encryption"], Provenance.URI, "encryption")},
             note="VLESS encryption（取值含 mlkem768x25519plus… 后量子加密）; 值原样保存"))
+    # 注: `encryption` 在 `consumed` 里, 所以哨兵值不会掉进 extensions;
+    # 原值仍逐字保留在 raw_fields/raw_uri（I1/I2 不受影响）。
 
     # ---- 参数归属（挂到对应 feature 上, 否则进 extensions）
     reality_feat = profile.get_feature("standard:reality")
@@ -409,6 +419,14 @@ def generate_uri(profile: NodeProfile, *, allow_extensions: bool = False) -> str
     if allow_extensions:
         for e in profile.extensions:
             q.append((e["key"], str(e["value"])))
+    # VLESS 的 encryption 哨兵值（none）不建 feature（它不是能力需求, 建了就是假 UNSUPPORTED）,
+    # 但用户确实显式写过它 → 回写时逐字保留, 否则 generate_uri 会静默丢一个用户参数。
+    if scheme == "vless" and not any(
+            pf.raw_key == "encryption"
+            for feat in profile.features for pf in feat.params.values()):
+        sentinel = profile.raw_fields.get("encryption")
+        if sentinel not in (None, ""):
+            q.append(("encryption", sentinel))
 
     name = profile.metadata.get("name")
     frag = ""
