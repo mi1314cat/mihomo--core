@@ -68,8 +68,8 @@ clean_input() { echo "$1" | tr -d '\000-\037'; }
 
 port_in_use() {
     # TCP + UDP 都查（QUIC 冲突必须看 UDP）
-    ss -ulHn 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | grep -qx "$1"
-    ss -tlHn 2>/dev/null | grep -oE '[0-9]+$' | grep -qx "$1"
+    ss -ulHn 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | grep -x "$1" >/dev/null
+    ss -tlHn 2>/dev/null | grep -oE '[0-9]+$' | grep -x "$1" >/dev/null
 }
 
 # 端口区间须与 all.sh 起点和状态栏统计口径一致, 否则手工建的节点落在
@@ -157,10 +157,10 @@ ask_obfs() {
 # 从子配置读回 obfs (重建/导出时保持两侧一致)
 read_obfs_opts() {
     local f="$1"
-    HY_OBFS=$(grep -E '^[[:space:]]*obfs:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs:[[:space:]]*//' | tr -d "\"'")
-    HY_OBFS_PASSWORD=$(grep -E '^[[:space:]]*obfs-password:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs-password:[[:space:]]*//' | tr -d "\"'")
-    HY_OBFS_MIN=$(grep -E '^[[:space:]]*obfs-min-packet-size:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs-min-packet-size:[[:space:]]*//' | tr -d "\"'")
-    HY_OBFS_MAX=$(grep -E '^[[:space:]]*obfs-max-packet-size:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs-max-packet-size:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS=$(grep -E '^[[:space:]]*obfs:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*obfs:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS_PASSWORD=$(grep -E '^[[:space:]]*obfs-password:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*obfs-password:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS_MIN=$(grep -E '^[[:space:]]*obfs-min-packet-size:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*obfs-min-packet-size:[[:space:]]*//' | tr -d "\"'")
+    HY_OBFS_MAX=$(grep -E '^[[:space:]]*obfs-max-packet-size:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*obfs-max-packet-size:[[:space:]]*//' | tr -d "\"'")
 }
 
 # 渲染 obfs 块 (缩进 4 空格, 服务端/客户端通用 —— 字段名两侧完全一致)
@@ -185,8 +185,8 @@ HY_HOP_INTERVAL=""
 
 read_hop_opts() {
     local f="$1"
-    HY_PORTS=$(grep -E '^[[:space:]]*ports:' "$f" | head -1 | sed -E 's/^[[:space:]]*ports:[[:space:]]*//' | tr -d "\"'")
-    HY_HOP_INTERVAL=$(grep -E '^[[:space:]]*hop-interval:' "$f" | head -1 | sed -E 's/^[[:space:]]*hop-interval:[[:space:]]*//' | tr -d "\"'")
+    HY_PORTS=$(grep -E '^[[:space:]]*ports:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*ports:[[:space:]]*//' | tr -d "\"'")
+    HY_HOP_INTERVAL=$(grep -E '^[[:space:]]*hop-interval:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*hop-interval:[[:space:]]*//' | tr -d "\"'")
 }
 
 render_hop_block() {
@@ -206,7 +206,7 @@ ask_native_hopping() {
         range=$(clean_input "$range")
         [[ -z "$range" ]] && range="30000-31000"
 
-        echo "$range" | grep -qE '^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$' || {
+        echo "$range" | grep -E '^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$' >/dev/null || {
             print_error "格式应为 30000-31000 或 1000-2000,3000"; continue; }
 
         # 内核把 ports 交给 utils.NewUnsignedRanges[uint16] (adapter/outbound/hysteria2.go:239),
@@ -235,7 +235,7 @@ ask_native_hopping() {
         if ! read -r hop; then echo >&2; return 1; fi
         hop=$(clean_input "$hop")
         [[ -z "$hop" ]] && hop="30"
-        echo "$hop" | grep -qE '^[0-9]+(-[0-9]+)?$' || {
+        echo "$hop" | grep -E '^[0-9]+(-[0-9]+)?$' >/dev/null || {
             print_error "格式应为 30 或 15-30 (内核只接受单区间, 写 15,30 会报 invalid range)"; continue; }
         break
     done
@@ -284,7 +284,7 @@ ask_masquerade() {
             printf "  伪装站 URL (例如 https://example.com): " >&2
             if ! read -r u; then echo >&2; return 1; fi
             u=$(clean_input "$u")
-            echo "$u" | grep -qE '^(https?|file)://[^[:space:]]+$' || {
+            echo "$u" | grep -E '^(https?|file)://[^[:space:]]+$' >/dev/null || {
                 print_error "必须以 http:// / https:// / file:// 开头 (否则内核报 unknown masquerade URL scheme)"
                 return 1; }
             HY_MASQUERADE="$u" ;;
@@ -322,8 +322,8 @@ get_next_index() {
 # IP 检测
 # ================================
 detect_listen_ip_mode() {
-    ip -4 addr show scope global | grep -q "inet " && has_ipv4=true || has_ipv4=false
-    ip -6 addr show scope global | grep -q "inet6 [2-9a-fA-F]" && has_ipv6=true || has_ipv6=false
+    ip -4 addr show scope global | grep "inet " >/dev/null && has_ipv4=true || has_ipv4=false
+    ip -6 addr show scope global | grep "inet6 [2-9a-fA-F]" >/dev/null && has_ipv6=true || has_ipv6=false
 
     $has_ipv4 && ! $has_ipv6 && echo "ipv4" && return
     ! $has_ipv4 && $has_ipv6 && echo "ipv6" && return
@@ -375,7 +375,7 @@ detect_public_ip() {
     local_ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | \
         while read -r ip; do
             [[ "$ip" == 172.* || "$ip" == 10.* || "$ip" == 127.* || "$ip" == 192.168.* ]] || echo "$ip"
-        done | head -1)
+        done | awk 'NR==1')
     public_ip=$(m_server_ip)
     if [[ -n "$public_ip" && "$public_ip" != "$local_ip" ]]; then
         print_warn "出口IP($public_ip) != 网卡IP($local_ip), 可能走了代理, 默认用网卡IP"
@@ -514,7 +514,7 @@ ask_port_hopping() {
         range=$(clean_input "$range")
         [[ -z "$range" ]] && range="30000-31000"
 
-        if ! echo "$range" | grep -qE '^[0-9]+-[0-9]+$'; then
+        if ! echo "$range" | grep -E '^[0-9]+-[0-9]+$' >/dev/null; then
             print_error "范围格式应为 起始-结束, 例如 30000-31000"
             continue
         fi
@@ -528,14 +528,14 @@ ask_port_hopping() {
         (( end - start > 10000 )) && \
             print_warn "跨度 $((end-start)) 个端口偏大, 建议缩小到 1-2 千"
 
-        conflicts=$(seq "$start" "$end" | grep -Fxf <(echo "$used_ports") | head -5 | paste -sd' ')
+        conflicts=$(seq "$start" "$end" | grep -Fxf <(echo "$used_ports") | awk 'NR<=5' | paste -sd' ')
         if [[ -n "$conflicts" ]]; then
             print_error "范围 $range 与已监听 UDP 服务冲突: $conflicts"
             print_warn "请换一段范围"
             continue
         fi
 
-        if iptables -t nat -S PREROUTING 2>/dev/null | grep -q "dport $start:$end"; then
+        if iptables -t nat -S PREROUTING 2>/dev/null | grep "dport $start:$end" >/dev/null; then
             print_error "PREROUTING 已存在 $start:$end 的 REDIRECT 规则 (重复添加会覆盖)"
             continue
         fi
@@ -591,8 +591,8 @@ validate_yaml() {
 # ================================
 load_server_meta() {
     local in_file="$1"
-    CERT_FILE=$(grep -E '^[[:space:]]*certificate:' "$in_file" | head -1 | awk '{print $2}' | tr -d '\047\042')
-    KEY_FILE=$(grep -E '^[[:space:]]*private-key:' "$in_file" | head -1 | awk '{print $2}' | tr -d '\047\042')
+    CERT_FILE=$(grep -E '^[[:space:]]*certificate:' "$in_file" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
+    KEY_FILE=$(grep -E '^[[:space:]]*private-key:' "$in_file" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
     if [[ -f "$CERT_FILE" ]]; then
         CERT_DOMAIN=$(extract_cert_domain "$CERT_FILE")
         if cert_is_trusted "$CERT_FILE"; then CERT_TRUSTED=true; else CERT_TRUSTED=false; fi
@@ -723,15 +723,15 @@ list_configs() {
             continue
         fi
 
-        port=$(grep -E '^[[:space:]]*port:' "$f" | head -1 | awk -F: '{gsub(/ /,"",$2); print $2}')
+        port=$(grep -E '^[[:space:]]*port:' "$f" | awk 'NR==1' | awk -F: '{gsub(/ /,"",$2); print $2}')
         local cert
-        cert=$(grep -E '^[[:space:]]*certificate:' "$f" | head -1 | awk '{print $2}' | tr -d '\047\042')
+        cert=$(grep -E '^[[:space:]]*certificate:' "$f" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
         local dom
         dom=$(extract_cert_domain "$cert" 2>/dev/null)
 
         check_copy_staleness "$cert" 2>/dev/null || cert="$cert  ⚠副本已过期(源已续期)"
         local obfs
-        obfs=$(grep -E '^[[:space:]]*obfs:' "$f" | head -1 | sed -E 's/^[[:space:]]*obfs:[[:space:]]*//')
+        obfs=$(grep -E '^[[:space:]]*obfs:' "$f" | awk 'NR==1' | sed -E 's/^[[:space:]]*obfs:[[:space:]]*//')
         printf "${GREEN}%s${RESET}) 端口:${BLUE}%s${RESET} 域名:${YELLOW}%s${RESET} 混淆:${MAGENTA}%s${RESET} 证书:${CYAN}%s${RESET}\n" \
             "$num" "${port:-N/A}" "${dom:-N/A}" "${obfs:-关}" "${cert:-N/A}" >&2
     done
@@ -763,7 +763,7 @@ delete_config() {
 
     if [[ "$c" =~ ^[yY]$ ]]; then
         local cert_file
-        cert_file=$(grep -E '^[[:space:]]*certificate:' "$IN_FILE" | head -1 | awk '{print $2}' | tr -d '\047\042')
+        cert_file=$(grep -E '^[[:space:]]*certificate:' "$IN_FILE" | awk 'NR==1' | awk '{print $2}' | tr -d '\047\042')
 
         # 撤销端口跳跃
         if [[ -f "$OUT_DIR/${PROTO}_meta-$pad.json" ]]; then

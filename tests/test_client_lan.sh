@@ -16,7 +16,7 @@ export CLI_SERVICE=mihomo-client
 
 hdr "0. 环境"
 printf "  架构: %s\n" "$(uname -m)"
-printf "  内核: %s\n" "$("$CLI_BIN" -v | head -1)"
+printf "  内核: %s\n" "$("$CLI_BIN" -v | awk 'NR==1')"
 
 cd "$CLI_ROOT"
 # source client.sh (末尾会进菜单, 这里截断)
@@ -59,7 +59,7 @@ if kill -0 "$CPID" 2>/dev/null; then ok "客户端进程运行中"; else bad "�
 
 S=$(cat "$CLI_ROOT/.secret" 2>/dev/null)
 mem=$(curl -s -m 8 -H "Authorization: Bearer $S" "http://127.0.0.1:$PORT_CTRL/proxies/PROXY")
-if printf '%s' "$mem" | grep -q '"all"'; then
+if printf '%s' "$mem" | grep '"all"' >/dev/null; then
     ok "PROXY 组已建立"
     printf '%s' "$mem" | python3 -c "
 import sys,json
@@ -78,10 +78,10 @@ ip2=$(curl -s -m 30 --socks5-hostname "127.0.0.1:$PORT_MIXED" http://api.ipify.o
 [[ -n "$ip2" ]] && ok "SOCKS5 代理出网 → $ip2" || bad "SOCKS5 无法出网"
 
 hdr "6. 实际用了哪个节点"
-grep -oE "using [A-Za-z]+\[[^]]+\]" /tmp/cc_run.log 2>/dev/null | sort | uniq -c | head -5 | sed 's/^/    /'
+grep -oE "using [A-Za-z]+\[[^]]+\]" /tmp/cc_run.log 2>/dev/null | sort | uniq -c | awk 'NR<=5' | sed 's/^/    /'
 
 errs=$(grep -ci "level=fatal" /tmp/cc_run.log 2>/dev/null); errs=${errs:-0}
-[[ "$errs" == "0" ]] && ok "无 fatal 日志" || { bad "有 $errs 条 fatal"; grep -i fatal /tmp/cc_run.log | head -3; }
+[[ "$errs" == "0" ]] && ok "无 fatal 日志" || { bad "有 $errs 条 fatal"; grep -i fatal /tmp/cc_run.log | awk 'NR<=3'; }
 
 kill $CPID 2>/dev/null
 hdr "结果"

@@ -454,9 +454,9 @@ ensure_reality() {
     print_info "生成 Reality 密钥对..."
     local out priv pub sid
     out=$("$MIHOMO_BIN" generate reality-keypair 2>/dev/null) || { print_error "密钥生成失败"; return 1; }
-    priv=$(grep -i "private" <<<"$out" | head -1 | tr -d ' \r' | cut -d: -f2)
-    pub=$(grep -i "public"  <<<"$out" | head -1 | tr -d ' \r' | cut -d: -f2)
-    sid=$(grep -i "short"   <<<"$out" | head -1 | tr -d ' \r' | cut -d: -f2)
+    priv=$(grep -i "private" <<<"$out" | awk 'NR==1' | tr -d ' \r' | cut -d: -f2)
+    pub=$(grep -i "public"  <<<"$out" | awk 'NR==1' | tr -d ' \r' | cut -d: -f2)
+    sid=$(grep -i "short"   <<<"$out" | awk 'NR==1' | tr -d ' \r' | cut -d: -f2)
     [[ -n "$priv" && -n "$pub" ]] || { print_error "无法解析密钥"; return 1; }
     [[ -n "$sid" ]] || sid=$(openssl rand -hex 4)
     m_set_env "$SRV_ENV" PRIVATE_KEY "$priv"
@@ -664,7 +664,7 @@ gen() {
     #   同一套脚本在 v1.19.32 的机器上跑就没事, 用户只会觉得"随机出错"。
     #   在这里跳过, 摘要会明确写"跳过 · 内核 v1.19.24 不支持 snell"。
     if ! m_kernel_supports "$mproto"; then
-        local _kv; _kv=$("${MIHOMO_BIN:-/root/catmi/mihomo/mihomo}" -v 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+        local _kv; _kv=$("${MIHOMO_BIN:-/root/catmi/mihomo/mihomo}" -v 2>/dev/null | awk 'NR==1' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
         record "$label" "-" "跳过" "内核 ${_kv:-本机} 不支持 $mproto (升级内核后可生成)"
         return
     fi

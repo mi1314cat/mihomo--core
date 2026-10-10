@@ -57,16 +57,19 @@ n_checked=0
 while IFS= read -r line; do
     # 形如: python3 "$BUILD_SUB" --out-dir "$SRV_OUT" --list-tags
     # 取变量名和该行出现的所有 --flag
-    var=$(printf '%s' "$line" | grep -oE '\$[A-Z_]+' | head -1 | tr -d '$')
+    var=$(printf '%s' "$line" | grep -oE '\$[A-Z_]+' | awk 'NR==1' | tr -d '$')
     [[ -n "$var" ]] || continue
     flags=$(printf '%s' "$line" | grep -oE '\-\-[a-z][a-z0-9-]*' | sort -u)
     [[ -n "$flags" ]] || continue
 
     # 变量名 -> 实际脚本文件: 在 src 里找 `VAR=` 定义
     target=""
-    def=$(grep -rhoE "${var}=.*" "$ROOT/src" --include='*.sh' 2>/dev/null | head -1)
+    def=$(grep -rhoE "${var}=.*" "$ROOT/src" --include='*.sh' 2>/dev/null | awk 'NR==1')
     for f in $(find "$ROOT/src" -name '*.py' | sort); do
-        if printf '%s' "$def" | grep -q "$(basename "$f")"; then target="$f"; break; fi
+        # 别写 `printf ... | grep -q "$(basename "$f")"`: grep -q 早退会让
+        # printf 吃 SIGPIPE, 本脚本开着 pipefail, 明明命中也会走 false。
+        _bn=$(basename "$f")
+        if printf '%s' "$def" | grep "$_bn" >/dev/null; then target="$f"; break; fi
     done
     # 变量名与脚本同名时的兜底 (BUILD_SUB -> build_sub.py)
     if [[ -z "$target" ]]; then

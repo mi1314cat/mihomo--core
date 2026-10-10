@@ -66,7 +66,7 @@ fi
 # ---------- 2. 代理扫描端口表 ----------
 # install.sh 的 _scan_ports vs core_install.sh 的 scan_proxy
 extract_ports() {
-    sed -n "/for port in /,/; do/p" "$1" | head -1 \
+    sed -n "/for port in /,/; do/p" "$1" | awk 'NR==1' \
         | grep -oE '[0-9]{2,5}' | sort -n | tr '\n' ' '
 }
 P1="$(extract_ports install.sh)"

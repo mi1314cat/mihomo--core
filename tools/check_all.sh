@@ -35,7 +35,7 @@ run_gate() {
         printf "${RED}❌${RESET}\n"
         failed=$((failed + 1))
         FAILED_NAMES+=("$name")
-        printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '❌|⚠|不|错|缺|漂移|断线' | head -8 | sed 's/^/      /'
+        printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '❌|⚠|不|错|缺|漂移|断线' | awk 'NR<=8' | sed 's/^/      /'
     fi
 }
 

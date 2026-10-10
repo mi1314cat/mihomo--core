@@ -156,16 +156,16 @@ read_tuic_opts() {
     local f="$1" v=""
     # ⚠ 本文件开了 `set -o errexit -o pipefail`; grep 无命中时退出码 1 会让整脚本退出,
     #   所以每条读取都必须 `|| true` —— 否则老配置 (没有这些注释行) 重建时直接崩。
-    v=$(grep -E '^[[:space:]]*congestion-controller:' "$f" | head -1 | awk '{print $2}') || true
+    v=$(grep -E '^[[:space:]]*congestion-controller:' "$f" | awk 'NR==1' | awk '{print $2}') || true
     CC_PROFILE="${v:-bbr}"
-    v=$(grep -E '^[[:space:]]*# udp-relay-mode:' "$f" | head -1 | sed -E 's/.*# udp-relay-mode:[[:space:]]*//') || true
+    v=$(grep -E '^[[:space:]]*# udp-relay-mode:' "$f" | awk 'NR==1' | sed -E 's/.*# udp-relay-mode:[[:space:]]*//') || true
     UDP_RELAY="${v:-native}"
     if grep -qE '^[[:space:]]*# reduce-rtt:[[:space:]]*true' "$f"; then
         REDUCE_RTT=true
     else
         REDUCE_RTT=false
     fi
-    v=$(grep -E '^[[:space:]]*# heartbeat-interval:' "$f" | head -1 | sed -E 's/.*# heartbeat-interval:[[:space:]]*//') || true
+    v=$(grep -E '^[[:space:]]*# heartbeat-interval:' "$f" | awk 'NR==1' | sed -E 's/.*# heartbeat-interval:[[:space:]]*//') || true
     HEARTBEAT_MS="${v:-10000}"
     return 0
 }
@@ -212,8 +212,8 @@ get_next_index() {
 # IP 检测
 # ================================
 detect_listen_ip_mode() {
-    ip -4 addr show scope global | grep -q "inet " && has_ipv4=true || has_ipv4=false
-    ip -6 addr show scope global | grep -q "inet6 [2-9a-fA-F]" && has_ipv6=true || has_ipv6=false
+    ip -4 addr show scope global | grep "inet " >/dev/null && has_ipv4=true || has_ipv4=false
+    ip -6 addr show scope global | grep "inet6 [2-9a-fA-F]" >/dev/null && has_ipv6=true || has_ipv6=false
 
     $has_ipv4 && ! $has_ipv6 && echo "ipv4" && return
     ! $has_ipv4 && $has_ipv6 && echo "ipv6" && return
@@ -388,7 +388,7 @@ list_configs() {
             continue
         fi
 
-        port=$(grep -E '^[[:space:]]*port:' "$f" | head -1 | awk -F: '{gsub(/ /,"",$2); print $2}')
+        port=$(grep -E '^[[:space:]]*port:' "$f" | awk 'NR==1' | awk -F: '{gsub(/ /,"",$2); print $2}')
         uuid=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$f" | awk -F: '{print $1}' | tr -d ' ')
         pass=$(grep -E '^[[:space:]]*[0-9a-fA-F-]{36}:' "$f" | awk -F: '{print $2}' | tr -d ' ')
         cc=$(grep -E 'congestion-controller:' "$f" | awk '{print $2}')
@@ -430,7 +430,7 @@ delete_config() {
         local old_cert=""
         if [[ -f "$CONF_DIR/${PROTO}-$num.yaml" ]]; then
             old_cert=$(grep -m1 -oE '(certificate|ca):[[:space:]]*[^[:space:]#]+' \
-                          "$CONF_DIR/${PROTO}-$num.yaml" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//')
+                          "$CONF_DIR/${PROTO}-$num.yaml" 2>/dev/null | awk 'NR==1' | sed 's/^[^:]*:[[:space:]]*//')
         fi
         # 删除节点时同步清理它的 Nginx 回源配置并 reload。
         # 键用片段文件名 (tuicv5-01), 与创建时登记的一致;

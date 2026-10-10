@@ -95,12 +95,12 @@ _own_mixed_port() {
     local root="$1" f p
     f="$root/settings.env"
     if [[ -f "$f" ]]; then
-        p=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\{2,5\}\)["]*$/\1/p' "$f" 2>/dev/null | head -1)
+        p=$(sed -n 's/^PORT_MIXED=["]*\([0-9]\{2,5\}\)["]*$/\1/p' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
     fi
     f="$root/conf/config.yaml"
     if [[ -f "$f" ]]; then
-        p=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\{2,5\}\)$/\1/p' "$f" 2>/dev/null | head -1)
+        p=$(sed -n 's/^mixed-port:[[:space:]]*\([0-9]\{2,5\}\)$/\1/p' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$p" && "$p" != "0" ]] && { printf '%s' "$p"; return 0; }
     fi
     return 1
@@ -113,7 +113,7 @@ _sys_file_proxies() {
              "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$HOME/.curlrc" \
              /etc/profile.d/*.sh; do
         [[ -f "$f" ]] || continue
-        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | head -1)
+        v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?\(https\?\|all\)_proxy[[:space:]]*=[[:space:]]*["'"'"']\?\([^"'"'"'[:space:]]\+\)["'"'"']\?.*/\3/ip' "$f" 2>/dev/null | awk 'NR==1')
         [[ -n "$v" ]] && printf '%s\n' "$v"
     done
     v=$(git config --global --get http.proxy 2>/dev/null)

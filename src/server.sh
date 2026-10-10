@@ -65,7 +65,7 @@ status_block() {
         svc="${YELLOW}○ 未运行${RESET}"
     fi
     ver="未安装"
-    [[ -x "$SRV_BIN" ]] && ver=$("$SRV_BIN" -v 2>/dev/null | head -1 | awk '{print $3}')
+    [[ -x "$SRV_BIN" ]] && ver=$("$SRV_BIN" -v 2>/dev/null | awk 'NR==1' | awk '{print $3}')
     [[ -n "$ver" ]] || ver="未知"
     frag=$(ls "$SRV_CONFIGD"/*.yaml 2>/dev/null | wc -l | tr -d ' ')
 
@@ -211,7 +211,7 @@ fw_after_node_change() {
     local nf first
     for nf in "$SRV_CONFIGD"/*.yaml; do
         [[ -f "$nf" ]] || continue
-        first=$(fw_ports_in_file "$nf" | head -1)
+        first=$(fw_ports_in_file "$nf" | awk 'NR==1')
         fw_is_registered "$first" && continue
         fw_open_node_file "$nf"
     done
@@ -439,7 +439,7 @@ wipe_all_nodes() {
     for f in "$SRV_CONFIGD"/*.yaml; do
         [[ -f "$f" ]] || continue
         printf "    %-24s %s\n" "$(basename "$f")" \
-            "$(grep -hoE 'name: *m[A-Za-z0-9_-]+' "$f" 2>/dev/null | head -1 | sed 's/name: *//')"
+            "$(grep -hoE 'name: *m[A-Za-z0-9_-]+' "$f" 2>/dev/null | awk 'NR==1' | sed 's/name: *//')"
     done
     # out/ 里的客户端产物**一起删**。服务端配置都没了, 那些产物指向的端口
     # 早已没人监听, 留着只会让人把死配置分发出去 —— 面板曾经显示
@@ -664,7 +664,7 @@ update_config() {
     else
         printf "  运行状态: ${RED}%s${RESET}\n" "$st" >&2
     fi
-    ver=$("$SRV_BIN" -v 2>/dev/null | head -1)
+    ver=$("$SRV_BIN" -v 2>/dev/null | awk 'NR==1')
     printf "  内核版本: %s\n" "${ver:--}" >&2
     # 只列协议端口区间 (20000-29999), 与 status_block 口径一致 ——
     # 全量列会把 9090 / SSH / nginx 都倒出来, 反而看不出节点情况。
@@ -736,7 +736,7 @@ sys_info() {
     printf "  磁盘可用: %s\n" "$memfree"
     printf "  运行时长: %s\n" "$(uptime -p 2>/dev/null)"
     if [[ -x "$SRV_BIN" ]]; then
-        printf "  Mihomo  : %s\n" "$("$SRV_BIN" -v 2>/dev/null | head -1)"
+        printf "  Mihomo  : %s\n" "$("$SRV_BIN" -v 2>/dev/null | awk 'NR==1')"
     fi
     # 同上: 按进程名匹配 (ss 只显示进程名), 且 TCP+UDP 都要列 ——
     # hysteria2 / tuic 是 QUIC 协议, 只监听 UDP, 只列 TCP 会漏掉它们。
@@ -748,7 +748,7 @@ sys_info() {
     if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
         firewall-cmd --list-ports 2>/dev/null | sed 's/^/    /'
     elif command -v ufw >/dev/null; then
-        ufw status 2>/dev/null | head -6 | sed 's/^/    /'
+        ufw status 2>/dev/null | awk 'NR<=6' | sed 's/^/    /'
     else
         printf "    (未检测到 firewall-cmd / ufw)\n"
     fi
@@ -938,7 +938,7 @@ svc_menu() {
         1) systemctl start "$SRV_SERVICE" && print_ok "已启动" ;;
         2) systemctl stop "$SRV_SERVICE" && print_ok "已停止" ;;
         3) systemctl restart "$SRV_SERVICE" && print_ok "已重启" ;;
-        4) systemctl status "$SRV_SERVICE" --no-pager | head -15 ;;
+        4) systemctl status "$SRV_SERVICE" --no-pager | awk 'NR<=15' ;;
         5) systemctl enable "$SRV_SERVICE" && print_ok "已设置开机自启" ;;
         6) srv_kernel_menu ;;
     esac
@@ -993,7 +993,7 @@ kernel_probe() {   # $1=文件  $2=解包目标
             gunzip -c "$f" > "$out" 2>/dev/null || return 1 ;;
         *.zip)
             command -v unzip >/dev/null || return 1
-            inner=$(unzip -Z1 "$f" 2>/dev/null | grep -E '(^|/)mihomo$' | head -1)
+            inner=$(unzip -Z1 "$f" 2>/dev/null | grep -E '(^|/)mihomo$' | awk 'NR==1')
             [[ -n "$inner" ]] || return 1
             unzip -p "$f" "$inner" > "$out" 2>/dev/null || return 1 ;;
         *)
@@ -1059,7 +1059,7 @@ kernel_verify() {
             printf "    不是可用的 mihomo 内核 (无法解压或无法执行)\n\n" >&2
             continue
         fi
-        ver=$("$probe" -v 2>/dev/null | head -1)
+        ver=$("$probe" -v 2>/dev/null | awk 'NR==1')
         arch=$(kernel_arch_of "$probe")
         print_ok "$base"
         printf "    版本: %s\n" "$ver" >&2

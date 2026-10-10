@@ -473,7 +473,7 @@ if [[ "${MIHOMO_SKIP_IF_PRESENT:-1}" != "0" \
    && -z "${MIHOMO_LOCAL_BIN:-}" && -x "$INSTALL_DIR/mihomo" ]] \
    && _mihomo_probe "$INSTALL_DIR/mihomo"; then
     say "检测到本机已有可用内核, 跳过内核安装"
-    say "  版本: $("$INSTALL_DIR/mihomo" -v 2>/dev/null | head -1)"
+    say "  版本: $("$INSTALL_DIR/mihomo" -v 2>/dev/null | awk 'NR==1')"
     say "  位置: $INSTALL_DIR/mihomo"
     say "  需要换版本请用面板: 服务管理 → 手动上传内核"
     _SKIP_CORE=1
@@ -523,7 +523,7 @@ fi
 if [[ "$_SKIP_CORE" -eq 0 ]]; then
 if [[ -n "$LOCAL_BIN" && -x "$LOCAL_BIN" ]]; then
     say "使用指定内核: $LOCAL_BIN"
-    say "  版本: $("$LOCAL_BIN" -v 2>/dev/null | head -1)"
+    say "  版本: $("$LOCAL_BIN" -v 2>/dev/null | awk 'NR==1')"
     # 架构自检: 架构不对的话, 装完 systemctl start 才炸, 现场很难查
     if ! "$LOCAL_BIN" -v >/dev/null 2>&1; then
         die "内核无法在本机执行 (架构不匹配?)
@@ -535,7 +535,7 @@ if [[ -n "$LOCAL_BIN" && -x "$LOCAL_BIN" ]]; then
 elif [[ -n "$LOCAL_SRC" ]]; then
     _mihomo_probe "$TMP/mihomo" || die "上传的内核无法在本机执行 (架构不匹配?)
   本机架构: $(uname -m)"
-    say "内核可执行: $("$TMP/mihomo" -v | head -1)"
+    say "内核可执行: $("$TMP/mihomo" -v | awk 'NR==1')"
 else
 
 say "查询最新版本..."
@@ -648,7 +648,7 @@ fi
 # ---------- 冒烟测试 ----------
 chmod +x "$TMP/mihomo"
 "$TMP/mihomo" -v >/dev/null 2>&1 || die "内核无法执行, 架构或指令集不匹配"
-say "内核可执行: $("$TMP/mihomo" -v | head -1)"
+say "内核可执行: $("$TMP/mihomo" -v | awk 'NR==1')"
 fi
 
 # ---------- 目录 ----------

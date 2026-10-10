@@ -110,7 +110,7 @@ lan_ip() {
     [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
     # ② 没有默认路由 (纯局域网/离线) -> 拿第一个非回环 IPv4
     v=$(ip -4 -o addr show scope global 2>/dev/null \
-        | awk '{print $4}' | cut -d/ -f1 | grep -vE '^127\.' | head -1)
+        | awk '{print $4}' | cut -d/ -f1 | grep -vE '^127\.' | awk 'NR==1')
     [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
     # ③ 连网卡地址都拿不到 -> 退回回环, 至少不是空字符串
     printf '127.0.0.1'
@@ -278,7 +278,9 @@ node_tag_from_name() {
     n="${n%%[-_ ]*}"
     n="${n:0:6}"
     # 只保留字母数字和中文; 其余会让 YAML 的 name 字段出问题
-    printf '%s' "$n" | tr -cd '[:alnum:]' | head -c 6
+    # `| head -c 6` 会让 tr 吃 SIGPIPE(141); 先取全串再切, 语义完全一样
+    local _clean; _clean=$(printf '%s' "$n" | tr -cd '[:alnum:]')
+    printf '%s' "${_clean:0:6}"
 }
 
 subs_put() {   # upsert
@@ -858,7 +860,7 @@ node_add() {
         printf '  新组叫什么? (两台服务器同名时建议用地区/线路区分, 如 美国RN / 香港备用): ' >&2
         local _nn; read -r _nn || _nn=""
         _nn=${_nn// /}
-        if [[ -n "$_nn" ]] && ! printf '%s' "$_nn" | grep -q '[/\\:*?"<>|[:space:]]'; then
+        if [[ -n "$_nn" ]] && ! printf '%s' "$_nn" | grep '[/\\:*?"<>|[:space:]]' >/dev/null; then
             if [[ -f "$CLI_PROVIDERS/$_nn.yaml" ]]; then
                 print_error "已经有这个组了: $_nn"; rm -rf "$tmp"; return 1
             fi
@@ -1057,7 +1059,7 @@ node_rename() {
     #   依赖 UTF-8 locale, 在没设 UTF-8 locale 的机器上整个字符类直接
     #   失效 —— 结果连纯 ASCII 的 "RN-US" 都被拒, 报错还写着"不能含空格",
     #   与实际原因毫无关系。改成用 grep 挑危险字符, 按字节处理, 与 locale 无关。
-    if printf '%s' "$nn" | grep -q '[/\\:*?"<>|[:space:]]'; then
+    if printf '%s' "$nn" | grep '[/\\:*?"<>|[:space:]]' >/dev/null; then
         print_error "名字里不能含 / \\ : * ? \" < > | 或空格"
         return 1
     fi
@@ -1144,7 +1146,7 @@ status_block() {
     [[ "$pid" == "0" ]] && pid=""
     n=$(node_count)
     ver="未安装"
-    [[ -x "$CLI_BIN" ]] && ver=$("$CLI_BIN" -v 2>/dev/null | head -1 | awk '{print $3}')
+    [[ -x "$CLI_BIN" ]] && ver=$("$CLI_BIN" -v 2>/dev/null | awk 'NR==1' | awk '{print $3}')
     [[ -n "$ver" ]] || ver="未知"
 
     if svc_active; then
@@ -1549,7 +1551,7 @@ svc_menu() {
         1) systemctl start "$CLI_SERVICE" && print_ok "已启动" ;;
         2) systemctl stop "$CLI_SERVICE" && print_ok "已停止" ;;
         3) systemctl restart "$CLI_SERVICE" && print_ok "已重启" ;;
-        4) systemctl status "$CLI_SERVICE" --no-pager | head -12 ;;
+        4) systemctl status "$CLI_SERVICE" --no-pager | awk 'NR<=12' ;;
         5) systemctl enable "$CLI_SERVICE" && print_ok "已设置开机自启" ;;
         6) kernel_upload_menu ;;
     esac
@@ -1577,7 +1579,7 @@ check_menu() {
         case "$c" in
             1) cfg_check ;;
             2) cfg_check_strict ;;
-            3) systemctl status "$CLI_SERVICE" --no-pager | head -8 ;;
+            3) systemctl status "$CLI_SERVICE" --no-pager | awk 'NR<=8' ;;
             4) kernel_upload_menu ;;
             0) return 0 ;;
             *) ui_invalid "$c"; continue ;;
@@ -1646,7 +1648,7 @@ kernel_probe() {   # $1=文件  $2=解包目标
             gunzip -c "$f" > "$out" 2>/dev/null || return 1 ;;
         *.zip)
             command -v unzip >/dev/null || return 1
-            inner=$(unzip -Z1 "$f" 2>/dev/null | grep -E '(^|/)mihomo$' | head -1)
+            inner=$(unzip -Z1 "$f" 2>/dev/null | grep -E '(^|/)mihomo$' | awk 'NR==1')
             [[ -n "$inner" ]] || return 1
             unzip -p "$f" "$inner" > "$out" 2>/dev/null || return 1 ;;
         *)
@@ -1700,7 +1702,7 @@ kernel_verify() {
             printf "    不是可用的 mihomo 内核 (无法解压或无法执行)\n\n" >&2
             continue
         fi
-        ver=$("$probe" -v 2>/dev/null | head -1)
+        ver=$("$probe" -v 2>/dev/null | awk 'NR==1')
         arch=$(kernel_arch_of "$probe")
         print_ok "$base"
         printf "    版本: %s\n" "$ver" >&2

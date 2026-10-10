@@ -21,7 +21,7 @@ command -v mihomo >/dev/null 2>&1 && MIHOMO=$(command -v mihomo) || MIHOMO=/root
 export CLI_BIN="$MIHOMO"
 
 hdr "0. 环境"
-printf "  mihomo : %s\n" "$($MIHOMO -v 2>/dev/null | head -1)"
+printf "  mihomo : %s\n" "$($MIHOMO -v 2>/dev/null | awk 'NR==1')"
 printf "  root   : %s\n" "$CLI_ROOT"
 rm -rf "$CLI_ROOT"; mkdir -p "$CLI_ROOT"
 
@@ -95,7 +95,7 @@ else
 fi
 
 mem=$(curl -s -m 8 "http://127.0.0.1:$PORT_CTRL/proxies/PROXY" -H "Authorization: Bearer $(cat "$CLI_ROOT/.secret" 2>/dev/null)")
-if printf '%s' "$mem" | grep -q '"all"'; then
+if printf '%s' "$mem" | grep '"all"' >/dev/null; then
     ok "PROXY 组已建立"
     printf '%s' "$mem" | python3 -c "
 import sys,json
@@ -120,7 +120,7 @@ ip2=$(curl -s -m 25 --socks5-hostname "127.0.0.1:$PORT_MIXED" http://api.ipify.o
 errs=$(grep -ci "level=error\|level=fatal" /tmp/clitest_run.log 2>/dev/null)
 errs=${errs:-0}
 [[ "$errs" == "0" ]] && ok "无 error/fatal 日志" || bad "日志中有 $errs 条 error/fatal"
-grep -i "level=error\|level=fatal" /tmp/clitest_run.log 2>/dev/null | head -5
+grep -i "level=error\|level=fatal" /tmp/clitest_run.log 2>/dev/null | awk 'NR<=5'
 
 kill $CPID 2>/dev/null
 hdr "结果"

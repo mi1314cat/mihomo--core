@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ================================================================
-# check_pipe_early.sh — `set -e` + 命令替换里的早退读取器 = 随机猝死
+# check_pipe_early.sh — pipefail + 早退读取器 = 猝死 / 判断反
 #
 # 事故原型（X 内核客户端实测）:
 #
@@ -10,6 +10,10 @@
 # （退出码 141）。脚本开着 `set -euo pipefail`, 管道整体非零 → 赋值
 # 失败 → set -e 当场杀掉脚本。12 次里死了 4 次 —— 用户看到的是
 # "菜单只闪了一下版本号就回到命令行", 时好时坏, 根本没法复现。
+#
+# 触发条件是 **pipefail**（不是 -e）: 只有它才会把 141 变成"整条管道失败"。
+#   * 同时开着 -e  → 随机猝死（X 客户端实测 12 次死 4 次）
+#   * 只开 pipefail → if 判断反了（`cmd | grep -q X` 明明命中也算失败）
 #
 # 判据很干净: 早退读取器只有 head / grep -q / grep -m。
 # awk、sed、sort、tail -n 都会读完输入才结束, 不会让上游吃 SIGPIPE。
@@ -42,31 +46,34 @@ FILES = sorted(set(FILES))
 
 # 读取位置的早退读取器: 前面是单个 `|`（不是 `||`）
 EARLY = re.compile(r"(?<!\|)\|(?!\|)\s*(?:head\b|grep\s+-[a-zA-Z]*[qm]\b)")
-# 变量赋值形式: var=$(...) / local var=$(...)
-ASSIGN = re.compile(r"^\s*(?:local\s+|declare\s+|readonly\s+)?[A-Za-z_][A-Za-z0-9_]*=\$\(")
-
 hits = []
 for rel in FILES:
+    # 跳过闸门自己: 它源码里的正则字面量（`|grep\\s+-...`）长得就像它要抓的
+    # 东西, 不跳过就会自己报自己。
+    if os.path.basename(rel) == "check_pipe_early.sh":
+        continue
     try:
         lines = open(rel, encoding="utf-8").read().splitlines()
     except Exception:
         continue
-    # 只查真正开着 errexit 的文件（lib 是被 source 的, 看调用方）
-    if not re.search(r"^set -[a-z]*e", "\n".join(lines[:40]), re.M):
+    # 触发条件是 pipefail（lib 是被 source 的, 看文件自己那行）
+    if "pipefail" not in "\n".join(lines[:40]):
         continue
     for i, line in enumerate(lines, 1):
         if line.lstrip().startswith("#"):
             continue
         if "|| true" in line:
             continue
-        if ASSIGN.match(line) and EARLY.search(line):
+        # 位置不限: 赋值形式会杀掉脚本（set -e）, 条件形式会让判断反
+        # （pipefail）—— 两种都是这个根因, 都要报。
+        if EARLY.search(line):
             hits.append(f"{rel}:{i}")
 
 if hits:
-    print("❌ set -e 文件里的早退管道会让上游吃 SIGPIPE(141), 随机杀脚本:")
+    print("❌ pipefail 脚本里的早退管道会让上游吃 SIGPIPE(141): 有 -e 就随机猝死, 没有就判断反:")
     for h in hits:
         print(f"     {h}")
     print("   修法: 先读完再切行（别用 `| head`）")
     sys.exit(1)
-print("✅ 没有早退管道（set -e 下不会随机吃 SIGPIPE）")
+print("✅ 没有早退管道（pipefail 下不会猝死、不会判断反）")
 PY
