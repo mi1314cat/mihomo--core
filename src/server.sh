@@ -1166,19 +1166,53 @@ export_all_nodes() {
         total=$((total+1))
     fi
 
+    # ★ 发布前闸门: 链接里的 host:port 必须与**当前在跑**的 listener 自洽。
+    #
+    # 为什么: out/<proto>_share-NN.txt 是派生文件 —— 节点删掉重建 (端口变了)
+    # 时它不会跟着变, 于是"链接还在、端口早没了"。RN 真机实测 12 条里 10 条
+    # 是这种死链 (50877/21168/23512/… 全表无监听), 而导出/发送一律"成功",
+    # 没有任何一处提示。**发一条连不上的链接比不发更糟**: 用户以为已经分享好了。
+    #
+    # 判据只有一份 (link_check.py); 这里只做"拒发 + 说清原因"。
+    local stale_list stale_n=0
+    stale_list=$(m_share_links_stale_list "$dir" "$SRV_CONF")
+    if [[ -n "$stale_list" ]]; then
+        stale_n=$(printf '%s\n' "$stale_list" | grep -c . || true)
+        print_warn "拒发 $stale_n 条分享链接 —— 端口与当前监听不一致 (发了也连不上)"
+        printf '    %s\n' $stale_list >&2
+        print_info "原因: 节点删掉/换端口后, out/ 里的链接产物不会跟着变"
+        print_info "处理: 「客户端产物设置 → 4) 清理陈旧产物」可回收"
+        echo >&2
+    fi
+
     # 2. 各协议节点的分享链接
+    #
+    # ★ glob 要同时覆盖两套命名: 单协议菜单写 <proto>_share-NN.txt, 批量
+    #   all.sh 写 <mproto>_<proto>_share-NN.txt。原来只 glob 第一套, 于是
+    #   批量生成的节点**一条链接都导不出来**, 而面板照打"已导出"。
     local proto f n=0
     for proto in reality vless vmess trojan hysteria2 tuicv5 anytls ss snell; do
-        links=$(ls "$dir"/${proto}_share-*.txt 2>/dev/null | sort)
+        links=$(ls "$dir"/${proto}_share-*.txt "$dir"/${proto}_*_share-*.txt 2>/dev/null | sort -u)
         [[ -n "$links" ]] || continue
-        echo "## $proto" >> "$file"; echo >> "$file"
+        local wrote_header=0
         while read -r f; do
             [[ -f "$f" ]] || continue
+            # 陈旧链接拒发 (原因上面已经逐条报过)
+            if [[ -n "$stale_list" ]] \
+               && grep -qxF "$(basename "$f")" <<<"$stale_list"; then
+                continue
+            fi
+            if (( wrote_header == 0 )); then
+                echo "## $proto" >> "$file"; echo >> "$file"; wrote_header=1
+            fi
             cat "$f" >> "$file"; echo >> "$file"; n=$((n+1))
         done <<<"$links"
+        (( wrote_header == 1 )) && total=$((total+1))
     done
     [[ $n -gt 0 ]] && total=$((total+1))
-    [[ $total -eq 0 ]] && { print_warn "out/ 下还没有节点产物, 先建几个节点"; return 1; }
+    [[ $total -eq 0 ]] && {
+        print_warn "out/ 下没有可发布的节点产物 (或全部与当前监听不一致, 见上面原因)"
+        rm -f "$file"; return 1; }
 
     print_ok "已导出: $file"
     echo "  段落 $total  节点链接 $n" >&2
@@ -1192,27 +1226,38 @@ export_all_nodes() {
 
 # 顶部显示一下产物规模 —— 不然用户不知道"已有产物"到底指多少个,
 # 也看不出清理残留有没有生效 (上一版显示 61 个节点, 实际早就清空了)。
+#
+# ★ 失效链接数也在这里显示: "12 条分享链接"看起来一切正常, 而其中 10 条指向
+#   没人听的端口。这个数字不摆出来, 用户永远不知道自己的链接是死的。
 _ca_show_artifact_count() {
-    local na ns; na=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    local na ns nbad; na=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
     ns=$(ls "$SRV_OUT"/*_share-*.txt 2>/dev/null | wc -l | tr -d ' ')
-    ui_kv_ascii "已有产物" "${na:-0} 个客户端配置 / ${ns:-0} 条分享链接"
+    nbad=$(m_share_links_stale)
+    if [[ "${nbad:-0}" != "0" ]]; then
+        ui_kv_ascii "已有产物" "${na:-0} 个客户端配置 / ${ns:-0} 条分享链接"
+        print_warn "其中 ${nbad} 条分享链接的端口已无人监听 (死链, 导出时会被拒发)"
+    else
+        ui_kv_ascii "已有产物" "${na:-0} 个客户端配置 / ${ns:-0} 条分享链接"
+    fi
 }
 
 _ca_clean_orphan() {
-    ui_clear; print_title "清理无对应节点的残留产物"
+    ui_clear; print_title "清理陈旧的残留产物"
     local r n del; r=$(m_artifacts_clean_orphan 1); n=${r%% *}; del=${r##* }
     if [[ "${n:-0}" == "0" ]]; then
         print_ok "没有残留产物, out/ 与当前节点一一对应"
         return 0
     fi
-    print_warn "发现 $n 个产物找不到对应节点 —— 这些是节点删掉后留下的"
-    print_info "它们的 server 指向早已没人监听的端口, 但仍会被 build_sub.py 收进订阅"
+    # 两类陈旧: ① 找不到对应节点的孤儿产物 ② 片段还在、但链接里的 host:port
+    # 指向没人监听的端口 (名字反查查不出来, 见 link_check.py 的说明)
+    print_warn "发现 $n 个陈旧产物 (孤儿产物 / 端口早已没人监听的链接)"
+    print_info "它们的 server 指向早已没人监听的端口, 但仍会被当成'可发布'的产物"
     echo
     printf "  确认清理这 ${CYAN}%s${RESET} 个? ${DIM}[y/N]: ${RESET}" "$n" >&2
     local a; read -r a
     case "$(clean_input "${a:-}")" in y|Y) ;; *) print_info "已取消"; return 0 ;; esac
     r=$(m_artifacts_clean_orphan); del=${r##* }
-    print_ok "已清理 $del 个残留产物 (对应的分享链接一并清理)"
+    print_ok "已清理 $del 个陈旧产物 (孤儿产物与死链, 以及对应的链接)"
     _ca_show_artifact_count
 }
 
@@ -1231,7 +1276,7 @@ client_artifact_menu() {
         ui_menu 1 "改指纹 (会同步改掉已有产物)"
         ui_menu 2 "改连接地址族 (会同步改掉已有产物)"
         ui_menu 3 "导出全部节点与订阅链接"
-        ui_menu 4 "清理无对应节点的残留产物"
+        ui_menu 4 "清理陈旧产物 (孤儿 / 死链)"
         ui_menu 5 "给已有节点名补地区旗帜 (重写产物与分享链接)"
         ui_menu 0 "返回"
         printf "请选择: " >&2

@@ -106,5 +106,108 @@ for t in anytls hysteria2; do
                              || bad "协议桶 $t 丢了 (得到: $TAGS)"
 done
 
+
+echo
+echo "== ② 链接 vs 实际监听/当前产物 (发布前一致性闸门) =="
+# 判据的现场依据 (RN 真机 2026-10-10): 12 条链接里 9 条是死的 ——
+#   * 8 条指向无人监听的端口 (50877/21168/23512/22737/42099/56676/38899/23451;
+#     `ss -tulnH` 全表都没有), 真实监听是 25669-25684/28725/22812
+#   * 1 条端口在听 (443) 但**凭据早没了** (节点删掉重建换了 uuid) —— 认证过不去
+# 这两类都"发出去显示成功、客户端永远连不上"。夹具造出同形态, 断言**拒发**。
+L2="$TMP/fix2"
+mkdir -p "$L2/out" "$L2/conf/config.d"
+cat > "$L2/conf/config.d/anytls-01.yaml" <<'EOF'
+listeners:
+  - name: mAnyTLS01-TLS
+    type: anytls
+    listen: "0.0.0.0"
+    port: 25684
+    users:
+      11111111-1111-1111-1111-111111111111: anytlspw
+EOF
+cat > "$L2/conf/config.d/trojan-04.yaml" <<'EOF'
+listeners:
+  - name: mTrojan04-CDN-WS
+    type: trojan
+    listen: "0.0.0.0"
+    port: 25680
+    users:
+      - username: 22222222-2222-2222-2222-222222222222
+        password: trojanpw
+EOF
+# cdn_bindings.tsv 与 conf/ 平级 (生产: $SRV_ROOT/cdn_bindings.tsv, conf 在 $SRV_ROOT/conf)
+printf 'trojan-04\texample.com\t/home/web/x.conf\tws\t/cdnws-1\t25680\n' > "$L2/cdn_bindings.tsv"
+# 当前客户端产物 = "节点现在长什么样"的权威副本
+cat > "$L2/out/anytls_client-01.yaml" <<'EOF'
+proxies:
+  - name: mAnyTLS01-TLS
+    type: anytls
+    server: 203.0.113.10
+    port: 25684
+    password: anytlspw
+EOF
+cat > "$L2/out/trojan_cdn-t-ws_client-04.yaml" <<'EOF'
+proxies:
+  - name: mTrojan04-CDN-WS
+    type: trojan
+    server: example.com
+    port: 443
+    password: trojanpw
+EOF
+printf 'anytls://anytlspw@203.0.113.10:25684?sni=a.com#good\n'   > "$L2/out/anytls_share-01.txt"
+printf 'anytls://deadcred@203.0.113.10:25684?sni=a.com#old-node\n' > "$L2/out/anytls_share-02.txt"
+printf 'tuic://anytlspw:pw@203.0.113.10:25684#wrong-type\n'       > "$L2/out/tuicv5_share-01.txt"
+printf 'trojan://trojanpw@example.com:443?sni=example.com#cdn\n'  > "$L2/out/trojan_share-04.txt"
+printf 'trojan://trojanpw@example.com:8443?sni=example.com#cdn-port-wrong\n' > "$L2/out/trojan_share-05.txt"
+printf 'anytls://anytlspw@203.0.113.10:9999?sni=a.com#port-changed\n' > "$L2/out/anytls_share-09.txt"
+
+if python3 "$ROOT/src/share/link_check.py" --out-dir "$L2/out" --conf-dir "$L2/conf" \
+        >"$TMP/lc.out" 2>"$TMP/lc.err"; then
+    bad "死链没有被挡下 —— 发布闸门失效"
+else
+    ok "死链被拒发 (退出码 1)"
+fi
+grep -q "凭据已不在任何当前节点里" "$TMP/lc.err" \
+    && ok "凭据已失效也能识别 (端口在听但节点被重建过)" || bad "没识别出凭据失效"
+grep -q "不是 tuic" "$TMP/lc.err" && ok "端口被别的协议占了也能识别 (25684 是 anytls)" \
+                                  || bad "没识别出协议族对不上"
+grep -q "同凭据的 trojan 节点是 example.com:443" "$TMP/lc.err" \
+    && ok "链接目标与当前产物不一致能识别 (CDN 端口写错)" || bad "没识别出产物端口不一致"
+! grep -q "anytls_share-01.txt" "$TMP/lc.err" \
+    && ok "自洽的直连链接放行" || bad "把自洽的链接也拦了 (误报)"
+! grep -q "trojan_share-04.txt" "$TMP/lc.err" \
+    && ok "自洽的 CDN 链接放行 (域名 + 443 + 回源端口在听)" || bad "CDN 正例被误拦"
+
+STALE_N=$(python3 "$ROOT/src/share/link_check.py" --out-dir "$L2/out" --conf-dir "$L2/conf" \
+            --count-only 2>/dev/null)
+[[ "$STALE_N" == "4" ]] && ok "陈旧条数 = 4 (凭据死/协议不符/CDN 端口错/产物端口变)" \
+                        || bad "陈旧条数应为 4, 实际 $STALE_N"
+LIST=$(python3 "$ROOT/src/share/link_check.py" --out-dir "$L2/out" --conf-dir "$L2/conf" \
+        --list-stale 2>/dev/null | sort | tr '\n' ' ')
+[[ "$LIST" == "anytls_share-02.txt anytls_share-09.txt trojan_share-05.txt tuicv5_share-01.txt " ]] \
+    && ok "--list-stale 机器可读清单正确" || bad "--list-stale 清单不对: $LIST"
+
+# 回收: --prune 只删**整体陈旧**的文件, 好的一个都不许动
+PR="$TMP/prune"; mkdir -p "$PR/out" "$PR/conf/config.d"
+cp "$L2"/conf/config.d/*.yaml "$PR/conf/config.d/"; cp "$L2/cdn_bindings.tsv" "$PR/"
+cp "$L2"/out/*.yaml "$L2"/out/*.txt "$PR/out/"
+NDEL=$(python3 "$ROOT/src/share/link_check.py" --out-dir "$PR/out" --conf-dir "$PR/conf" \
+        --prune --quiet 2>/dev/null | tail -1)
+[[ "$NDEL" == "4" ]] && ok "--prune 删掉 4 个陈旧链接" || bad "--prune 删除数应为 4, 实际 $NDEL"
+[[ -f "$PR/out/anytls_share-01.txt" && -f "$PR/out/trojan_share-04.txt" ]] \
+    && ok "自洽的链接没被误删" || bad "误删了自洽的链接"
+[[ ! -f "$PR/out/anytls_share-02.txt" ]] && ok "死链文件已回收" || bad "死链没删掉"
+[[ -f "$PR/out/anytls_client-01.yaml" ]] && ok "客户端产物不受清理影响" \
+                                        || bad "清理误删了客户端产物"
+
+# 全自洽夹具必须放行 (闸门不能变成"永远红")
+L3="$TMP/fix3"; mkdir -p "$L3/out" "$L3/conf/config.d"
+cp "$L2"/conf/config.d/*.yaml "$L3/conf/config.d/"; cp "$L2/cdn_bindings.tsv" "$L3/"
+cp "$L2"/out/*.yaml "$L3/out/"
+printf 'anytls://anytlspw@203.0.113.10:25684?sni=a.com#good\n'   > "$L3/out/anytls_share-01.txt"
+printf 'trojan://trojanpw@example.com:443?sni=example.com#cdn\n' > "$L3/out/trojan_share-04.txt"
+python3 "$ROOT/src/share/link_check.py" --out-dir "$L3/out" --conf-dir "$L3/conf" \
+    >/dev/null 2>&1 && ok "全部自洽时放行 (退出码 0)" || bad "全部自洽却仍报红"
+
 printf "\n分享产物闸门: \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m\n" "$PASS" "$FAIL"
 exit $((FAIL > 0))

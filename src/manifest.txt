@@ -38,6 +38,7 @@ src/conf/all.sh
 src/conf/hysteria2.sh
 src/conf/nginx_apply.py
 src/share/build_sub.py
+src/share/link_check.py
 src/share/share.sh
 src/share/share_client.py
 src/share/lan_config.py

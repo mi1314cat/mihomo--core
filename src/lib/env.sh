@@ -476,6 +476,44 @@ m_naming_py() {
     printf '%s' "src/lib/naming.py"
 }
 
+# =============================================================
+# 分享链接一致性校验 (生产者: src/share/link_check.py)
+#
+# 链接里的 host:port 必须与 conf/config.d 里**真的在跑**的 listener 自洽。
+# 为什么: out/<proto>_share-NN.txt 是派生文件 —— 节点删掉重建 (端口换了) 时
+# 它不会跟着变, 于是"链接还在、端口早没了"。RN 真机实测 12 条里 10 条是这种
+# 死链, 而且**没有任何机制发现**。判据只写一份: 发布前拒发、清理时回收,
+# 两处用的是同一个校验器。
+#
+# 路径解析与 m_naming_py 同源 (客户端目录布局不同, 不能写死一个路径)。
+# =============================================================
+if [[ ! -f "${LINK_CHECK:-}" ]]; then
+    for _lc_d in "${SELF_DIR:-}/share" "$M_LIB/../share" "$M_LIB/share" "$M_LIB"; do
+        [[ -n "$_lc_d" && -f "$_lc_d/link_check.py" ]] \
+            && { LINK_CHECK="$_lc_d/link_check.py"; break; }
+    done
+    unset _lc_d
+fi
+: "${LINK_CHECK:=$M_LIB/../share/link_check.py}"
+
+# 陈旧 (端口无人监听 / 类型对不上) 的链接条数。取不到校验器时返回 0 ——
+# 宁可少拦, 也不能让"校验器缺失"变成发布路径上的硬故障。
+m_share_links_stale() { # [out-dir] [conf-dir]
+    local out="${1:-$SRV_OUT}" conf="${2:-$SRV_CONF}" n
+    [[ -f "$LINK_CHECK" ]] || { printf '0'; return 0; }
+    n=$(python3 "$LINK_CHECK" --out-dir "$out" --conf-dir "$conf" \
+            --count-only 2>/dev/null)
+    printf '%s' "${n:-0}"
+}
+
+# 陈旧链接的**文件名**清单 (每行一个)。发布路径用它把死链挡在外面。
+m_share_links_stale_list() { # [out-dir] [conf-dir]
+    local out="${1:-$SRV_OUT}" conf="${2:-$SRV_CONF}"
+    [[ -f "$LINK_CHECK" ]] || return 0
+    python3 "$LINK_CHECK" --out-dir "$out" --conf-dir "$conf" \
+        --list-stale 2>/dev/null || true
+}
+
 # M_ROOT 已经设过就尊重它（闸门/测试要指向临时目录），否则按安装根推断。
 # 不尊重的话"用临时缓存跑一遍"这种验证根本做不了 —— 它会去读真实缓存，
 # 于是测试结果取决于这台机器在哪个国家（实测: 本地 🇺🇸 全绿, 换台机器 🇨🇳 全红）。
@@ -1718,8 +1756,13 @@ m_artifacts_apply_addr() { # <新IP> <旧IP> [1=不交互]
 #
 # ★ 只删**确实没有对应片段**的产物。宁可少删: 误删一个还在用的产物, 用户
 #   要重新生成才能拿回来; 留下一个孤儿只是下次还能再清一次。
+#
+# ★ 分享链接还有**第二种**陈旧 (2026-10-10 补): 片段还在、端口早换了 ——
+#   名字反查完全查不出来 (片段在, 只是链接里的 host:port 指向没人听的端口)。
+#   RN 真机 12 条链接里 10 条是这种, 只按"片段是否存在"清理的话一条都清不掉。
+#   判据收口在 link_check.py (listen 与发布目标自洽), 这里只是调用它。
 m_artifacts_clean_orphan() { # [1=只报告不删]
-    local dry="${1:-}" n=0 del=0 f b m i
+    local dry="${1:-}" n=0 del=0 f b m i ls_stale ls_del=0
     shopt -s nullglob
     for f in "$SRV_OUT"/*_client-*.yaml; do
         b=$(basename "$f")
@@ -1738,5 +1781,18 @@ m_artifacts_clean_orphan() { # [1=只报告不删]
         done
     done
     shopt -u nullglob
+
+    # ---- 分享链接: 端口/监听一致性 (第二种陈旧) ----
+    ls_stale=$(m_share_links_stale "$SRV_OUT" "$SRV_CONF")
+    if [[ "${ls_stale:-0}" != "0" ]]; then
+        n=$((n + ls_stale))
+        if [[ "$dry" != "1" && -f "$LINK_CHECK" ]]; then
+            # 删除数由生产者打到 stdout (机器可读), 不许去数日志行
+            ls_del=$(python3 "$LINK_CHECK" --out-dir "$SRV_OUT" \
+                        --conf-dir "$SRV_CONF" --prune --quiet 2>/dev/null | tail -1)
+            [[ "$ls_del" =~ ^[0-9]+$ ]] || ls_del=0
+            del=$((del + ls_del))
+        fi
+    fi
     printf '%s %s' "$n" "$del"
 }

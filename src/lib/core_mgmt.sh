@@ -180,7 +180,7 @@ core_update_scripts() {
             "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
             "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
             "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"
-            "src/share/share.sh" "src/share/share_client.py" "src/share/lan_config.py" "src/share/lan_server.py" "src/share/build_sub.py"
+            "src/share/share.sh" "src/share/share_client.py" "src/share/lan_config.py" "src/share/lan_server.py" "src/share/build_sub.py" "src/share/link_check.py"
             "src/core_install.sh" "src/server.sh" "src/client.sh" "src/VERSION"
         )
     fi
