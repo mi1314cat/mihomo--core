@@ -1,5 +1,5 @@
 {
- "_comment": "nodecompat 回归语料。两类来源: (1) RN 真实产物的**形状**（值已脱敏: IP→TEST-NET, 域名→example.com, UUID→占位符）; (2) 覆盖 compat 每条 mihomo 规则的合成用例。真实值不进步: 仓库有发布脱敏闸门。",
+ "_comment": "nodecompat 回归语料。两类来源: (1) RN 真实产物的**形状**（值已脱敏: IP→TEST-NET, 域名→example.com, UUID→占位符）; (2) 覆盖 compat 每条 mihomo 规则的合成用例。真实值不进步: 仓库有发布脱敏闸门。 URI 用例写成 \"uri\" 字段（= 客户端真实的分享链接通路: 旧判定不逐条表态）。",
  "cases": [
   {
    "id": "real:🇺🇸 mAnyTLS01-TLS",
@@ -416,146 +416,74 @@
   {
    "id": "uri:🇺🇸 AnyTLS-01",
    "why": "RN 真实分享链接 anytls_share-01.txt",
-   "node": {
-    "name": "🇺🇸 AnyTLS-01",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:50877?sni=cloudflare.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-01"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:50877?sni=cloudflare.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-01"
   },
   {
    "id": "uri:🇺🇸 AnyTLS-02",
    "why": "RN 真实分享链接 anytls_share-02.txt",
-   "node": {
-    "name": "🇺🇸 AnyTLS-02",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:28725?sni=n1.example.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-02"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:28725?sni=n1.example.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-02"
   },
   {
    "id": "uri:🇺🇸 AnyTLS-03",
    "why": "RN 真实分享链接 anytls_share-03.txt",
-   "node": {
-    "name": "🇺🇸 AnyTLS-03",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:22812?sni=n2.example.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-03"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "anytls://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:22812?sni=n2.example.com&insecure=1&fp=chrome#🇺🇸 AnyTLS-03"
   },
   {
    "id": "uri:🇺🇸 HY2-01",
    "why": "RN 真实分享链接 hysteria2_share-01.txt",
-   "node": {
-    "name": "🇺🇸 HY2-01",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:21168?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-01"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:21168?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-01"
   },
   {
    "id": "uri:🇺🇸 HY2-02",
    "why": "RN 真实分享链接 hysteria2_share-02.txt",
-   "node": {
-    "name": "🇺🇸 HY2-02",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:20309?sni=n3.example.com&alpn=h3&pin=b8f8fc0516c13230f65c2a4a728daa047353aaf8eadf76263562c60a9baa9a03&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-02"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:20309?sni=n3.example.com&alpn=h3&pin=b8f8fc0516c13230f65c2a4a728daa047353aaf8eadf76263562c60a9baa9a03&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-02"
   },
   {
    "id": "uri:🇺🇸 HY2-10",
    "why": "RN 真实分享链接 hysteria2_share-10.txt",
-   "node": {
-    "name": "🇺🇸 HY2-10",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:23512?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-10"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:23512?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-10"
   },
   {
    "id": "uri:🇺🇸 HY2-11",
    "why": "RN 真实分享链接 hysteria2_share-11.txt",
-   "node": {
-    "name": "🇺🇸 HY2-11",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@[2001:db8::1]:22737?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-11"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "hysteria2://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@[2001:db8::1]:22737?sni=n1.example.com&insecure=0&alpn=h3&upmbps=50&downmbps=200&obfs=none#🇺🇸 HY2-11"
   },
   {
    "id": "uri:🇺🇸 Reality-04",
    "why": "RN 真实分享链接 reality_share-04.txt",
-   "node": {
-    "name": "🇺🇸 Reality-04",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "vless://00000000-0000-4000-8000-000000000000@192.0.2.1:42099?encryption=none&flow=xtls-rprx-vision&security=reality&sni=n5.example.com&fp=chrome&pbk=uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY&sid=58896ecc5f8bf710&type=tcp#🇺🇸 Reality-04"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "vless://00000000-0000-4000-8000-000000000000@192.0.2.1:42099?encryption=none&flow=xtls-rprx-vision&security=reality&sni=n5.example.com&fp=chrome&pbk=uMcVRoEWeMAwPaj6e3jSVCZfbl-gj37MH9_XI9tL5wY&sid=58896ecc5f8bf710&type=tcp#🇺🇸 Reality-04"
   },
   {
    "id": "uri:🇺🇸 mTrojan01-REALITY",
    "why": "RN 真实分享链接 trojan_share-01.txt",
-   "node": {
-    "name": "🇺🇸 mTrojan01-REALITY",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "trojan://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:56676?security=reality&sni=n4.example.com&type=tcp&fp=chrome&pbk=JhXVGE-zaHl1NoLQlPftVvcreTaxZ38W22qlEwZKxzw&sid=b30183a33004b11a#🇺🇸 mTrojan01-REALITY"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "trojan://EXAMPLE-TOKEN-NOT-A-CREDENTIAL@192.0.2.1:56676?security=reality&sni=n4.example.com&type=tcp&fp=chrome&pbk=JhXVGE-zaHl1NoLQlPftVvcreTaxZ38W22qlEwZKxzw&sid=b30183a33004b11a#🇺🇸 mTrojan01-REALITY"
   },
   {
    "id": "uri:🇺🇸 TUICv5-01",
    "why": "RN 真实分享链接 tuicv5_share-01.txt",
-   "node": {
-    "name": "🇺🇸 TUICv5-01",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "tuic://00000000-0000-4000-8000-000000000000:db554c9a63d4b7e62dfdc2fc@192.0.2.1:38899?sni=n1.example.com&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#🇺🇸 TUICv5-01"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "tuic://00000000-0000-4000-8000-000000000000:db554c9a63d4b7e62dfdc2fc@192.0.2.1:38899?sni=n1.example.com&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#🇺🇸 TUICv5-01"
   },
   {
    "id": "uri:🇺🇸 TUICv5-09",
    "why": "RN 真实分享链接 tuicv5_share-09.txt",
-   "node": {
-    "name": "🇺🇸 TUICv5-09",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "tuic://00000000-0000-4000-8000-000000000000:2aac4f1ed898b9fc1f5e9992@[2001:db8::1]:23451?sni=n1.example.com&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#🇺🇸 TUICv5-09"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "tuic://00000000-0000-4000-8000-000000000000:2aac4f1ed898b9fc1f5e9992@[2001:db8::1]:23451?sni=n1.example.com&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#🇺🇸 TUICv5-09"
   },
   {
    "id": "uri:🇺🇸 mVLESS01-TLS",
    "why": "RN 真实分享链接 vless_share-01.txt",
-   "node": {
-    "name": "🇺🇸 mVLESS01-TLS",
-    "type": "uri",
-    "server": "192.0.2.1",
-    "port": 1,
-    "raw-uri": "vless://00000000-0000-4000-8000-000000000000@n1.example.com:443?encryption=none&security=tls&sni=n1.example.com&fp=chrome&type=tcp#🇺🇸 mVLESS01-TLS"
-   },
-   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）"
+   "branch": "parse_uri 通路：客户端当前只吃 mihomo YAML，这条用于验证适配层的链接入口（保真最高）",
+   "uri": "vless://00000000-0000-4000-8000-000000000000@n1.example.com:443?encryption=none&security=tls&sni=n1.example.com&fp=chrome&type=tcp#🇺🇸 mVLESS01-TLS"
   },
   {
    "id": "syn:ws-reality",

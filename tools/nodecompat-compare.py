@@ -67,11 +67,13 @@ def main() -> int:
         [], [], [], [], [], [], []
     results = []
     for case in cases:
-        node = case["node"]
+        # 两种输入形状: "uri" = 分享链接（走 compat 的 parse_uri, 旧判定不逐条
+        # 表态 —— 客户端把整个列表原样交给内核的内置转换器）; "node" = YAML 条目。
+        node = case.get("uri") or case["node"]
         res = nodecompat.judge(node, target=tgt)
         legacy = res["legacy"]["status"]
         comp = (res["compat"] or {}).get("status")
-        rec = {"id": case.get("id") or node.get("name"), "why": case.get("why", ""),
+        rec = {"id": case.get("id") or "?", "why": case.get("why", ""),
                "legacy": legacy, "compat": comp, "merged": res["verdict"],
                "source": res["verdict_source"], "drop": res["drop"],
                "kind": res["kind"], "wider": res["wider"],
