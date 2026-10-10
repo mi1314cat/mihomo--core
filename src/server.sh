@@ -1232,6 +1232,7 @@ client_artifact_menu() {
         ui_menu 2 "改连接地址族 (会同步改掉已有产物)"
         ui_menu 3 "导出全部节点与订阅链接"
         ui_menu 4 "清理无对应节点的残留产物"
+        ui_menu 5 "给已有节点名补地区旗帜 (重写产物与分享链接)"
         ui_menu 0 "返回"
         printf "请选择: " >&2
         local c; read -r c || return 0
@@ -1241,10 +1242,48 @@ client_artifact_menu() {
             2) _ca_pick_family ;;
             3) export_all_nodes ;;
             4) _ca_clean_orphan ;;
+            5) _ca_apply_flag ;;
             0) return 0 ;;
             *) ui_invalid "$c" ;;
         esac
     done
+}
+
+# 「给已有节点名补地区旗帜」—— 先给用户看要改什么, 确认后再写。
+#
+# 旗帜是给人看的（客户端列表里区分服务器/地区）, 服务端一个字节都不用动,
+# 所以这是纯产物重写 + 订阅重生成, 不需要重载内核。
+_ca_apply_flag() {
+    print_title "给已有节点名补地区旗帜"
+    local flag; flag=$(m_flag_emoji)
+    if [[ -z "$flag" ]]; then
+        print_warn "查不到本机归属地, 拿不到旗帜（网络不通? 或设了 M_SKIP_FLAG）"
+        print_info "已有节点名保持不变, 新节点也一样会带不上旗帜"
+        return 0
+    fi
+    ui_kv_ascii "本机旗帜" "$flag"
+    echo >&2
+    local n_art; n_art=$(ls "$SRV_OUT"/*_client-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+    (( n_art > 0 )) || { print_info "还没有客户端产物, 新节点会直接用上"; return 0; }
+
+    local n
+    n=$(m_artifacts_apply_flag 1)      # 先只报告
+    if [[ "${n:-0}" == "0" ]]; then
+        print_ok "现有 $n_art 个产物都已经带旗帜, 无需改动"
+        return 0
+    fi
+    echo >&2
+    printf "  要改 %s 处节点名, 同步重生成订阅。继续吗? ${DIM}[Y/n]: ${RESET}" "$n" >&2
+    local a; read -r a
+    case "$(clean_input "${a:-y}")" in n|N) print_info "已取消"; return 0 ;; esac
+    n=$(m_artifacts_apply_flag)
+    (( n > 0 )) && print_ok "已更新 $n 处节点名" || { print_warn "没有需要改的产物"; return 0; }
+    _ca_regen_sub
+    # 已发出去的分享链接内容也要跟着更新（token 与地址不变）
+    if declare -F share_refresh_all >/dev/null 2>&1; then
+        share_refresh_all >/dev/null 2>&1 && print_ok "分享链接内容已刷新"
+    fi
+    print_info "客户端下次更新订阅即可看到带旗帜的节点名"
 }
 
 _ca_pick_fp() {

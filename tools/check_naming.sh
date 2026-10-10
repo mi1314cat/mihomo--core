@@ -98,5 +98,18 @@ if [[ $CLI_RC -eq 0 ]]; then ok "客户端加前缀时旗帜留在最前面（�
 else bad "客户端加前缀（见上）"; fi
 rm -rf "$TMPD"
 
+# ---- 4. 已有节点的迁移（给旧产物补旗帜）----
+if python3 src/lib/naming_migrate.py --selftest >/tmp/.m-migrate.log 2>&1; then
+    ok "产物迁移自检通过（含幂等）"
+else
+    bad "产物迁移自检失败"; sed 's/^/      /' /tmp/.m-migrate.log | tail -5
+fi
+# shell 包装必须真的指向那份实现（"函数对但没接上"是这里的常客）
+if grep -q 'naming_migrate.py' src/lib/env.sh && grep -q 'm_artifacts_apply_flag' src/server.sh; then
+    ok "面板入口已接到迁移实现"
+else
+    bad "面板入口没接到迁移实现"
+fi
+
 printf '\n节点命名: %d 通过, %d 失败\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

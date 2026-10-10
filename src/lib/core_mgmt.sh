@@ -176,7 +176,7 @@ core_update_scripts() {
             "src/lib/rules_bind.sh" "src/lib/lan_dispatch.sh" "src/lib/dl_route.sh" "src/lib/simple_proxy.sh"
             "src/lib/server_extra.sh"
             "src/lib/dns.sh" "src/lib/dns_edit.py"
-            "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py" "src/lib/naming.py"
+            "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py" "src/lib/naming.py" "src/lib/naming_migrate.py"
             "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
             "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
             "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"

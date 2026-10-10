@@ -1634,6 +1634,26 @@ m_artifacts_apply_fp() { # <指纹> [1=不交互]
     printf '%s' "$n"
 }
 
+# 给**已有**节点的产物补地区旗帜（新生成的已经带了）。
+#
+# 为什么需要: 旗帜是在生成时写进名字的, 之前生成的节点名已经落在产物里,
+# 不会自己变 —— 用户看到的是"面板说带旗帜, 我客户端里还是没有"。
+#
+# 只碰产物 (out/*_client-*.yaml 与 out/*_share-*.txt), 不动 conf/config.d/:
+# 那边是服务端监听配置, 名字只是内部标签; 为了显示去改服务端配置要重载,
+# 平白多一次风险。逻辑在 src/lib/naming_migrate.py（幂等, 可 --dry-run）。
+m_artifacts_apply_flag() { # [1=只报告]
+    local dry="" n py
+    [[ "${1:-}" == "1" ]] && dry="--dry-run"
+    py="$M_LIB/naming_migrate.py"
+    [[ -f "$py" ]] || py="$(dirname "${BASH_SOURCE[0]:-$0}")/naming_migrate.py"
+    [[ -f "$py" ]] || { printf '0'; return 1; }
+    local args=(--out "$SRV_OUT")
+    [[ -z "$dry" ]] && args+=(--apply)
+    n=$(python3 "$py" "${args[@]}" 2>/dev/null | tail -1)
+    printf '%s' "${n:-0}"
+}
+
 # 把产物里的 server: / 分享链接的 @host:port 统一换成 <ip>。
 #
 # CDN 节点例外: 它们连的是 Cloudflare 边缘域名而不是源站 IP, 换地址族不该
