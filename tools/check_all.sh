@@ -129,6 +129,14 @@ scrub_scan() {
 }
 run_gate "发布脱敏"     scrub_scan
 
+printf "\n${CYAN}── 局域网分发脱敏 ──${RESET}\n"
+# 分发给别的设备的配置里, 本机专属字段必须剥干净。
+#
+# 这一类是**安全属性**而不是格式偏好: 漏掉 `dns.listen` 的后果是接收设备在
+# 它所有网卡上开一个 DNS 服务 (本机早就修掉的"开放解析器"问题), 或者因为
+# 1053 被占而直接起不来。而剥除清单靠"人记得加" —— 所以每次跑都验一遍。
+run_gate "LAN 分发脱敏" python3 src/share/lan_config.py --selftest
+
 printf "\n${CYAN}── 幽灵函数 (定义了但没人调) ──${RESET}\n"
 phantom_scan() {
     python3 - <<'PY'

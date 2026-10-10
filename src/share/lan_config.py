@@ -58,6 +58,22 @@ DROP_SECTIONS = (
     "secret", "log-level", "mode", "profile",
 )
 
+# 段内还要剥掉的键 —— 段本身有用 (要留着), 但这一行换台设备就是错的。
+#
+# ★ 为什么要有这一张表: DROP_SECTIONS 只看**顶层键**（`line[0]` 不是空格）。
+#   `dns.listen` 是缩进的, 于是原样发给了别的设备 —— 实测在客户端上拉一次
+#   分发地址, 拿到的就是 `listen: 0.0.0.0:1053`。后果分两种, 都不轻:
+#     · 接收设备导入后, mihomo 会在**它的所有网卡**上开一个 DNS 服务。
+#       这正是本项目早就在本机修掉的那个"开放解析器"问题 (见 client.sh 的
+#       注释: "局域网任何人都能拿它查询, 而这些查询不经过代理") ——
+#       本机修好了, 却在"分发给别人"这一环又原样送了出去;
+#     · 那台设备上 1053 若已被占 (自己还跑着别的 mihomo / sing-box),
+#       内核启动直接失败, 用户看到的是"导入你的配置后起不来"。
+#
+#   dns 段其余内容 (fake-ip / fake-ip-filter / nameserver / 策略) 都是
+#   设备无关的, 必须保留 —— 所以只剥这一个键, 不是整段丢掉。
+DROP_KEYS_IN_SECTION = {"dns": ("listen",)}
+
 # 片段来源, 按这个顺序拼接 (Mihomo 的 -d 目录语义就是合并所有 yaml)
 FRAGMENT_GLOBS = ("config.d/*.yaml", "providers/*.yaml")
 
@@ -76,14 +92,41 @@ def collect_fragments(confdir: str) -> str:
     return merged
 
 
-def strip_local_sections(main_text: str) -> str:
+def strip_local_sections(main_text: str, nested=None) -> str:
+    """按行剥掉本机专属配置, 保留注释与格式。
+
+    两种粒度:
+      · 顶层段   —— 整段丢掉 (DROP_SECTIONS)
+      · 段内单键 —— 只丢那一行 (DROP_KEYS_IN_SECTION, 默认就是它)
+
+    行式而不是 YAML round-trip: 这份配置带着大量解释性注释, 而且节点片段
+    是直接拼在结果后面的; 走 PyYAML 会把这些全丢掉, 还会重排键。
+    """
+    nested = DROP_KEYS_IN_SECTION if nested is None else nested
     kept, skip = [], False
+    section = None
+    child_indent = None      # 当前段直接子键的缩进 (遇到第一行子键时才确定,
+                             # 所以 2 空格与 4 空格两种写法都认)
     for line in main_text.splitlines():
+        head = line.split(":", 1)[0].strip() if ":" in line else ""
         # 只在本行是**顶层键**时重新判断 (缩进行属于上一个段)
         if line and not line[0].isspace() and ":" in line:
-            skip = line.split(":", 1)[0].strip() in DROP_SECTIONS
-        if not skip:
-            kept.append(line)
+            section = head
+            skip = head in DROP_SECTIONS
+            child_indent = None
+            if not skip:
+                kept.append(line)
+            continue
+        if skip:
+            continue                       # 整段丢掉, 连同段内空行
+        want = nested.get(section or ())
+        if want and line.strip() and not line.lstrip().startswith("-"):
+            indent = len(line) - len(line.lstrip())
+            if child_indent is None:
+                child_indent = indent
+            if indent == child_indent and head in want:
+                continue                   # 只丢本机专属的那一行
+        kept.append(line)
     return "\n".join(kept).rstrip()
 
 
@@ -105,7 +148,69 @@ def build(root: str) -> tuple[str, int]:
     return result, len(NODE_RE.findall(merged))
 
 
+def selftest() -> int:
+    """脱敏规则自检 —— 纯字符串, 不读文件、不联网。
+
+    为什么做成常驻自检而不是只写在测试脚本里: 这张"剥除清单"是**安全属性**
+    (漏一个就是把本机的监听地址/密钥发给别人), 而它靠的是"人记得加"。
+    有了它, 每次跑 tools/check_all.sh 都会重新验证一遍。
+    """
+    sample = """mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+external-controller: 0.0.0.0:9090
+secret: deadbeef
+profile:
+  store-selected: true
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-filter:
+  - '*.lan'
+  nameserver:
+  - https://dns.alidns.com/dns-query
+sniffer:
+  enable: true
+rules:
+- MATCH,PROXY
+"""
+    kept = strip_local_sections(sample)
+    bad = 0
+
+    def ck(cond, what):
+        nonlocal bad
+        print(("  [PASS] " if cond else "  [FAIL] ") + what)
+        if not cond:
+            bad += 1
+
+    ck("mixed-port" not in kept, "顶层本机键 mixed-port 被剥掉")
+    ck("allow-lan" not in kept, "顶层本机键 allow-lan 被剥掉")
+    ck("bind-address" not in kept, "顶层本机键 bind-address 被剥掉")
+    ck("external-controller" not in kept and "secret" not in kept,
+       "external-controller / secret 被剥掉")
+    ck("store-selected" not in kept, "整段丢弃时连带段内内容一起丢 (profile)")
+    ck("listen" not in kept, "dns.listen 被剥掉（本机监听地址, 不该发给别人）")
+    ck("enable: true" in kept and "fake-ip" in kept,
+       "dns 段本身保留（fake-ip 等是设备无关的）")
+    ck("https://dns.alidns.com/dns-query" in kept, "dns.nameserver 保留")
+    ck("*.lan" in kept, "fake-ip-filter 的列表项保留（不被误当成键）")
+    ck("sniffer" in kept and "MATCH,PROXY" in kept, "其它段与规则原样保留")
+    alt = "dns:\n    enable: true\n    listen: 127.0.0.1:1053\n    ipv6: false\n"
+    ck("listen" not in strip_local_sections(alt),
+       "4 空格缩进同样剥得掉（子键缩进按文件实际取）")
+    deep = "dns:\n  nameserver-policy:\n    listen: 1.2.3.4\n  listen: 1.1.1.1\n"
+    ck("listen: 1.1.1.1" not in strip_local_sections(deep)
+       and "listen: 1.2.3.4" in strip_local_sections(deep),
+       "只剥 dns 的直接子键, 不误伤更深层的同名键")
+    print(f"\n脱敏自检: {'PASS' if bad == 0 else str(bad) + ' 项失败'}")
+    return 1 if bad else 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return selftest()
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--root", required=True, help="客户端根目录 (含 conf/)")
     ap.add_argument("--out", default="", help="写到文件; 不传则输出到 stdout")
