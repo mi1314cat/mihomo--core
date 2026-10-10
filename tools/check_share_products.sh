@@ -322,5 +322,54 @@ _hy2bw=$(grep -c 'm_hy2_up' "$ROOT/src/conf/hysteria2.sh" || true)
 (( _hy2bw >= 2 )) && ok "客户端 YAML 与分享链接都读同一处设置" \
                   || bad "hysteria2.sh 里只有 $_hy2bw 处引用设置"
 
+echo
+echo "== ⑤ M 客户端能吃自家分享链接 (URI 列表) =="
+# 现象: out/*_share-NN.txt 喂给 M 自家客户端报
+#   「[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)」
+# 修法: 客户端不自己写转换, 把 URI 列表原样落成 provider, 交给**内核自己的**
+# 解析器 (实测 mihomo 能把 'file' provider 里的一行行分享链接解析成节点)。
+# 这里直接跑客户端里那段真实的导入代码 (从 <<'PYIMP' heredoc 里抽出来)。
+IMP="$TMP/import.py"
+python3 - "$ROOT/src/client.sh" "$IMP" <<'PYX'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+txt = open(src, encoding="utf-8").read()
+i = txt.index("<<'PYIMP'\n") + len("<<'PYIMP'\n")
+j = txt.index("\nPYIMP", i)
+open(dst, "w", encoding="utf-8").write(txt[i:j] + "\n")
+PYX
+F5="$TMP/imp"; mkdir -p "$F5/out" "$F5/lib"
+# 真实客户端里 $CLI_LIB 就是 src/lib (导入代码要用 validate.py 的协议表)
+cp "$ROOT/src/lib/validate.py" "$F5/lib/" 2>/dev/null || true
+printf 'anytls://pw@203.0.113.10:25684?sni=a.com#\xf0\x9f\x87\xba\xf0\x9f\x87\xb8 mAnyTLS01-TLS\n' > "$F5/links.txt"
+printf 'hysteria2://pw@203.0.113.10:25682?sni=a.com&up=60&down=200#HY2-01\n' >> "$F5/links.txt"
+if python3 "$IMP" "$F5/links.txt" "$F5/out/uri.yaml" "$F5/lib" "$F5/out/x.compat.json" \
+        >"$F5/uri.log" 2>&1; then
+    ok "分享链接 (URI 列表) 导入成功"
+else
+    bad "分享链接导入失败: $(tail -2 "$F5/uri.log" | tr '\n' ' ')"
+fi
+grep -q "分享链接由内核解析" "$F5/uri.log" && ok "明确告知这是 URI 列表 (内核解析)" \
+                                            || bad "没有说明产物形态"
+grep -q '^anytls://' "$F5/out/uri.yaml" && ok "URI 原样落成 provider (没被转换坏)" \
+                                        || bad "provider 内容不对"
+grep -q '^hysteria2://' "$F5/out/uri.yaml" && ok "多行 URI 全部保留" || bad "只留下了一行"
+# YAML 订阅这条老路一个字都不许变
+cat > "$F5/sub.yaml" <<'EOF'
+proxies:
+  - name: x
+    type: anytls
+    server: 203.0.113.10
+    port: 25684
+EOF
+python3 "$IMP" "$F5/sub.yaml" "$F5/out/sub.yaml" "$F5/lib" "" >"$F5/sub.log" 2>&1 \
+    && ok "proxies: YAML 订阅照旧导入" || bad "YAML 订阅反而导不进去了"
+grep -q "name: x" "$F5/out/sub.yaml" && ok "YAML 内容原样保留" || bad "YAML 内容被改了"
+# 不认识的东西仍要**明确报错**, 不许硬塞
+printf 'this is not a subscription\n' > "$F5/junk.txt"
+python3 "$IMP" "$F5/junk.txt" "$F5/out/junk.yaml" "$F5/lib" "" >"$F5/junk.log" 2>&1 \
+    && bad "垃圾内容被当成订阅收下了" || ok "不认识的内容仍然明确报错"
+grep -q "不是合法的 Mihomo 订阅" "$F5/junk.log" && ok "报错文案保留" || bad "报错文案变了"
+
 printf "\n分享产物闸门: \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m\n" "$PASS" "$FAIL"
 exit $((FAIL > 0))

@@ -240,7 +240,49 @@ except Exception:
     sys.exit(0)
 ps = d.get("proxies")
 if not isinstance(ps, list):
+    # ---- 分享链接 (URI) 型 provider: 名字在 `#` 片段里 (2026-10-10 新增) ----
+    #
+    # 组名前缀是为了"两台服务器同名节点分得开"。URI 型 provider 的节点名由内核
+    # 从片段解析, 所以这里改的是**链接的 # 片段**, 规则与 YAML 侧完全一致
+    # (旗帜在前, 前缀加在旗帜之后, 幂等)。
+    import urllib.parse
+    src = open(path, encoding="utf-8").read()
+    lines = src.splitlines()
+    uris = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+    if not uris or not all("://" in u for u in uris):
+        sys.exit(0)
+    FLAG0 = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+
+    def _add(name):
+        m = FLAG0.match(name)
+        flag = (m.group(0) + " ") if m else ""
+        body = name[m.end():].lstrip() if m else name
+        if not body or body.startswith(tag + "-"):
+            return name
+        return "%s%s-%s" % (flag, tag, body)
+
+    out, changed = [], 0
+    for line in lines:
+        st = line.strip()
+        if not st or st.startswith("#") or "#" not in st:
+            out.append(line)
+            continue
+        head, frag = st.split("#", 1)
+        raw = "%" in frag and all(ord(c) < 128 for c in frag)
+        name = urllib.parse.unquote(frag) if raw else frag
+        new = _add(name)
+        if new != name:
+            changed += 1
+            frag = urllib.parse.quote(new, safe="") if raw else new
+        out.append(head + "#" + frag)
+    if changed:
+        tmp = path + ".tmp"
+        open(tmp, "w", encoding="utf-8").write("\n".join(out) + "\n")
+        import os as _os
+        _os.replace(tmp, path)
+    print(changed)
     sys.exit(0)
+
 
 # 旗帜 = 两个连着的区域指示符号。服务端生成的节点名形如
 # "🇺🇸 mAnyTLS01-TLS", 加订阅名前缀时必须**加在旗帜之后**:
@@ -718,6 +760,43 @@ _add_from_file() {  # <文件> <名字>  —— 校验后落盘
 import sys, yaml, os, tempfile
 src, dst = sys.argv[1], sys.argv[2]
 _mlib = sys.argv[3] if len(sys.argv) > 3 else ""
+
+# ---- 分享链接产物 (一行行 URI) 也是合法的订阅来源 (2026-10-10 新增) ----
+#
+# 现象: 把自家的 out/*_share-NN.txt (单节点分享链接) 喂给本客户端, 报
+#   「[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)」
+# —— 自家产物自家用不了, 用户只能以为这些文件是坏的。
+#
+# 其实**内核自己就会解析 URI 列表**: proxy-provider 的 type: file 内容是一行行
+# 分享链接时, mihomo 用内置的 v2ray 订阅转换器解析 (实测: 2 个 URI → 2 个节点,
+# Hysteria2/AnyTLS)。所以这里不自己写转换 —— 直接原样落成 provider, 让内核用
+# 它自己的解析器 (单一真源, 也不会出现"两边解析行为漂移")。
+#
+# 判据: 去掉注释/空行后**每一行**都是 `<scheme>://…` 才算 URI 列表; 混着 YAML
+#       或别的东西时仍按原来的报错处理 (不猜、不硬塞)。
+def _is_uri(line):
+    if "://" not in line:
+        return False
+    scheme = line.split("://", 1)[0]
+    return bool(scheme) and all(c.isalnum() or c in "+.-" for c in scheme)
+
+
+_lines = [l.strip() for l in
+          open(src, encoding="utf-8").read().splitlines()]
+_lines = [l for l in _lines if l and not l.startswith("#")]
+if _lines and all(_is_uri(l) for l in _lines):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    _fd, _tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
+    os.close(_fd)
+    with open(_tmp, "w", encoding="utf-8") as _fh:
+        _fh.write("\n".join(_lines) + "\n")
+    os.replace(_tmp, dst)
+    print(f"[OK] 已写入 {dst} ({len(_lines)} 个节点, 分享链接由内核解析)",
+          file=sys.stderr)
+    print("[Info] 这是分享链接 (URI) 列表, 不是 proxies: YAML —— 交给 mihomo 自己的解析器",
+          file=sys.stderr)
+    sys.exit(0)
+
 d = yaml.safe_load(open(src, encoding="utf-8"))
 if not isinstance(d, dict) or not isinstance(d.get("proxies"), list) or not d["proxies"]:
     print("[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)", file=sys.stderr)
@@ -955,11 +1034,8 @@ node_list() {
     local f found=0
     for f in $(node_files); do
         local name; name=$(basename "$f" .yaml)
-        local cnt; cnt=$(python3 -c "
-import yaml,sys
-d=yaml.safe_load(open(sys.argv[1]))
-if not isinstance(d, dict): d = {}
-print(len(d.get('proxies') or []))" "$f" 2>/dev/null || echo "?")
+        # 节点数: YAML 与"一行行分享链接"两种 provider 都算得对 (见 m_provider_count)
+        local cnt; cnt=$(m_provider_count "$f")
         local src=""; [[ -f "$CLI_NODES/$name.txt" ]] && src=$(head -1 "$CLI_NODES/$name.txt")
         printf '  \033[1m%-20s\033[0m %s 个节点   来源: %s\n' "$name" "$cnt" "${src:-本地文件}"
         found=1
@@ -979,16 +1055,41 @@ _disp_pad() { # <文本> <目标列宽>
 }
 
 # 列出所有"订阅/组" (一个 provider 文件 = 一组节点)
+# provider 文件里的节点数 —— 两种形态都要认 (2026-10-10 新增):
+#   * proxies: YAML  (M 自己的订阅)
+#   * 一行行分享链接 (URI 列表, 内核自己解析; 也是 out/*_share-*.txt 的形态)
+# 只认 YAML 的话, URI 型 provider 会被显示成"0 个节点", 用户以为导入失败。
+m_provider_count() { # <provider 文件>
+    local f="${1:-}"
+    [[ -f "$f" ]] || { printf '0'; return 0; }
+    python3 - "$f" <<'PYC'
+import sys
+path = sys.argv[1]
+try:
+    raw = open(path, encoding="utf-8").read()
+except OSError:
+    print(0)
+    raise SystemExit(0)
+lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.strip().startswith("#")]
+if lines and all("://" in l for l in lines):
+    print(len(lines))                     # URI 列表: 一行一个节点
+    raise SystemExit(0)
+try:
+    import yaml
+    d = yaml.safe_load(raw) or {}
+    print(len(d.get("proxies") or []) if isinstance(d, dict) else 0)
+except Exception:
+    print(0)
+PYC
+}
+
 _sub_groups() {
     local f
     for f in "$CLI_PROVIDERS"/*.yaml; do
         [[ -f "$f" ]] || continue
         local n c
         n=$(basename "$f" .yaml)
-        c=$(python3 -c '
-import yaml,sys
-try: print(len(yaml.safe_load(open(sys.argv[1])).get("proxies") or []))
-except Exception: print(0)' "$f" 2>/dev/null)
+        c=$(m_provider_count "$f")
         printf '%s|%s\n' "$n" "${c:-0}"
     done
 }
