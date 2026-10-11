@@ -102,8 +102,23 @@ def collect_fragments(confdir: str) -> tuple[str, dict]:
     provider 名取文件名去掉 .yaml —— 与 proxy-providers 里的键、以及
     `providers/<hash>.yaml` 的文件名三者一致 (实测: 键 = 文件名 = 组里 use 的值)。
     这份映射用来把 `use: [<provider>]` 改写成具体节点名。
+
+    ★ **合并 `proxies:`，不是拼接整份文档**（2026-10-11 线上复现）:
+      每个片段本身都是一整份 `proxies:` 文档。原来这里是 `merged += body`，
+      两个片段就产出**两个顶层 `proxies:` 键** —— YAML 规范里映射的键必须唯一，
+      接收端当场报错、**一个节点都导不进去**：
+          Map keys must be unique at line 322, column 1:
+          proxies:
+      而本机 mihomo 读的是 `conf/config.yaml`，**从来不看这两份片段**，
+      所以发送端一切正常 —— 又一个"本地绿、发出去坏"。
+
+    做法: `proxies:` 这个头**只留一个**，各片段的**条目原文**依次接在后面
+    （不动缩进/引号/注释，与"保留原文"的既有取舍一致）；
+    确实不是纯 proxies 文档的片段才原样透传，并在 stderr 说明 ——
+    宁可让人看见，也不要再产出第二份 `proxies:`。
     """
-    merged = ""
+    items: list[str] = []          # 各片段 `proxies:` 下的条目（原文）
+    passthrough: list[str] = []    # 非纯 proxies 文档的片段（原样保留）
     provider_nodes: dict[str, list] = {}
     for pat in FRAGMENT_GLOBS:
         for f in sorted(glob.glob(os.path.join(confdir, pat))):
@@ -113,19 +128,44 @@ def collect_fragments(confdir: str) -> tuple[str, dict]:
             except OSError as e:
                 sys.stderr.write(f"跳过 {f}: {e}\n")
                 continue
-            merged += body + "\n"
+
+            doc = None
+            try:
+                doc = yaml.safe_load(body)
+            except yaml.YAMLError:
+                doc = None
+            if isinstance(doc, dict) and set(doc) == {"proxies"}:
+                # 只摘掉 `proxies:` 那一行，其余原文照搬
+                lines = body.splitlines()
+                head = next((i for i, ln in enumerate(lines)
+                             if ln.rstrip() == "proxies:"), None)
+                if head is None:
+                    passthrough.append(body)
+                else:
+                    items.extend(lines[head + 1:])
+            else:
+                # 例如将来出现带 rules 的片段。**不静默**: 说清它被原样透传,
+                # 以及它可能再带一个 `proxies:` 键。
+                sys.stderr.write(
+                    f"提示 {os.path.basename(f)}: 不是纯 proxies 片段, 原样透传"
+                    f"（顶层键: {sorted(doc) if isinstance(doc, dict) else '解析不了'}）\n")
+                passthrough.append(body)
+
             if os.path.basename(os.path.dirname(f)) != "providers":
                 continue
             stem = os.path.basename(f)[:-5]
-            try:
-                doc = yaml.safe_load(body) or {}
-                names = [p.get("name") for p in (doc.get("proxies") or [])
-                         if isinstance(p, dict) and p.get("name")]
-            except yaml.YAMLError:
-                names = []
+            names = [p.get("name") for p in ((doc or {}).get("proxies") or [])
+                     if isinstance(p, dict) and p.get("name")] \
+                if isinstance(doc, dict) else []
             if names:
                 provider_nodes[stem] = names
-    return merged, provider_nodes
+
+    out = ""
+    if items:
+        out = "proxies:\n" + "\n".join(items).strip("\n") + "\n"
+    for body in passthrough:
+        out += body + "\n"
+    return out, provider_nodes
 
 
 def rewrite_group_use(main_text: str, provider_nodes: dict) -> str:
@@ -320,6 +360,28 @@ rules:
     ck("listen: 1.1.1.1" not in strip_local_sections(deep)
        and "listen: 1.2.3.4" in strip_local_sections(deep),
        "只剥 dns 的直接子键, 不误伤更深层的同名键")
+
+    # ---- 片段合并: 多个 provider 只能有**一个** `proxies:` ----
+    #
+    # 这是 2026-10-11 的线上事故（用户导入客户端报
+    #   `Map keys must be unique at line 322, column 1: proxies:`）。
+    # 两个 provider 片段各自是一整份 `proxies:` 文档，原来直接拼接就产出两个键。
+    # ★ 判据**不能**用 `yaml.safe_load` 是否抛异常 —— PyYAML 对重复键是**静默取
+    #   最后一个**，实测它照样"通过"；真正报错的是 mihomo 用的 go-yaml。
+    #   所以这里数的是**文本**里顶层 `proxies:` 的行数。
+    import tempfile as _tf, glob as _glob  # noqa: PLC0415
+    with _tf.TemporaryDirectory() as _d:
+        os.makedirs(os.path.join(_d, "providers"), exist_ok=True)
+        for i, nm in enumerate(("aaa", "bbb")):
+            with open(os.path.join(_d, "providers", f"{nm}.yaml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("proxies:\n- name: node-%d\n  type: socks5\n" % i)
+        _merged, _pn = collect_fragments(_d)
+        _tops = [ln for ln in _merged.splitlines() if ln.rstrip() == "proxies:"]
+        ck(len(_tops) == 1,
+           f"两个 provider 片段合并后顶层 `proxies:` 只有一个 (实测 {len(_tops)} 个)")
+        ck(len(NODE_RE.findall(_merged)) == 2, "两个片段的节点都保留下来了")
+        ck(sorted(_pn) == ["aaa", "bbb"], "provider → 节点名映射两个都在")
 
     # ---- 组改写: use: [provider] → 具体节点名 ----
     # 剥掉 proxy-providers 之后, 组里 use 指向的 provider 在接收设备上不存在
