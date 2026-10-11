@@ -1040,6 +1040,123 @@ print(f"[OK] 已写入 {dst} ({len(d['proxies'])} 个节点"
 PYIMP
 }
 
+# =============================================================
+# 三家互通 · 订阅地址上的**内核声明** → 这次拉哪一份产品
+#
+# 设计: proxy-node-compat/docs/three-way-interop.md (参照实现: xray--core,
+# 真机验收: research/integration/three-way-interop-x.md)
+#
+#   同内核**同发行版** → 原生 (mihomo YAML, URI 装不下的字段不丢)
+#   跨内核 / 声明缺失 / 声明不认识 / 发行版不在清单 → 普通话 (URI 列表)
+#
+# 决策只看**地址本身**: 不额外发请求、不看 User-Agent、不做任何协商。
+# 服务端声明用的是查询串, 而公共分享服务的路由先剥查询串再分发 ——
+# 所以带声明的地址对第三方客户端零影响。
+#
+# 实现只有一份: src/lib/interop.py (服务端建声明、客户端读声明, 同一个文件)。
+# 抄成两份而字段名漂移的话, 表现是**静默全部走普通话**: 不报错, 只是原生
+# 永远拿不到 —— 所以不抄。
+# =============================================================
+_interop_py() {
+    local c
+    for c in "$CLI_LIB/interop.py" "$(dirname "$CLI_LIB")/lib/interop.py" \
+             "$CLI_LIB/share/interop.py"; do
+        [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    printf '%s' "$CLI_LIB/interop.py"
+}
+
+_sub_interop_decide() {   # <订阅地址> → 一行 JSON (拿不到打印空串)
+    local py; py=$(_interop_py)
+    [[ -f "$py" ]] || { printf ''; return 0; }
+    python3 "$py" decide "$1" 2>/dev/null || true
+}
+
+_sub_interop_field() {    # <JSON> <字段>
+    printf '%s' "$1" | python3 -c 'import sys, json
+try: print((json.load(sys.stdin) or {}).get(sys.argv[1], "") or "")
+except Exception: print("")' "$2" 2>/dev/null || true
+}
+
+# 把"这次拉的是哪种"打到用户眼前 —— 不许静默: 用户要能一眼看出走的原生还是
+# 普通话, 以及为什么。
+_sub_report_choice() {    # <模式> <节点数> <说明>
+    case "${1:-}" in
+        native) print_ok "本次拉取: 原生 (mihomo YAML) —— ${3:-}" ;;
+        *)      print_info "本次拉取: 普通话 (URI 列表) —— ${3:-}" ;;
+    esac
+}
+
+# 自动更新(http-auto)的地址只能是一个固定 URL, 而**内核不读内核声明** ——
+# 所以这件事必须明确告诉用户, 不许悄悄把这次决策冻结成永久行为。
+_sub_auto_kind_note() {   # <本次决策的模式>
+    [[ "${1:-}" == "native" ]] || return 0
+    print_info "自动更新由内核自己拉取, 内核不读内核声明 → 存的是普通话(URI)地址"
+    print_info "(手动「更新订阅节点」才按声明走原生; 想一直用原生就选手动更新)"
+}
+
+# 按声明拉产品并**落成 provider**。打印 "<模式>\t<节点数>\t<说明>";
+# 模式 = native / uri / error(此时第 2 列是 HTTP 码)。
+#
+# 永远返回 0: 调用方按内容判断 —— 本文件是 set -uo pipefail, helper 带非 0
+# 退出会在赋值处直接把整个命令打断 (X 侧同款教训)。
+#
+# 运行期回退链(设计 §3):
+#   取原生 → 成功且解析出 ≥1 个节点 → 用原生
+#          → 网络失败 / 非 2xx / 解析 0 个 → 退回主地址的 URI 列表
+#   回退**必须把原因打出来** —— "不许为了看起来能用而静默降级"。
+_sub_import_by_declaration() {  # <地址|本地文件> <组名>
+    local url="$1" name="$2"
+    local pick choice reason rurl detail body tmp code n=0 mode=uri
+    tmp=$(mktemp -d); body="$tmp/sub.yaml"
+    if [[ "$url" == http://* || "$url" == https://* ]]; then
+        pick=$(_sub_interop_decide "$url")
+        choice=$(_sub_interop_field "$pick" choice); [ -n "$choice" ] || choice=uri
+        rurl=$(_sub_interop_field "$pick" url)
+        detail=$(_sub_interop_field "$pick" detail)
+        if [[ "$choice" == "native" && -n "$rurl" ]]; then
+            mode=native
+            code=$(dl_curl_code "$rurl" "$body" sub)
+            if [[ "$code" != "200" ]]; then
+                detail="${detail}；原生取件失败(HTTP ${code:-000}) → 回退"
+                mode=uri
+            fi
+        fi
+        if [[ "$mode" == "uri" ]]; then
+            code=$(dl_curl_code "$url" "$body" sub)
+            if [[ "$code" != "200" ]]; then
+                rm -rf "$tmp"
+                printf 'error\t%s\t%s' "${code:-000}" "$detail"
+                return 0
+            fi
+        fi
+    elif [[ -f "$url" ]]; then
+        cp -f "$url" "$body"
+    else
+        rm -rf "$tmp"; printf 'error\t000\t无法识别的来源'; return 0
+    fi
+
+    _add_from_file "$body" "$name" >/dev/null || true
+    n=$(m_provider_count "$CLI_PROVIDERS/$name.yaml" 2>/dev/null || echo 0)
+    if [[ "$mode" == "native" ]] && (( ${n:-0} == 0 )); then
+        # 声明说原生在那边, 但那边解析不出节点 → 回到最通用的普通话
+        detail="${detail}；原生解析出 0 个节点 → 回退"
+        mode=uri
+        if [[ "$url" == http://* || "$url" == https://* ]]; then
+            code=$(dl_curl_code "$url" "$body" sub)
+            if [[ "$code" == "200" ]]; then
+                _add_from_file "$body" "$name" >/dev/null || true
+                n=$(m_provider_count "$CLI_PROVIDERS/$name.yaml" 2>/dev/null || echo 0)
+            else
+                detail="${detail}(普通话也拉不到: HTTP ${code:-000})"
+            fi
+        fi
+    fi
+    rm -rf "$tmp"
+    printf '%s\t%s\t%s' "$mode" "${n:-0}" "$detail"
+    return 0
+}
+
 node_add() {
     print_title "添加节点"
     ensure_dirs
@@ -1047,33 +1164,13 @@ node_add() {
     local src; read -r src
     [[ -n "$src" ]] || { print_info "已取消"; return; }
 
-    local tmp; tmp=$(mktemp -d)
-    local body="$tmp/sub.yaml"
-
+    # 走下载通道的 sub 作用域 —— 这正是"到服务器拉配置"那条路。
+    #
+    # 之前是裸 curl, 完全不走代理 —— 而「下载通道」菜单里明明有这个开关,
+    # 设了却没人读 (见 dl_route.sh 头部说明)。
+    local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
     if [[ "$src" == http://* || "$src" == https://* ]]; then
-        # 走下载通道的 sub 作用域 —— 这正是"到服务器拉配置"那条路。
-        #
-        # 之前是裸 curl, 完全不走代理 —— 而「下载通道」菜单里明明有这个开关,
-        # 设了却没人读 (见 dl_route.sh 头部说明)。
-        local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
         print_info "正在拉取...${_px:+ (经 $_px)}"
-        local code
-        code=$(dl_curl_code "$src" "$body" sub)
-        case "$code" in
-            200) ;;
-            404) print_error "链接不存在"; rm -rf "$tmp"; return 1 ;;
-            410) print_error "链接已失效 (用尽 / 过期 / 已禁用)"; rm -rf "$tmp"; return 1 ;;
-            503) print_error "服务端暂时不可用 (未消耗次数)"; rm -rf "$tmp"; return 1 ;;
-            000|"")
-                print_error "连不上订阅服务器${_px:+ (经 $_px)}"
-                print_info "去「13) 下载通道 → 3) 订阅拉取单独设置」换直连试试"
-                rm -rf "$tmp"; return 1 ;;
-            *)   print_error "拉取失败 HTTP $code"; rm -rf "$tmp"; return 1 ;;
-        esac
-    elif [[ -f "$src" ]]; then
-        cp -f "$src" "$body"
-    else
-        print_error "无法识别的来源"; rm -rf "$tmp"; return 1
     fi
 
     local name; name=$(printf '%s' "${src##*/}" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-40)
@@ -1110,7 +1207,26 @@ node_add() {
         print_ok "新组名: $name"
     fi
 
-    if ! _add_from_file "$body" "$name"; then rm -rf "$tmp"; return 1; fi
+    # ★ 按地址上的**内核声明**决定拉原生还是普通话; 原生取不到/解析不出节点
+    #   时回退普通话, 并把原因打出来(不静默降级)。
+    local line mode n detail
+    line=$(_sub_import_by_declaration "$src" "$name")
+    mode=$(printf '%s' "$line" | cut -f1)
+    n=$(printf '%s' "$line" | cut -f2)
+    detail=$(printf '%s' "$line" | cut -f3)
+    if [[ "$mode" == "error" ]]; then
+        case "$n" in
+            404) print_error "链接不存在" ;;
+            410) print_error "链接已失效 (用尽 / 过期 / 已禁用)" ;;
+            503) print_error "服务端暂时不可用 (未消耗次数)" ;;
+            000|"") print_error "连不上订阅服务器${_px:+ (经 $_px)}"
+                    print_info "去「13) 下载通道 → 3) 订阅拉取单独设置」换直连试试" ;;
+            *)   print_error "拉取失败 HTTP $n" ;;
+        esac
+        return 1
+    fi
+    [[ "${n:-0}" -gt 0 ]] 2>/dev/null || { print_error "订阅里没有解析出节点"; return 1; }
+    _sub_report_choice "$mode" "$n" "$detail"
     printf '%s\n' "$src" > "$CLI_NODES/$name.txt"
     if [[ "$src" == http://* || "$src" == https://* ]]; then
         # 自动刷新必须在这里问清楚。
@@ -1133,6 +1249,7 @@ node_add() {
         # 拉废** —— 额度用掉之后订阅里就再也拿不到新节点了, 而界面只显示一个
         # 空的 provider, 没有任何地方提示是额度耗尽。
         [[ "$a" == "1" ]] && kind="http-auto"
+        [[ "$kind" == "http-auto" ]] && _sub_auto_kind_note "$mode"
 
         # 组名: 自动取的名字多半是 IP 或哈希, 订阅一多就分不清谁是谁
         # (面板里显示成哈希前缀或一串地址就是这么来的)。先问一句, 回车才用
@@ -1376,19 +1493,26 @@ node_update() {
         [[ -z "$pre" ]] && continue
         print_info "更新 $pre ...${_px:+ (经 $_px)}"
         # 先备份, 拉取成功才替换 —— 一次性链接失败时不能把现有节点弄丢
-        local tmp; tmp=$(mktemp -d)
-        local code
-        code=$(dl_curl_code "$url" "$tmp/sub.yaml" sub)
-        if [[ "$code" != "200" ]]; then
-            if [[ "$code" == "000" || -z "$code" ]]; then
+        local bak=""; [[ -f "$CLI_PROVIDERS/$pre.yaml" ]] && bak=$(mktemp) && cp -f "$CLI_PROVIDERS/$pre.yaml" "$bak"
+        # ★ 与「添加节点」走**同一套**声明决策与回退链 (同一个 helper) ——
+        #   两处各写一遍的表现是"导入时走原生、刷新时走普通话"(或反过来),
+        #   而两边都不报错。
+        local line mode n detail
+        line=$(_sub_import_by_declaration "$url" "$pre")
+        mode=$(printf '%s' "$line" | cut -f1)
+        n=$(printf '%s' "$line" | cut -f2)
+        detail=$(printf '%s' "$line" | cut -f3)
+        if [[ "$mode" == "error" ]]; then
+            if [[ "$n" == "000" || -z "$n" ]]; then
                 print_warn "  跳过 $pre (连不上订阅服务器${_px:+ 经 $_px}), 保留原有节点"
             else
-                print_warn "  跳过 $pre (HTTP $code), 保留原有节点"
+                print_warn "  跳过 $pre (HTTP $n), 保留原有节点"
             fi
-            rm -rf "$tmp"; continue
+            [[ -n "$bak" ]] && rm -f "$bak"
+            continue
         fi
-        local bak=""; [[ -f "$CLI_PROVIDERS/$pre.yaml" ]] && bak=$(mktemp) && cp -f "$CLI_PROVIDERS/$pre.yaml" "$bak"
-        if _add_from_file "$tmp/sub.yaml" "$pre"; then
+        _sub_report_choice "$mode" "$n" "$detail"
+        if [[ "${n:-0}" -gt 0 ]] 2>/dev/null; then
             # 重新下载会覆盖掉之前加的前缀, 所以每次更新后都要重新应用。
             # 不补的话, 更新一次订阅就会让这组的节点名退回和别台机器撞车的状态
             # —— 而用户刚更新完, 不会再去怀疑名字又变了。
@@ -1403,7 +1527,6 @@ except Exception: print("")' 2>/dev/null)")
             print_warn "  $pre 更新失败, 已还原"
             [[ -n "$bak" ]] && cp -f "$bak" "$CLI_PROVIDERS/$pre.yaml" && rm -f "$bak"
         fi
-        rm -rf "$tmp"
     done < <(python3 -c "
 import json,sys
 try: d=json.load(open(sys.argv[1]))
@@ -2172,6 +2295,58 @@ set_bind() {
 }
 
 # =============================================================
+# 非交互入口: node-sub <订阅地址> [组名]
+#
+# 为什么要有: 面板那条路要人肉走菜单, 而"客户端这次到底拉了哪一份产品"
+# 是三家互通里最需要**机械可重复**的事 —— 门禁与真机验收都要能一键复现
+# (X 侧对应的是 `xbd node sub <url>`)。
+#
+# 走的是**与面板完全相同**的代码路径: _sub_import_by_declaration (决策 +
+# 回退链 + 落 provider)。不另写一套 —— 那样验的就不是用户走的那条路。
+# =============================================================
+cmd_node_sub() {
+    local url="${1:-}" want="${2:-}"
+    [[ -n "$url" ]] || { print_error "用法: client.sh node-sub <订阅地址> [组名]"; return 1; }
+    ensure_dirs
+    subs_file_init
+    local name
+    if [[ -n "$want" ]]; then
+        name="$want"
+    else
+        name=$(printf '%s' "${url%%\?*}" | sed 's|.*/||' | tr -c 'A-Za-z0-9_-' '_' | cut -c1-32)
+        [[ -z "$name" ]] && name="sub$(date +%H%M%S)"
+    fi
+    if [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; then
+        local _n=1 _base="$name"
+        while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$_n"; _n=$((_n+1)); done
+    fi
+    local line mode n detail
+    line=$(_sub_import_by_declaration "$url" "$name")
+    mode=$(printf '%s' "$line" | cut -f1)
+    n=$(printf '%s' "$line" | cut -f2)
+    detail=$(printf '%s' "$line" | cut -f3)
+    if [[ "$mode" == "error" ]]; then
+        print_error "拉取失败 (HTTP ${n:-000}) ${detail:+—— $detail}"
+        return 1
+    fi
+    [[ "${n:-0}" -gt 0 ]] 2>/dev/null || { print_error "订阅里没有解析出节点"; return 1; }
+    _sub_report_choice "$mode" "$n" "$detail"
+    print_ok "解析出 $n 个节点 (组名 $name)"
+    printf '%s\n' "$url" > "$CLI_NODES/$name.txt"
+    subs_put "$(python3 -c '
+import json,sys,datetime,urllib.parse,os
+prefix,url,kind=sys.argv[1],sys.argv[2],sys.argv[3]
+label=""
+h=urllib.parse.urlparse(url).hostname
+if h: label=h
+if not label or label==prefix: label="订阅-"+prefix[:6]
+print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
+ "imported_at":datetime.datetime.now().isoformat(timespec="seconds")},
+ ensure_ascii=False))' "$name" "$url" "http-oneshot")"
+    return 0
+}
+
+# =============================================================
 # 入口 / 子命令
 #
 # 与服务端同理: core_menu (src/lib/core_mgmt.sh) 一直用
@@ -2191,6 +2366,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             exit 0 ;;
         uninstall)
             cli_uninstall ;;
+        node-sub)
+            shift
+            cmd_node_sub "$@" ;;
         *)
             client_menu ;;
     esac

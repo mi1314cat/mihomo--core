@@ -172,23 +172,18 @@ def live_node_names(frag_dir: str) -> set[str] | None:
     return None
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--import-dir", default="", help="外部拉取的订阅目录 (合并为 imported)")
-    ap.add_argument("--providers-dir", default="",
-                    help="客户端 proxy-providers 目录 (每个 *.yaml 单独成一个 tag)")
-    ap.add_argument("--conf-dir", default="",
-                    help="服务端 conf 目录 (含 config.d/.managed.json)。"
-                         "给了就按当前在跑的 listener 名单过滤掉陈旧产物")
-    ap.add_argument("--tag", default="all", help="all 或某个协议前缀 (reality/trojan/...)")
-    ap.add_argument("-o", "--output", default="")
-    ap.add_argument("--list", action="store_true", help="只列出可用 tag (给人看的表格)")
-    ap.add_argument("--list-tags", action="store_true",
-                    help="只列出可用 tag, 每行一个 (给脚本用, 无表头无计数)")
-    args = ap.parse_args()
+def build_buckets(out_dir: str, conf_dir: str = "", import_dir: str = "",
+                  providers_dir: str = "") -> dict[str, list[dict]]:
+    """收集 + **过滤陈旧产物** → {proto: [proxy,...]}。
 
-    buckets = collect(args.out_dir)
+    ★ 这段逻辑从 main() 里提出来, 是因为它现在有**两个**消费者:
+        build_sub.py   → mihomo YAML 产品 (原生)
+        build_uri.py   → URI 列表产品     (普通话)
+      两条产品必须发布**同一个节点集合**(设计: proxy-node-compat/docs/
+      three-way-interop.md §5 —— "两条产品给不同的人, 发布的节点却不一样,
+      是最难查的一类错")。各写一份收集/过滤逻辑 = 必然漂移, 所以只有一处。
+    """
+    buckets = collect(out_dir)
 
     # ★ 过滤陈旧产物 (2026-10-07 新增)
     #
@@ -207,8 +202,8 @@ def main() -> int:
     #
     # 没传 --conf-dir / 名单读不到时**不过滤** —— 宁可多发也不能把整份订阅
     # 变空 (那是更严重的故障)。
-    if args.conf_dir:
-        alive = live_node_names(os.path.join(args.conf_dir, "config.d"))
+    if conf_dir:
+        alive = live_node_names(os.path.join(conf_dir, "config.d"))
         if alive:
             alive_keys = {node_key(x) for x in alive}
             dropped = 0
@@ -231,13 +226,53 @@ def main() -> int:
                       f"对不上 —— 订阅会是空的 (不是'没有节点')", file=sys.stderr)
                 print(f"      名单示例: {sorted(alive)[:3]}", file=sys.stderr)
 
-    if args.import_dir and os.path.isdir(args.import_dir):
-        collect_dir(args.import_dir, "imported", buckets)
-    if args.providers_dir and os.path.isdir(args.providers_dir):
+    if import_dir and os.path.isdir(import_dir):
+        collect_dir(import_dir, "imported", buckets)
+    if providers_dir and os.path.isdir(providers_dir):
         # 客户端没有 out/*_client-*.yaml, 节点都在 conf/providers/*.yaml 里。
-        # 每个 provider 文件单开一个 tag, 这样可以只分享其中一个订阅。
-        for pf in sorted(glob.glob(os.path.join(args.providers_dir, "*.yaml"))):
+        # 每个 provider 文件单开一个 tag, 这样可以只分享其中一份订阅。
+        for pf in sorted(glob.glob(os.path.join(providers_dir, "*.yaml"))):
             collect_dir(os.path.dirname(pf), os.path.splitext(os.path.basename(pf))[0], buckets)
+    return buckets
+
+
+def select_proxies(buckets: dict[str, list[dict]], tag: str) -> list[dict]:
+    """按 tag 取节点 (与 build_sub 的 --tag 语义完全一致)。取不到返回 []。
+
+    `all` 时按 name 去重并保留首个 —— 客户端常见情况是同一个订阅被导入成多个
+    provider (rn_all / 哈希名 / sub_*), 直接按桶拼接会得到成倍的同名重复节点。
+    """
+    if tag == "all":
+        proxies, seen = [], set()
+        for proto in sorted(buckets):
+            for x in buckets[proto]:
+                nm = x.get("name")
+                if nm in seen:
+                    continue
+                seen.add(nm)
+                proxies.append(x)
+        return proxies
+    return list(buckets.get(tag, []))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--import-dir", default="", help="外部拉取的订阅目录 (合并为 imported)")
+    ap.add_argument("--providers-dir", default="",
+                    help="客户端 proxy-providers 目录 (每个 *.yaml 单独成一个 tag)")
+    ap.add_argument("--conf-dir", default="",
+                    help="服务端 conf 目录 (含 config.d/.managed.json)。"
+                         "给了就按当前在跑的 listener 名单过滤掉陈旧产物")
+    ap.add_argument("--tag", default="all", help="all 或某个协议前缀 (reality/trojan/...)")
+    ap.add_argument("-o", "--output", default="")
+    ap.add_argument("--list", action="store_true", help="只列出可用 tag (给人看的表格)")
+    ap.add_argument("--list-tags", action="store_true",
+                    help="只列出可用 tag, 每行一个 (给脚本用, 无表头无计数)")
+    args = ap.parse_args()
+
+    buckets = build_buckets(args.out_dir, args.conf_dir, args.import_dir,
+                            args.providers_dir)
 
     if args.list_tags:
         # 机器可读: 每行一个 tag, 没有表头、没有计数、没有单位字。
@@ -265,18 +300,9 @@ def main() -> int:
         return 0
 
     if args.tag == "all":
-        # 客户端常见情况: 同一个订阅被导入成多个 provider (rn_all / 哈希名 / sub_*)。
-        # 直接按桶拼接会得到成倍的同名重复节点, 这里按 name 去重并保留首个。
-        proxies, seen = [], set()
-        for proto in sorted(buckets):
-            for x in buckets[proto]:
-                nm = x.get("name")
-                if nm in seen:
-                    continue
-                seen.add(nm)
-                proxies.append(x)
+        proxies = select_proxies(buckets, "all")
     else:
-        proxies = buckets.get(args.tag, [])
+        proxies = select_proxies(buckets, args.tag)
         if not proxies:
             print(f"[ERR] 没有 tag=`{args.tag}` 的节点", file=sys.stderr)
             return 1

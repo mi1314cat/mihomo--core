@@ -152,6 +152,11 @@ run_gate "分享产物"     bash tools/check_share_products.sh
 #   功能"里最贵的一条: 自己分享给自己都认不出来, 用户没法自己发现。
 #   闸门故意同时覆盖带旗帜名与裸名两种输入。真内核层用 MIHOMO_BIN 启用。
 run_gate "对角线(分享→客户端)" bash tools/check_diagonal.sh
+# ★ 三家互通: 服务端声明 + 客户端决策 + 回退链。
+#   这一批同样全是**静默失败**型: 字段名不一致 → 永远走普通话(不报错);
+#   发行版标签与 compat 不同源 → 声明永远匹配不上; 原生取不到不回退 →
+#   客户端只看到"订阅里没有解析出节点"; 只停用主记录 → 原生记录还活着。
+run_gate "三家互通(声明/决策/回退)" bash tools/check_interop.sh
 
 printf "\n${CYAN}── 函数接线 (幽灵函数 / 未定义调用) ──${RESET}\n"
 phantom_scan() {

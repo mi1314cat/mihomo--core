@@ -177,7 +177,7 @@ core_update_scripts() {
             "src/lib/server_extra.sh"
             "src/lib/dns.sh" "src/lib/dns_edit.py"
             "src/lib/envtool.py" "src/lib/merge.py" "src/lib/validate.py" "src/lib/naming.py" "src/lib/naming_migrate.py"
-            "src/lib/nodecompat.py"
+            "src/lib/nodecompat.py" "src/lib/interop.py"
             "src/lib/proxy_node_compat/__init__.py" "src/lib/proxy_node_compat/__main__.py"
             "src/lib/proxy_node_compat/cli.py" "src/lib/proxy_node_compat/engine.py"
             "src/lib/proxy_node_compat/model.py" "src/lib/proxy_node_compat/registry.py"
@@ -185,7 +185,7 @@ core_update_scripts() {
             "src/conf/Reality.sh" "src/conf/VLESS.sh" "src/conf/Trojan.sh"
             "src/conf/hysteria2.sh" "src/conf/TUIC.sh" "src/conf/AnyTLS.sh"
             "src/conf/all.sh" "src/conf/XRevise.sh" "src/conf/nginx_apply.py"
-            "src/share/share.sh" "src/share/share_client.py" "src/share/lan_config.py" "src/share/lan_server.py" "src/share/build_sub.py" "src/share/link_check.py"
+            "src/share/share.sh" "src/share/share_client.py" "src/share/lan_config.py" "src/share/lan_server.py" "src/share/build_sub.py" "src/share/build_uri.py" "src/share/link_check.py"
             "src/core_install.sh" "src/server.sh" "src/client.sh" "src/VERSION"
         )
     fi
