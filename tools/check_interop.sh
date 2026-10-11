@@ -28,6 +28,8 @@ PASS=0; FAIL=0; SKIP=0
 ok()   { printf "  \033[32m✓\033[0m %s\n" "$1"; PASS=$((PASS+1)); }
 bad()  { printf "  \033[31m❌\033[0m %s\n" "$1"; FAIL=$((FAIL+1)); }
 skip() { printf "  \033[33m⊘\033[0m %s\n" "$1"; SKIP=$((SKIP+1)); }
+# 明示但不判红: 用于"真源自己的状态"这类不是副本缺陷、却必须让人看见的情况。
+warn() { printf "  \033[33m!\033[0m %s\n" "$1"; }
 py()   { python3 - "$@"; }
 
 TMP=$(mktemp -d /tmp/.m-interop-XXXXXX)
@@ -682,6 +684,99 @@ import json, sys
 r = json.load(open("%s/%s.json" % (sys.argv[1], sys.argv[2]), encoding="utf-8"))
 assert "proxies:" in r["content"], r["content"][:80]
 PYEOF
+
+echo
+echo "== ⑨ vendored 兼容层与 canonical 逐字节一致 (例外机制就是漂移的入口) =="
+# 为什么要有这一条: `src/lib/proxy_node_compat/` 是 **vendored 副本**, 真源在
+# proxy-node-compat 仓库的 `proxy_node_compat/`。副本一旦落后, 表现是
+# "判定按旧规则走" —— 不报错, 只是结论悄悄变了。这类漂移已经真实发生过
+# (X 的副本落后多处, 靠逐字节比对才发现)。
+#
+# 判定口径: **逐字节**。不给任何例外 —— 一旦开口子("除某一处之外都相同"),
+# 下一次的漂移就藏在那"一处"里, 而比对脚本照样绿。为此本副本曾把证据里的
+# 一个真实出口 IP 脱敏成 `<CDN_IP>`, 与 canonical 差一个字符串; 现已改回
+# canonical 原文 (取舍写在 research/known-issues/compat-canonical-sync.md,
+# 报告里也记了一句)。`__pycache__` 是构建产物, 不参与比对。
+#
+# canonical 找不到时**不许静默通过**: 打出明确理由并计入"跳过", 摘要行会显示。
+#
+# ★ 比对基线是 canonical 的**已提交真源** (HEAD blob), 不是它的工作区:
+#   canonical 仓库里常有"正在改、还没提交"的文件 —— 那是真源自己的 WIP, 不是
+#   副本落后; 把它当漂移会让闸门在真源写一半时**假红**, 而假红的下场是被人
+#   习惯性忽略。真源有未提交改动时本闸门会**明确打出来**(不是静默):
+#     · 该文件在 canonical HEAD 里 → 比 HEAD; 工作区 != HEAD → 打 WIP 警告
+#     · 该文件不在 HEAD 里 (新加的, 如 data/rules.json) → 只能比工作区
+#   真源提交新内容却没重新 vendor → 下一跑立刻红。
+VEND="$ROOT/src/lib/proxy_node_compat"
+CANON="${PNC_CANONICAL:-$ROOT/../proxy-node-compat/proxy_node_compat}"
+if [[ ! -d "$CANON" ]]; then
+    skip "canonical 检出不存在 —— 本项**未比对**, 不算通过: $CANON"
+    printf '       %s\n' "指定方式: PNC_CANONICAL=<proxy-node-compat/proxy_node_compat> bash tools/check_interop.sh" >&2
+else
+    VENDOR_OUT=$(python3 - "$VEND" "$CANON" <<'PY'
+import hashlib, os, subprocess, sys
+vend, canon = sys.argv[1], sys.argv[2]
+repo = os.path.dirname(canon.rstrip("/"))          # canonical 的仓库根
+is_git = os.path.isdir(os.path.join(repo, ".git"))
+# canonical 目录在仓库里的相对路径 (HEAD:<这个前缀>/<rel>) —— 少了前缀,
+# `cat-file blob HEAD:cli.py` 会失败, 于是每个文件都被当成"不在 HEAD 里",
+# 基线悄悄退化成工作区, 闸门反过来指错方向。
+prefix = os.path.relpath(os.path.abspath(canon), os.path.abspath(repo)) if is_git else ""
+
+def walk(root):
+    out = {}
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if d != "__pycache__"]     # 构建产物不比对
+        for fn in fns:
+            p = os.path.join(dp, fn)
+            with open(p, "rb") as fh:
+                out[os.path.relpath(p, root)] = fh.read()
+    return out
+
+def head_blob(rel):
+    """canonical 的已提交内容; 不在 HEAD 里返回 None。"""
+    if not is_git:
+        return None
+    hp = rel if prefix in ("", ".") else prefix + "/" + rel
+    r = subprocess.run(["git", "-C", repo, "cat-file", "blob", "HEAD:" + hp],
+                       capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+cv, vv = walk(canon), walk(vend)
+missing, extra, drift, wip = [], [], [], []
+for rel, cbytes in sorted(cv.items()):
+    hb = head_blob(rel)
+    base = hb if hb is not None else cbytes           # 基线 = 已提交真源
+    if rel not in vv:
+        missing.append(rel)
+        continue
+    if vv[rel] != base:
+        drift.append(rel)
+    elif hb is not None and cbytes != hb:
+        wip.append(rel)                               # 真源改了但还没提交
+for rel in sorted(set(vv) - set(cv)):
+    extra.append(rel)
+
+prob = []
+if missing: prob.append("副本缺 %d: %s" % (len(missing), ", ".join(missing)))
+if extra: prob.append("副本多 %d: %s" % (len(extra), ", ".join(extra)))
+if drift: prob.append("与已提交真源漂移 %d: %s" % (len(drift), ", ".join(drift)))
+if prob:
+    print("DRIFT\t" + "; ".join(prob))
+elif wip:
+    print("WIP\t" + ", ".join(wip))
+else:
+    print("OK\t%d" % len(cv))
+PY
+)
+    case "$VENDOR_OUT" in
+        OK*)   ok "vendored 副本与 canonical 已提交真源逐字节相同 (${VENDOR_OUT#OK	} 个文件)" ;;
+        WIP*)  warn "vendored 副本与 canonical 已提交真源一致; 但 canonical 工作区有**未提交**改动 —— 未纳入比对: ${VENDOR_OUT#WIP	}"
+               printf '       %s\n' "真源提交后请重新 vendor (M 不会去 vendor 未评审的 WIP)" >&2
+               skip "canonical 有未提交 WIP (见上, 已明示) —— 本次只比到 HEAD" ;;
+        *)     bad "vendored 副本与 canonical 真源漂移: ${VENDOR_OUT#DRIFT	}" ;;
+    esac
+fi
 
 printf "\n三家互通闸门 (声明/决策/回退): \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m / \033[33m%d 跳过\033[0m\n" \
     "$PASS" "$FAIL" "$SKIP"
