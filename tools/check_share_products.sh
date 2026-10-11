@@ -395,13 +395,13 @@ python3 "$ROOT/src/share/build_sub.py" --out-dir "$B6/out" --conf-dir "$B6/conf"
     --tag all > "$B6/sub.yaml" 2> "$B6/log"
 grep -q "server: 203.0.113.10" "$B6/sub.yaml" \
     && ok "坏产物被拒收, 好产物赢得去重 (server 取到真主机名)" \
-    || { bad "好产物没能赢 —— 坏产物仍然压过它"; sed 's/^/      /' "$B6/sub.yaml" | head -8; }
+    || { bad "好产物没能赢 —— 坏产物仍然压过它"; sed 's/^/      /' "$B6/sub.yaml" | awk 'NR<=8'; }
 grep -q "fullchain.pem" "$B6/sub.yaml" && bad "证书文件名当主机名的产物进了订阅" \
                                      || ok "证书文件名当主机名的产物进不了两条产品"
 if grep -q '\[拒收\]' "$B6/log" && grep -q '证书文件名' "$B6/log"; then
     ok "拒收把原因说出来了 (不静默丢)"
 else
-    bad "拒收了但没说原因 (或根本没拒收)"; sed 's/^/      /' "$B6/log" | head -4
+    bad "拒收了但没说原因 (或根本没拒收)"; sed 's/^/      /' "$B6/log" | awk 'NR<=4'
 fi
 # 反向验证口径 (报告里有原始输出): 把 build_sub.py 换回修前那版跑同一夹具,
 # 订阅里就是 `server: fullchain.pem` —— 上面第一条断言在修前**红**。
