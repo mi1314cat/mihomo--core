@@ -212,6 +212,34 @@ assert "url-upstream=http://" in url, "取件地址被编码成 %3A%2F%2F ——
 frag = "http://1.2.3.4:9443/share/x#interop=1&kernel=mihomo&distribution=upstream&formats=uri,upstream"
 assert m.parse_declaration(frag) is None, "把片段当成了声明"
 PY
+# ★ 「M 产出的声明, M 自己读得回」—— 这条是跨实现一致性台抓到的真缺陷:
+#   url-* 的值**保留 `://` 原样**(见上一条断言的用意), 于是**裸查询串里也有
+#   `://`**; parse_declaration 若拿 `"://" not in s` 当"这是裸查询串"的判据,
+#   就会把自家声明判成"没有查询串" → decide 落到 no-declaration →
+#   **静默走普通话**, 不报错。修前的反向证据: 这条断言必红。
+python3 - "$INTEROP" <<'PY' && ok "裸查询串/裸地址/完整地址三种形态的声明都能读回, 且决策一致" \
+    || bad "M 产出的声明 M 自己读不回来 (裸查询串形态 → 静默走普通话)"
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location("interop", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+decl = m.build_declaration("mihomo", "upstream", "1.19.32", formats=("uri", "upstream"),
+                           urls={"upstream": "http://107.173.154.178:9443/share/nat"})
+qs = m.declaration_query(decl)                       # 自己产出的裸查询串
+assert "url-upstream=http://" in qs, "夹具前提不成立: url-* 值应保留 :// 原样"
+bare = m.parse_declaration(qs)
+assert bare is not None, "裸查询串读不回声明 (declaration_query 的输出)"
+assert bare["recognized"], "裸查询串形态的声明被判成不认识"
+assert bare["urls"].get("upstream") == "http://107.173.154.178:9443/share/nat", bare["urls"]
+bareq = m.parse_declaration("?" + qs)                # 带 ? 前缀的裸查询串
+assert bareq is not None and bareq["recognized"], "带 ? 的裸查询串读不回声明"
+full = m.parse_declaration(m.declare_url("http://h:1/share/pri", decl))
+assert full is not None and full["recognized"], "完整地址读不回声明"
+d_bare = m.decide(bare,  "mihomo", "upstream")
+d_bareq = m.decide(bareq, "mihomo", "upstream")
+d_full = m.decide(full,  "mihomo", "upstream")
+assert d_bare == d_bareq == d_full, (d_bare, d_bareq, d_full)
+assert d_bare[0] == "native" and d_bare[1] == "native-listed", d_bare
+PY
 python3 - "$INTEROP" <<'PY' && ok "服务端声明地址含声明, 且裸地址不含 (客户端据前者决策)" \
     || bad "声明没写进地址"
 import sys, importlib.util

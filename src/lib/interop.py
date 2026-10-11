@@ -203,12 +203,25 @@ def parse_declaration(text):
         s = str(text or "").strip()
         if not s:
             return None
-        if "?" in s and "://" in s or s.startswith("?"):
-            q = urllib.parse.urlsplit(s).query if "://" in s else s.lstrip("?")
-        elif "=" in s and "://" not in s:
-            q = s                      # 裸查询串(测试/手工调试用)
+        # ★ 判据必须是"**有没有 scheme**", 不能是"串里有没有 `://`"。
+        #   我们的 url-* 值**保留 `://` 原样** (URL_SAFE, "切换地址族"靠它),
+        #   于是**裸查询串里也会出现 `://`**。拿 `"://" not in s` 当"这是裸
+        #   查询串"的判据, 会把**我们自己产出的声明**判成"没有查询串":
+        #   parse 返回 None → decide 落到 no-declaration → **静默走普通话**,
+        #   不报错。真实故障: `interop.py declare` 的输出喂回 `interop.py
+        #   decide` 永远拿不到原生(跨实现一致性台抓到的唯一"只有 M 不通过")。
+        #
+        #   注意: 这里用 urlsplit 的 scheme **真探测**, 不是再换一个子串判据
+        #   (`"://" in s` 同样会把上面那种裸查询串误判成完整地址 → query 解析
+        #   成空串 → 依然静默)。见 tools/check_interop.sh ③ 的往返断言。
+        if s.startswith("?"):
+            q = s.lstrip("?")                       # 裸查询串(带 ? 前缀)
+        elif urllib.parse.urlsplit(s).scheme:
+            q = urllib.parse.urlsplit(s).query      # 完整订阅地址
+        elif "=" in s:
+            q = s                                   # 裸查询串(无 ? 前缀)
         else:
-            q = ""                     # 没有查询串 → 没有声明
+            q = ""                                  # 没有查询串 → 没有声明
         raw = {}
         for k, v in urllib.parse.parse_qsl(q, keep_blank_values=True):
             raw.setdefault(k, v)       # 同名参数取第一个(声明是我们自己写的)
