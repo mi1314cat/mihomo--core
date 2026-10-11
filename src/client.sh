@@ -1095,6 +1095,78 @@ _sub_auto_kind_note() {   # <本次决策的模式>
     print_info "(手动「更新订阅节点」才按声明走原生; 想一直用原生就选手动更新)"
 }
 
+# 内核**真的**加载到几个节点 —— "文件写成功"不等于"内核能加载"。
+#
+# 为什么必须有这一步: 内核拒绝一条坏条目时会**整批拒绝** provider。实测:
+#   一条 `hysteria2://…&obfs=none` 让内核报
+#   `initial proxy provider error: proxy 0 error: missing obfs password`
+#   → 组里 **0 个节点**(好节点一起消失)。
+# 而客户端此前只数"文件里有几行", 于是照打
+#   `[OK] 已写入 … (N 个节点)` + `[OK] 解析出 N 个节点`
+# —— 用户看到的是"导入成功"加一个空组, 没有任何线索指向真正原因。
+#
+# ★ `<内核> -t` **不加载 provider**: 实测同一份坏 provider 上 `mihomo -t`
+#   报 `test is successful` 且退出码 0。所以"配置测试通过"证明不了任何事,
+#   唯一可信的判据是让内核真起来一次, 再去问它 `/providers/proxies/<名字>`。
+#
+# 返回: 内核加载到的节点数; 拿不到(没内核 / 起不来 / 超时) → -1 —— 不猜,
+#       也绝不因为"测不了"就报成功。
+# 验收钩子: M_PROVIDER_LOAD_PROBE='<命令>' 时用该命令代替内核 —— 命令从
+#       `$M_PROVIDER_LOAD_PROBE_FILE` 读 provider 路径, 只打印节点数一行。
+#       (路径走环境变量而不是当参数追加: `echo 0` 这种钩子被追加参数后会印出
+#        "0 <路径>", 解析不出来 → 钩子**静默失效**、看起来还像通过了。)
+_provider_load_count() { # <provider 文件>
+    local prov="${1:-}" bin
+    [[ -f "$prov" ]] || { printf -- '-1'; return 0; }
+    if [[ -n "${M_PROVIDER_LOAD_PROBE:-}" ]]; then
+        M_PROVIDER_LOAD_PROBE_FILE="$prov" bash -c "$M_PROVIDER_LOAD_PROBE" 2>/dev/null | tail -1
+        return 0
+    fi
+    bin="${MIHOMO_BIN:-${CLI_ROOT:-/root/catmi/mihomo-client}/mihomo}"
+    [[ -x "$bin" ]] || { printf -- '-1'; return 0; }
+    python3 - "$bin" "$prov" <<'PYL'
+import json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request
+
+bin_, prov = sys.argv[1], sys.argv[2]
+
+def free_port():
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+w = tempfile.mkdtemp(prefix=".mplc.")
+try:
+    dst = os.path.join(w, "p.yaml")
+    shutil.copy(prov, dst)
+    cfg = os.path.join(w, "config.yaml")
+    ctrl = free_port()
+    with open(cfg, "w", encoding="utf-8") as fh:
+        fh.write("mixed-port: %d\nexternal-controller: 127.0.0.1:%d\n"
+                 "mode: rule\nlog-level: silent\n"
+                 "proxy-providers:\n  chk:\n    type: file\n    path: %s\n"
+                 "    health-check: {enable: false}\n"
+                 "proxy-groups:\n  - name: CHK\n    type: select\n    use: [chk]\n"
+                 "rules:\n  - MATCH,CHK\n" % (free_port(), ctrl, dst))
+    log = open(os.path.join(w, "k.log"), "wb")
+    p = subprocess.Popen([bin_, "-d", w, "-f", cfg], stdout=log, stderr=log)
+    n = -1
+    try:
+        for _ in range(80):                      # 最多 ~20s
+            try:
+                with urllib.request.urlopen(
+                        "http://127.0.0.1:%d/providers/proxies/chk" % ctrl, timeout=3) as r:
+                    n = len((json.load(r) or {}).get("proxies") or [])
+                break
+            except Exception:                    # noqa: BLE001
+                if p.poll() is not None:         # 内核已退出 → 不用再等
+                    break
+                time.sleep(0.25)
+    finally:
+        p.kill(); log.close()
+    print(n)
+finally:
+    shutil.rmtree(w, ignore_errors=True)
+PYL
+}
+
 # 按声明拉产品并**落成 provider**。打印 "<模式>\t<节点数>\t<说明>";
 # 模式 = native / uri / error(此时第 2 列是 HTTP 码)。
 #
@@ -1107,7 +1179,13 @@ _sub_auto_kind_note() {   # <本次决策的模式>
 #   回退**必须把原因打出来** —— "不许为了看起来能用而静默降级"。
 _sub_import_by_declaration() {  # <地址|本地文件> <组名>
     local url="$1" name="$2"
-    local pick choice reason rurl detail body tmp code n=0 mode=uri
+    # ★ 每个都要**显式赋值**。`local x`(不赋值) 在 bash 里留的是"未设置"而不是
+    #   空串, 于是 `set -u` 下引用它直接 `x: unbound variable` 把函数打断 ——
+    #   走**本地文件**那条分支时 `detail` 从来没被赋过值, 表现是: provider 明明
+    #   写好了、文件里有 N 行, 客户端却报 `[Error] 订阅里没有解析出节点`
+    #   (真机实测: `src/client.sh: line 1156: detail: unbound variable`)。
+    #   这类"函数半路死掉、调用方按空结果判断"的错最难查: 写成功却报失败。
+    local pick="" choice="" reason="" rurl="" detail="" body="" tmp="" code="" n=0 mode=uri
     tmp=$(mktemp -d); body="$tmp/sub.yaml"
     if [[ "$url" == http://* || "$url" == https://* ]]; then
         pick=$(_sub_interop_decide "$url")
@@ -1138,6 +1216,19 @@ _sub_import_by_declaration() {  # <地址|本地文件> <组名>
 
     _add_from_file "$body" "$name" >/dev/null || true
     n=$(m_provider_count "$CLI_PROVIDERS/$name.yaml" 2>/dev/null || echo 0)
+
+    # ★ 文件里有几个 ≠ 内核认几个。内核会因为**一条**坏条目整批拒绝 provider
+    #   (实测 `obfs=none` → 组里 0 个节点), 而"文件有 N 行"照样是 N。
+    #   所以落盘之后再问内核一次真话; 对不上就以**内核的数字**为准并说清原因。
+    local loaded
+    loaded=$(_provider_load_count "$CLI_PROVIDERS/$name.yaml")
+    if [[ "$loaded" =~ ^[0-9]+$ ]] && (( ${n:-0} > 0 )) && (( loaded < ${n:-0} )); then
+        print_warn "内核只加载到 $loaded/${n} 个节点 —— 这份订阅里有内核**整批拒绝**的条目"
+        print_info "一条坏条目就能让整组归零 (实测: hysteria2 写了 obfs 却没有 obfs-password)"
+        print_info "注意: 内核 -t **不加载 provider**, 它报 test is successful 不代表能用"
+        n="$loaded"
+    fi
+
     if [[ "$mode" == "native" ]] && (( ${n:-0} == 0 )); then
         # 声明说原生在那边, 但那边解析不出节点 → 回到最通用的普通话
         detail="${detail}；原生解析出 0 个节点 → 回退"

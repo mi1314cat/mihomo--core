@@ -225,13 +225,13 @@ import sys, importlib.util
 spec = importlib.util.spec_from_file_location("interop", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 decl = m.build_declaration("mihomo", "upstream", "1.19.32", formats=("uri", "upstream"),
-                           urls={"upstream": "http://107.173.154.178:9443/share/nat"})
+                           urls={"upstream": "http://198.51.100.77:9443/share/nat"})
 qs = m.declaration_query(decl)                       # 自己产出的裸查询串
 assert "url-upstream=http://" in qs, "夹具前提不成立: url-* 值应保留 :// 原样"
 bare = m.parse_declaration(qs)
 assert bare is not None, "裸查询串读不回声明 (declaration_query 的输出)"
 assert bare["recognized"], "裸查询串形态的声明被判成不认识"
-assert bare["urls"].get("upstream") == "http://107.173.154.178:9443/share/nat", bare["urls"]
+assert bare["urls"].get("upstream") == "http://198.51.100.77:9443/share/nat", bare["urls"]
 bareq = m.parse_declaration("?" + qs)                # 带 ? 前缀的裸查询串
 assert bareq is not None and bareq["recognized"], "带 ? 的裸查询串读不回声明"
 full = m.parse_declaration(m.declare_url("http://h:1/share/pri", decl))
@@ -777,6 +777,37 @@ PY
         *)     bad "vendored 副本与 canonical 真源漂移: ${VENDOR_OUT#DRIFT	}" ;;
     esac
 fi
+
+echo
+echo "== ⑩ 客户端: 「文件里有 N 行」不等于「内核认 N 个节点」=="
+# 为什么单独一组: 内核拒绝**一条**坏条目时会整批拒绝 provider (实测
+# `hy2&obfs=none` → `missing obfs password` → 组里 0 个节点), 而客户端原先
+# 只数文件行数, 于是照打 `[OK] 已写入 N 个节点` + `[OK] 解析出 N 个节点` ——
+# 用户看到"导入成功"和一个空组。判据必须是**内核真加载数**; 而内核 -t 不加载
+# provider (实测同一份坏 provider 上 `-t` 报 test is successful, 退出码 0)。
+LOCALURIS="$TMP/local_uris.txt"
+cp "$URI_LIST" "$LOCALURIS"
+cli_probe() { # <probe 命令> <组名>
+    CLI_ROOT="$TMP/cli-$2" MIHOMO_BIN="$FACTDIR/mihomo" \
+        M_PROVIDER_LOAD_PROBE="$1" bash "$ROOT/src/client.sh" node-sub "$LOCALURIS" "$2" 2>&1
+}
+OUT=$(cli_probe 'echo 2' p2)
+if grep -q "解析出 2 个节点" <<<"$OUT" && ! grep -q "unbound variable" <<<"$OUT"; then
+    ok "本地文件形态导入正常收场 (修前: src/client.sh: line 1156: detail: unbound variable)"
+else
+    bad "本地文件形态导入仍然异常"; sed 's/^/      /' <<<"$OUT" | tail -6
+fi
+OUT=$(cli_probe 'echo 0' p0)
+grep -q "内核只加载到 0/2 个节点" <<<"$OUT" \
+    && ok "内核整批拒绝时客户端把真话打出来 (0/2)" \
+    || { bad "内核只加载到 0 个, 客户端没说"; sed 's/^/      /' <<<"$OUT" | tail -6; }
+grep -q "订阅里没有解析出节点" <<<"$OUT" \
+    && ok "此时按失败收场, 不再宣称「解析出 2 个节点」" \
+    || bad "内核加载 0 个却仍报成功 —— 静默假成功"
+OUT=$(cli_probe 'echo -1' pu)
+grep -q "解析出 2 个节点" <<<"$OUT" && ! grep -q "内核只加载到" <<<"$OUT" \
+    && ok "拿不到内核(-1)时不误报: 不拦也不假装验过" \
+    || bad "拿不到内核时的行为不对"
 
 printf "\n三家互通闸门 (声明/决策/回退): \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m / \033[33m%d 跳过\033[0m\n" \
     "$PASS" "$FAIL" "$SKIP"
