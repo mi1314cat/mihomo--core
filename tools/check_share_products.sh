@@ -379,5 +379,32 @@ python3 "$IMP" "$F5/junk.txt" "$F5/out/junk.yaml" "$F5/lib" "" >"$F5/junk.log" 2
     && bad "垃圾内容被当成订阅收下了" || ok "不认识的内容仍然明确报错"
 grep -q "不是合法的 Mihomo 订阅" "$F5/junk.log" && ok "报错文案保留" || bad "报错文案变了"
 
+echo
+echo "== ⑥ 单协议重建产出的坏产物不许压过好产物 (收集端拒收, 不静默) =="
+# 真机来由 (2026-10-11, RN): 面板「重建客户端文件」对 all.sh 批量生成的节点按
+# **字段位置**取值 → 产出 `server/sni = 证书文件名` 的产物; 它文件名排序在前,
+# 于是在"同名节点后者覆盖前者"里**压过**原来那份好的 —— 实测 payload 里
+# mVLESS01-REALITY 丢了 pbk、mTUIC01-TLS 的 sni 变成 fullchain.pem。
+B6="$TMP/fix6"; mkdir -p "$B6/out" "$B6/conf/config.d"
+echo '["mHysteria201-TLS"]' > "$B6/conf/config.d/.managed.json"
+printf 'proxies:\n  - name: %s mHysteria201-TLS\n    type: hysteria2\n    server: 203.0.113.10\n    port: 25682\n    password: goodpw\n    sni: good.example.com\n' "$FLAG" \
+    > "$B6/out/hysteria2_hysteria2_client-01.yaml"
+printf 'proxies:\n  - name: %s mHysteria201-TLS\n    type: hysteria2\n    server: fullchain.pem\n    port: 25682\n    password: goodpw\n    sni: fullchain.pem\n' "$FLAG" \
+    > "$B6/out/hysteria2_client-01.yaml"
+python3 "$ROOT/src/share/build_sub.py" --out-dir "$B6/out" --conf-dir "$B6/conf" \
+    --tag all > "$B6/sub.yaml" 2> "$B6/log"
+grep -q "server: 203.0.113.10" "$B6/sub.yaml" \
+    && ok "坏产物被拒收, 好产物赢得去重 (server 取到真主机名)" \
+    || { bad "好产物没能赢 —— 坏产物仍然压过它"; sed 's/^/      /' "$B6/sub.yaml" | head -8; }
+grep -q "fullchain.pem" "$B6/sub.yaml" && bad "证书文件名当主机名的产物进了订阅" \
+                                     || ok "证书文件名当主机名的产物进不了两条产品"
+if grep -q '\[拒收\]' "$B6/log" && grep -q '证书文件名' "$B6/log"; then
+    ok "拒收把原因说出来了 (不静默丢)"
+else
+    bad "拒收了但没说原因 (或根本没拒收)"; sed 's/^/      /' "$B6/log" | head -4
+fi
+# 反向验证口径 (报告里有原始输出): 把 build_sub.py 换回修前那版跑同一夹具,
+# 订阅里就是 `server: fullchain.pem` —— 上面第一条断言在修前**红**。
+
 printf "\n分享产物闸门: \033[32m%d 通过\033[0m / \033[31m%d 失败\033[0m\n" "$PASS" "$FAIL"
 exit $((FAIL > 0))

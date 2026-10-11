@@ -112,10 +112,45 @@ def collect_dir(pattern_dir: str, proto: str,
                 continue
             if "server" not in item or "port" not in item:
                 continue
+            # ★ 内核一定用不了的产物在这里拒收 (原因逐条打出来, 不静默丢)。
+            #   必须在**去重之前**: 否则坏产物会先把同名好产物覆盖掉。
+            _why = bad_product_reason(item)
+            if _why:
+                print(f"[拒收] {os.path.basename(p)}: {item.get('name', '?')} —— {_why}",
+                      file=sys.stderr)
+                continue
             buckets.setdefault(proto, [])
             buckets[proto] = [x for x in buckets[proto]
                               if x.get("name") != item["name"]]
             buckets[proto].append(item)
+
+
+# 「看着是产物、其实内核一定用不了」的条目 —— 必须**在收集这一层**挡掉。
+#
+# 真机来由 (2026-10-11, RN): 单协议面板的「重建客户端文件」对 all.sh 批量生成的
+# 节点会**按字段位置**取值 (`grep -E "uuid:" … | awk '{print $2}'`), 遇上列表形态
+# (`    - uuid: xxx`) 就错位 —— 产出 server/sni = **证书文件名** 的产物, 或
+# reality-opts.public-key 为空的产物。要命的是这些产物**文件名排序在前**, 于是在
+# "同名节点后者覆盖前者"的去重里**压过**了原来那份好的。实测 payload 里
+# mVLESS01-REALITY 丢了 pbk、mTUIC01-TLS 的 sni 变成 `fullchain.pem`。
+#
+# 修法不是在 11 个协议脚本里逐个改解析 (那是另一件事), 而是让**收集端拒收**:
+# 坏产物进不了两条产品 (build_sub / build_uri 共用 collect), 好产物自然赢;
+# 每一条都**说出原因**(不静默丢), 而被拒的产物仍留在 out/ 里可查。
+_CERT_FILE_RE = re.compile(r"\.(pem|crt|cer|key)$", re.IGNORECASE)
+
+
+def bad_product_reason(item: dict) -> str:
+    """内核一定用不了的产物 → 返回原因; 没问题返回空串。"""
+    for field in ("server", "sni", "servername"):
+        v = str(item.get(field) or "").strip()
+        if v and "/" not in v and _CERT_FILE_RE.search(v):
+            return f"{field} 是证书文件名 ({v}) —— 字段位置解析错位的典型症状"
+    if "reality-opts" in item:
+        ro = item.get("reality-opts")
+        if not isinstance(ro, dict) or not str(ro.get("public-key") or "").strip():
+            return "reality 节点缺 public-key —— 只按裸 TLS 拨号, 必然连不通"
+    return ""
 
 
 def collect(out_dir: str) -> dict[str, list[dict]]:
@@ -147,6 +182,13 @@ def collect(out_dir: str) -> dict[str, list[dict]]:
             if not item.get("name") or not item.get("type"):
                 continue
             if "server" not in item or "port" not in item:
+                continue
+            # ★ 内核一定用不了的产物在这里拒收 (原因逐条打出来, 不静默丢)。
+            #   必须在**去重之前**: 否则坏产物会先把同名好产物覆盖掉。
+            _why = bad_product_reason(item)
+            if _why:
+                print(f"[拒收] {os.path.basename(p)}: {item.get('name', '?')} —— {_why}",
+                      file=sys.stderr)
                 continue
             buckets.setdefault(proto, [])
             buckets[proto] = [x for x in buckets[proto]
