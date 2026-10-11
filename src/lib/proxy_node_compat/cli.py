@@ -79,6 +79,18 @@ def _render(profile: NodeProfile, target: Target, res, as_json: bool,
         out.append(f"   🟡 注意: {wn.get('code')} —— {wn.get('detail')}")
     for un in res.unknowns:
         out.append(f"   ❓ 未知: {un.get('what')} —— {un.get('why')}")
+    # URI 规则携带、但**不影响判定**的事实：必须打出来，否则读者会以为它们参与过结论
+    for inf in getattr(res, "informational", []) or []:
+        bits = []
+        if inf.get("carrier"):
+            bits.append(f"承载形态={inf['carrier']}")
+        if inf.get("spec_added_at"):
+            bits.append(f"规范引入={inf['spec_added_at']}")
+        if inf.get("workaround"):
+            bits.append(f"绕行={inf['workaround']}")
+        if bits:
+            out.append(f"   ⓘ 参考（不影响判定）: {inf.get('feature')} —— "
+                       + "；".join(bits) + f"  ({inf.get('rule')})")
     if verbose and res.evidence:
         out.append("   证据:")
         for ev in res.evidence:

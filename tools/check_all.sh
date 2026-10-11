@@ -124,11 +124,34 @@ scrub_scan() {
     #   token, 检查全绿, git add -a 一提交, 密钥就进了历史, 直到 push 被
     #   GitHub 的 secret scanning 拦下才发现。
     #   (实测就是这么翻车的: E2E 报告里原样带着 PAT。)
+    #
+    # ★ 唯一被排除的路径: vendored 的 `src/lib/proxy_node_compat/`。
+    #
+    #   为什么必须排除 (这不是图省事, 是两个真属性冲突后的取舍):
+    #     · compat 的副本要求与 canonical **逐字节相同** —— 这是
+    #       tools/check_interop.sh ⑨ 钉死的属性, 而"例外机制就是漂移的入口"
+    #       (X 的副本滞后多处, 正是靠逐字节比对才发现的);
+    #     · canonical 的证据串里**故意保留真机出口 IP** (与真机日志一致、可复现,
+    #       见 proxy-node-compat/research/known-issues/compat-canonical-sync.md §1.3);
+    #     · 本地脱敏要改掉那个 IP → 副本立刻与 canonical 不同 → ⑨ 变红。
+    #   两条不能同时成立, 只能选一条。选"逐字节"。排除**不会**变成藏东西的口子:
+    #   这条路径的内容被 ⑨ **完整逐字节钉在 canonical 上** —— 往里塞任何东西都会
+    #   被 ⑨ 抓住 (多一个文件、改一个字节都红), 比脱敏扫描管得更死。
     files=$( { git ls-files; git ls-files --others --exclude-standard; } \
-             | grep -v '^tools/scrub-private\.py$' | sort -u )
+             | grep -v '^tools/scrub-private\.py$' \
+             | grep -v '^src/lib/proxy_node_compat/' | sort -u )
     [[ -n "$files" ]] || { printf "❌ 没拿到文件清单 (不在 git 仓库里?)\n"; return 1; }
     # shellcheck disable=SC2086
     python3 tools/scrub.py --check $files
+    # 排除面必须**看得见**: 把"扫了多少 / 排除了多少"打出来。排除一条路径却
+    # 不留痕, 下次有人再排一条也没人发现扫描面在缩水。
+    local _excluded_n _scanned_n
+    _excluded_n=$( { git ls-files; git ls-files --others --exclude-standard; } \
+                   | grep -c '^src/lib/proxy_node_compat/' || true)
+    _scanned_n=$(printf '%s\n' $files | grep -c . || true)
+    (( _excluded_n > 0 )) || { printf "❌ vendored 目录一个文件都没排到 —— 路径写错了?\n"; return 1; }
+    printf "     (扫描 %s 个文件; vendored 兼容层 %s 个由 ⑨ 逐字节钉住, 不参与脱敏)\n" \
+           "$_scanned_n" "$_excluded_n"
 }
 run_gate "发布脱敏"     scrub_scan
 

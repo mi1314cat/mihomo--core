@@ -166,6 +166,32 @@ class Evidence:
         return Evidence(**{k: v for k, v in d.items() if k in Evidence.__dataclass_fields__})
 
 
+# ---------------------------------------------------------------- URI 规则字段
+#
+# 这张表是**必需**的，不是为了整洁：`rules.json` 是公开数据文件，谁都能往里加字段，
+# 而"加了字段但没有任何代码读它"是**最难发现的一类失真** —— 数据看起来记录了
+# 一个事实（例如"这个参数是哪版进规范的"），判定却完全不用它，读者会以为这层
+# 的精度比实际高。所以：
+#
+#   · 读得出的字段 → 必须在 `URI_RULE_KEYS` 里；
+#   · 读得出但这个版本**不参与判定**的字段 → 列进 `URI_RULE_INFORMATIONAL`，
+#     由引擎原样带进结果、由 CLI 打出来（**显式告诉用户"它不影响结论"**），
+#     而不是悄悄躺在 JSON 里；
+#   · 认不出的字段 → `Registry.load` 直接**报错**，不许静默忽略。
+#
+# 已知的"读得出但不参与判定"的三个（都由 URI 规则携带、经 result.informational 透出）：
+#   carrier        这条参数靠哪种链接形态承载（用于解释"为什么换个格式就丢了"）
+#   spec_added_at  该参数是哪个版本的链接规范引入的（**规范事实**，不是内核能力边界；
+#                  本实现不做基于它的判定，"版本边界未知就不许补"这条同样适用于它）
+#   workaround     有损时的可用绕行（例如"改用原生 YAML/JSON 格式"）
+URI_RULE_KEYS = {
+    "uri_rule_id", "scheme", "feature", "target_kernel", "representation",
+    "loss", "note", "evidence",
+    "carrier", "spec_added_at", "workaround",
+}
+URI_RULE_INFORMATIONAL = ("carrier", "spec_added_at", "workaround")
+
+
 class Registry:
     def __init__(self, rules: list[Rule], uri_rules: list[dict],
                  evidence: dict[str, Evidence]):
@@ -182,6 +208,15 @@ class Registry:
             for eid in rule.get("evidence") or []:
                 if eid not in ev:
                     raise ValueError(f"{rule['rule_id']} 引用了不存在的证据: {eid}")
+        # URI 规则：认不出的键必须报错 —— 静默忽略等于"数据里写了、判定里没有"
+        for ur in (data.get("uri_rules") or []):
+            unknown = sorted(set(ur) - URI_RULE_KEYS)
+            if unknown:
+                raise ValueError(
+                    "%s 里有认不出的字段 %s —— 要么它应该被引擎读（那就一起改引擎与 "
+                    "URI_RULE_KEYS），要么它只是给人看的（那就列进 URI_RULE_INFORMATIONAL "
+                    "并由 result.informational 透出）。不许静默躺在数据里。"
+                    % (ur.get("uri_rule_id", "?"), unknown))
         return Registry(
             rules=[Rule.from_dict(r) for r in (data.get("rules") or [])],
             uri_rules=data.get("uri_rules") or [],

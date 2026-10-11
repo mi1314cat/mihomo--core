@@ -13,7 +13,8 @@ from dataclasses import dataclass, field as dc_field
 from typing import Any
 
 from .model import NodeProfile, Presence
-from .registry import Registry, Rule, Segment, parse_version, version_in_range
+from .registry import (URI_RULE_INFORMATIONAL, Registry, Rule, Segment,
+                       parse_version, version_in_range)
 
 LEVELS = ("parse", "config", "uri", "runtime", "semantic")
 # 内核侧层级（uri 是独立第三张表, 不受内核能力/版本/发行版缺失的影响）
@@ -94,6 +95,9 @@ class EvaluationResult:
     evidence: list[dict] = dc_field(default_factory=list)
     raw_uri: str | None = None
     rules_applied: list[str] = dc_field(default_factory=list)
+    # 由 URI 规则携带、但**不参与判定**的事实（见 registry.URI_RULE_INFORMATIONAL）。
+    # 显式透出而不是留在 JSON 里：不写出来的话，读者会以为这些字段影响过结论。
+    informational: list[dict] = dc_field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -104,6 +108,7 @@ class EvaluationResult:
             "detected_features": self.detected_features,
             "evidence": self.evidence, "raw_uri": self.raw_uri,
             "rules_applied": self.rules_applied,
+            "informational": self.informational,
         }
 
 
@@ -121,6 +126,7 @@ class _Acc:
         self.failure_mode: str | None = None
         self.rules: list[str] = []
         self.messages: list[str] = []
+        self.informational: list[dict] = []
 
     def set_level(self, level: str, status: str) -> None:
         if level not in self.levels:
@@ -362,7 +368,8 @@ def evaluate(profile: NodeProfile, target: Target,
         + ([{"id": profile.protocol.id, "presence": profile.protocol.presence.value}]
            if profile.protocol else []),
         evidence=registry.evidence_of(acc.evidence),
-        raw_uri=profile.raw_uri, rules_applied=acc.rules)
+        raw_uri=profile.raw_uri, rules_applied=acc.rules,
+        informational=acc.informational)
 
 
 def _scheme_of(profile: NodeProfile) -> str | None:
@@ -406,6 +413,15 @@ def _apply_uri_rules(profile: NodeProfile, scheme: str | None,
                                    "what": loss.get("what", "URI 无法表达"),
                                    "impact": "CONNECTIVITY",
                                    "rule": rule.get("uri_rule_id", scheme)})
+        # 携带但不判定的事实（carrier / spec_added_at / workaround）——原样透出，
+        # 并明确标 `affects_verdict=False`，避免读者误以为它们参与过结论。
+        info = {k: rule[k] for k in URI_RULE_INFORMATIONAL if rule.get(k)}
+        if info:
+            info.update({"rule": rule.get("uri_rule_id", scheme),
+                         "feature": feat.id,
+                         "affects_verdict": False})
+            if info not in acc.informational:
+                acc.informational.append(info)
         acc.evidence.extend(rule.get("evidence") or [])
     if not known:
         acc.set_level("uri", "UNKNOWN")
