@@ -224,12 +224,38 @@ _share_make_uri_content() { # <tag> <输出文件>
 }
 
 # 把声明并进订阅地址 —— 声明只有 interop.py 一处实现(客户端读的是同一份定义)
-_share_declare_url() { # <主地址> <发行版> <版本> [原生地址]
-    local url="$1" dist="$2" ver="$3" native="${4:-}"
+#
+# ★ 两处收束 (2026-10-11, 用户拍板"链接太长, 该收束的收束"):
+#   1) **不再产出 `version`**。版本没有丢: 原生产品的 record meta 里自描述
+#      `{"interop":1,"kernel":…,"distribution":…,"version":…}` (见 _share_create_records)。
+#      解析侧**仍然接受** version(第三方可能写), 只是它不参与决策。
+#   2) 原生产品**同源时写相对路径** `/share/<token>`, 异源才写绝对地址。
+#      解析侧按主地址的 `scheme://netloc` 拼回 (src/lib/interop.py:_resolve_native_ref);
+#      旧实现看到相对路径判 `bad-native-url` → 回退普通话(**安全且可见**),
+#      所以不需要 bump schema。
+_share_declare_url() { # <主地址> <发行版> [原生地址(绝对)]
+    local url="$1" dist="$2" native="${3:-}"
     local -a extra=()
-    [[ -n "$native" && -n "$dist" ]] && extra=(--url-"$dist" "$native")
+    [[ -n "$native" && -n "$dist" ]] \
+        && extra=(--url-"$dist" "$(_share_native_ref "$url" "$native")")
     python3 "$INTEROP_PY" declare --kernel mihomo --distribution "$dist" \
-        --version "$ver" --url "$url" "${extra[@]}" 2>/dev/null
+        --url "$url" "${extra[@]}" 2>/dev/null
+}
+
+# 原生取件地址的形态: **同源 → 相对路径, 异源 → 绝对地址**。
+#
+# "同源" 严格按 (scheme, host:port) 相等判 —— 只比 host 不比端口的话, 同一台机器
+# 上不同端口的分享服务会被误判成同源, 拼出来的相对路径会指向**另一个服务**。
+_share_native_ref() { # <主地址> <原生绝对地址>
+    python3 - "$1" "$2" <<'PYN'
+import sys, urllib.parse
+main = urllib.parse.urlsplit(sys.argv[1])
+nat = urllib.parse.urlsplit(sys.argv[2])
+if (main.scheme, main.netloc) == (nat.scheme, nat.netloc) and nat.path:
+    print(urllib.parse.urlunsplit(("", "", nat.path, nat.query, nat.fragment)))
+else:
+    print(sys.argv[2])
+PYN
 }
 
 # 一条分享记录 meta 里的字段(点分路径)。取不到打印空串 —— 调用方一律按
@@ -844,7 +870,7 @@ print(json.dumps({"tag": os.environ["TAG"], "interop": 1, "role": "primary",
                   "native_token": os.environ["NTOK"]}, ensure_ascii=False))')
     _share_api update --token "$new" --meta "$newmeta" >/dev/null 2>&1
     decl=$(_share_declare_url "http://$(_share_host "$addr"):$(_share_port)/share/$new" \
-             "$dist" "$ver" "$nurl")
+             "$dist" "$nurl")
     [[ -n "$decl" ]] && printf '%s\n' "$decl" > "$SRV_OUT/share_tag-$(printf '%s' "$meta" | python3 -c 'import sys,json
 try: print((json.loads(sys.stdin.read()) or {}).get("tag","all"))
 except Exception: print("all")').txt" 2>/dev/null
@@ -875,7 +901,7 @@ share_show_url() {
     ntok=$(_share_native_of "$tok")
     [[ -n "$ntok" ]] && nurl="http://$(_share_host "$addr"):$(_share_port)/share/$ntok"
     decl=$(_share_declare_url "http://$(_share_host "$addr"):$(_share_port)/share/$tok" \
-             "$dist" "$ver" "$nurl")
+             "$dist" "$nurl")
     [[ -n "$decl" ]] || decl="http://$(_share_host "$addr"):$(_share_port)/share/$tok"
     printf '\n  %s\n\n' "$decl"
     if [[ -n "$ntok" ]]; then
@@ -970,9 +996,9 @@ print(json.dumps({"tag": os.environ["TAG"], "interop": 1, "role": "native",
     url="http://$(_share_host "$addr"):$(_share_port)/share/$pri_tok"
     if [[ -n "$nat_tok" ]]; then
         nat_url="http://$(_share_host "$addr"):$(_share_port)/share/$nat_tok"
-        declared=$(_share_declare_url "$url" "$dist" "$ver" "$nat_url")
+        declared=$(_share_declare_url "$url" "$dist" "$nat_url")
     else
-        declared=$(_share_declare_url "$url" "" "$ver" "")
+        declared=$(_share_declare_url "$url" "")
     fi
     [[ -n "$declared" ]] || declared="$url"
 

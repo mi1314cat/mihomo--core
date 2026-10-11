@@ -192,6 +192,22 @@ def declare_url(url, decl) -> str:
         (u.scheme, u.netloc, u.path, _encode_query(q + extra), frag))
 
 
+def _resolve_native_ref(ref, base):
+    """把**同源相对引用**(`/share/<token>`)按主地址的源拼成绝对地址。
+
+    为什么只做这一种形式 (契约 §3): 不引入完整 `urljoin` 语义 —— 那会把
+    `//other.host/x`(协议相对引用, 属于**别的源**)和 `../x` 这类东西一起猜进来。
+    只处理"以**单个** `/` 开头、且末段非空"的路径引用; 其余**原样保留**, 交给
+    `decide()` 照旧判 `bad-native-url`(**不猜**)。没有 base(裸查询串形态)时也不猜。
+    """
+    s = str(ref or "").strip()
+    if not s.startswith("/") or s.startswith("//") or not base:
+        return s
+    if s.endswith("/") or "/" not in s[1:]:
+        return s        # `/share/` 是目录、`/x` 是单段路径 —— 都不是取件地址, 不猜
+    return base + s
+
+
 def parse_declaration(text):
     """从订阅地址(或裸查询串)里读声明。读不到返回 None。
 
@@ -216,12 +232,19 @@ def parse_declaration(text):
         #   成空串 → 依然静默)。见 tools/check_interop.sh ③ 的往返断言。
         if s.startswith("?"):
             q = s.lstrip("?")                       # 裸查询串(带 ? 前缀)
-        elif urllib.parse.urlsplit(s).scheme:
-            q = urllib.parse.urlsplit(s).query      # 完整订阅地址
-        elif "=" in s:
-            q = s                                   # 裸查询串(无 ? 前缀)
+            base = ""
         else:
-            q = ""                                  # 没有查询串 → 没有声明
+            _p = urllib.parse.urlsplit(s)
+            if _p.scheme and _p.netloc:
+                q = _p.query                        # 完整订阅地址
+                # 相对引用要按**主地址的源**拼回绝对地址 (见 _resolve_native_ref)。
+                base = "%s://%s" % (_p.scheme, _p.netloc)
+            elif "=" in s:
+                q = s                               # 裸查询串(无 ? 前缀)
+                base = ""                           # 没有源 → 相对引用不猜
+            else:
+                q = ""                              # 没有查询串 → 没有声明
+                base = ""
         raw = {}
         for k, v in urllib.parse.parse_qsl(q, keep_blank_values=True):
             raw.setdefault(k, v)       # 同名参数取第一个(声明是我们自己写的)
@@ -235,7 +258,8 @@ def parse_declaration(text):
         urls = {}
         for k, v in low.items():
             if k.startswith(URL_PREFIX) and len(k) > len(URL_PREFIX):
-                urls[k[len(URL_PREFIX):]] = str(v or "").strip()
+                # 同源相对引用按主地址拼回绝对地址; 拼不出就原样保留(不猜)。
+                urls[k[len(URL_PREFIX):]] = _resolve_native_ref(v, base)
         fmts = [normalize_label(x) for x in
                 str(low.get(PARAM_FORMATS, "")).split(",") if x.strip()]
         return {

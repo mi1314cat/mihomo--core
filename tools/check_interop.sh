@@ -242,6 +242,51 @@ d_full = m.decide(full,  "mihomo", "upstream")
 assert d_bare == d_bareq == d_full, (d_bare, d_bareq, d_full)
 assert d_bare[0] == "native" and d_bare[1] == "native-listed", d_bare
 PY
+# ★ 地址收束 (2026-10-11): 不再产出 version; 同源写相对路径; 解析侧拼回绝对地址。
+#   三条都要在**纯函数**这一层钉住, 再加 §⑧ 在真 share.sh 产出上钉一遍。
+python3 - "$INTEROP" <<'PY' && ok "收束后: 声明无 version / 相对引用解析成绝对 / 旧格式仍判 native / 畸形不猜" \
+    || bad "地址收束的三条契约有破口"
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location("interop", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+MAIN = "http://h:1/share/pri"
+REL = "/share/nat"
+# ① 不再产出 version
+decl = m.build_declaration("mihomo", "upstream",
+                           formats=("uri", "upstream"), urls={"upstream": REL})
+qs = m.declaration_query(decl)
+assert "version=" not in qs, qs
+assert "url-upstream=/share/nat" in qs, qs
+# ② 同源相对引用 → parse 拼回绝对 → decide 给 native 且 URL 是拼好的绝对地址
+url = m.declare_url(MAIN, decl)
+d = m.parse_declaration(url)
+assert d and d["urls"]["upstream"] == "http://h:1/share/nat", d and d["urls"]
+c, r, u, _ = m.decide(d, "mihomo", "upstream")
+assert (c, r) == ("native", "native-listed") and u == "http://h:1/share/nat", (c, r, u)
+# ③ 向后兼容: **旧格式**向量 (绝对 URL + 带 version) 必须照样判 native
+old = (MAIN + "?interop=1&kernel=mihomo&distribution=upstream&version=1.19.32"
+       "&formats=uri%2Cupstream&url-upstream=http://h:1/share/nat")
+do = m.parse_declaration(old)
+assert do and do["urls"]["upstream"] == "http://h:1/share/nat", do and do["urls"]
+assert do["version"] == "1.19.32", do          # version 仍被**接受**, 只是不参与决策
+assert m.decide(do, "mihomo", "upstream")[:2] == ("native", "native-listed")
+# ④ 畸形相对路径必须**不猜** (decide 落到 bad-native-url, 不是 native)
+for badref in ("/share/", "//other.host/x", "/x", "../x", "/share/a/"):
+    u2 = m.declare_url(MAIN, m.build_declaration("mihomo", "upstream",
+                                                 urls={"upstream": badref},
+                                                 formats=("uri", "upstream")))
+    d2 = m.parse_declaration(u2)
+    got = m.decide(d2, "mihomo", "upstream")[:2]
+    assert got == ("uri", "bad-native-url"), (badref, got)
+    # 解析不出就**原样保留**, 不许猜
+    assert d2["urls"]["upstream"] == badref, (badref, d2["urls"])
+# ⑤ 裸查询串形态没有"源"可比 → 相对引用原样保留 (不猜)
+bare = m.parse_declaration("interop=1&kernel=mihomo&distribution=upstream"
+                           "&formats=uri%2Cupstream&url-upstream=/share/nat")
+assert bare["urls"]["upstream"] == "/share/nat", bare["urls"]
+assert m.decide(bare, "mihomo", "upstream")[:2] == ("uri", "bad-native-url"), \
+    m.decide(bare, "mihomo", "upstream")[:2]
+PY
 python3 - "$INTEROP" <<'PY' && ok "服务端声明地址含声明, 且裸地址不含 (客户端据前者决策)" \
     || bad "声明没写进地址"
 import sys, importlib.util
@@ -578,6 +623,18 @@ grep -q 'interop=1' <<<"$DECLARED" && grep -q 'kernel=mihomo' <<<"$DECLARED" \
     && grep -q 'url-upstream=' <<<"$DECLARED" \
     && ok "地址上带声明: $(sed 's/.*\(interop=1.*\)/\1/' <<<"$DECLARED" | cut -c1-70)…" \
     || bad "地址上没有声明: $DECLARED"
+# ★ 收束 (2026-10-11): 声明里**不再有 `version`**, 且原生产品**同源时写相对路径**。
+#   两条都在**真 share.sh 产出的地址**上验, 不是只验 interop.py 的纯函数 ——
+#   生产者那一侧漏掉任何一条, 地址就又会变长(而功能完全正常, 没人会发现)。
+grep -q 'version=' <<<"$DECLARED" \
+    && bad "声明里还在产出 version: $DECLARED" \
+    || ok "声明里不再有 version (版本仍留在原生 record 的 meta 里)"
+grep -q 'url-upstream=/share/' <<<"$DECLARED" \
+    && ok "同源时原生产品地址写成相对路径 (url-upstream=/share/…)" \
+    || { bad "同源却没有写相对路径: $DECLARED"; }
+[[ "${#DECLARED}" -lt 220 ]] \
+    && ok "地址长度 ${#DECLARED} 字符 (收束前同形态是 231)" \
+    || bad "地址仍然过长: ${#DECLARED} 字符"
 python3 - "$STORE" "$PRIMARY" "$NATIVE" <<'PYEOF' && ok "主记录=URI 列表且声明原生地址; 原生记录=YAML 且挂回主记录" \
     || bad "两条记录的角色/内容/指向不对"
 import json, sys
