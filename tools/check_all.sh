@@ -124,16 +124,6 @@ scrub_scan() {
     #   token, 检查全绿, git add -a 一提交, 密钥就进了历史, 直到 push 被
     #   GitHub 的 secret scanning 拦下才发现。
     #   (实测就是这么翻车的: E2E 报告里原样带着 PAT。)
-    #
-    # ★ 曾经差点留下一个例外, 记在这里以免有人重新踩:
-    #   一度打算把 vendored 的 `src/lib/proxy_node_compat/` 排除出扫描面, 因为
-    #   canonical 的证据串里带着真机出口 IP, 而"副本与 canonical 逐字节相同"
-    #   (tools/check_interop.sh ⑨) 又要求把它原样抄过来 —— 两个属性冲突。
-    #   正确的解法**不是**让哪一边迁就另一边, 而是**把那个值从两边一起去掉**:
-    #   那条证据要证的是"出口是 RN 的 CDN 出口, 不是本机", **这个 claim 不需要
-    #   具体地址**。canonical 已改成占位符 `<CDN_IP>` (proxy-node-compat
-    #   `40a9441`), 于是脱敏与逐字节门禁**同时**成立, 一个例外都不需要。
-    #   ⇒ 扫描面必须保持**完整**: 排除面永远是"零", 不要在这里加 grep -v。
     files=$( { git ls-files; git ls-files --others --exclude-standard; } \
              | grep -v '^tools/scrub-private\.py$' | sort -u )
     [[ -n "$files" ]] || { printf "❌ 没拿到文件清单 (不在 git 仓库里?)\n"; return 1; }
@@ -162,11 +152,6 @@ run_gate "分享产物"     bash tools/check_share_products.sh
 #   功能"里最贵的一条: 自己分享给自己都认不出来, 用户没法自己发现。
 #   闸门故意同时覆盖带旗帜名与裸名两种输入。真内核层用 MIHOMO_BIN 启用。
 run_gate "对角线(分享→客户端)" bash tools/check_diagonal.sh
-# ★ 三家互通: 服务端声明 + 客户端决策 + 回退链。
-#   这一批同样全是**静默失败**型: 字段名不一致 → 永远走普通话(不报错);
-#   发行版标签与 compat 不同源 → 声明永远匹配不上; 原生取不到不回退 →
-#   客户端只看到"订阅里没有解析出节点"; 只停用主记录 → 原生记录还活着。
-run_gate "三家互通(声明/决策/回退)" bash tools/check_interop.sh
 
 printf "\n${CYAN}── 函数接线 (幽灵函数 / 未定义调用) ──${RESET}\n"
 phantom_scan() {

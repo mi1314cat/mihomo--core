@@ -69,13 +69,7 @@ while IFS= read -r line; do
         # 别写 `printf ... | grep -q "$(basename "$f")"`: grep -q 早退会让
         # printf 吃 SIGPIPE, 本脚本开着 pipefail, 明明命中也会走 false。
         _bn=$(basename "$f")
-        # ★ 边界必须卡住: `grep "uri.py"` 会命中 `build_uri.py` —— 于是
-        #   BUILD_URI 被解析成 proxy_node_compat/uri.py (排序在前), 报出
-        #   "传了 --out-dir 但 uri.py 里没有这个参数" 这种假错。
-        #   同一个"子串当等值"的坑本项目已经踩过 (裸名 vs 带旗帜名)。
-        if printf '%s' "$def" | grep -qE "(^|[^A-Za-z0-9_.-])${_bn//./[.]}"; then
-            target="$f"; break
-        fi
+        if printf '%s' "$def" | grep "$_bn" >/dev/null; then target="$f"; break; fi
     done
     # 变量名与脚本同名时的兜底 (BUILD_SUB -> build_sub.py)
     if [[ -z "$target" ]]; then

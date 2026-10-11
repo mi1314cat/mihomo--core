@@ -283,6 +283,7 @@ if not isinstance(ps, list):
     print(changed)
     sys.exit(0)
 
+
 # 旗帜 = 两个连着的区域指示符号。服务端生成的节点名形如
 # "🇺🇸 mAnyTLS01-TLS", 加订阅名前缀时必须**加在旗帜之后**:
 #   🇺🇸 ds-mAnyTLS01-TLS     ← 对
@@ -755,107 +756,10 @@ _add_from_file() {  # <文件> <名字>  —— 校验后落盘
     local src="$1" name="$2"
     # 第 3 个参数传 validate.py 的目录: 这段 python 是从 **stdin** 读的,
     # __file__ 不存在, 只能由调用方给路径。
-    python3 - "$src" "$CLI_PROVIDERS/$name.yaml" "$CLI_LIB" "$CLI_NODES/$name.compat.json" <<'PYIMP'
-import sys, yaml, os, tempfile, json
+    python3 - "$src" "$CLI_PROVIDERS/$name.yaml" "$CLI_LIB" <<'PYIMP'
+import sys, yaml, os, tempfile
 src, dst = sys.argv[1], sys.argv[2]
 _mlib = sys.argv[3] if len(sys.argv) > 3 else ""
-_compat_out = sys.argv[4] if len(sys.argv) > 4 else ""
-
-# ---- 内核能力判定层的引导 ----
-#
-# ⚠ 这段必须放在**最前面**: 下面的"分享链接 (URI) 列表"分支和"proxies: YAML"
-#   分支都要用它, 而前者在文件里位置更靠前。放在后面就会出现
-#   `NameError: name '_nc' is not defined` —— 而且只在 URI 那条路上炸。
-if _mlib and _mlib not in sys.path:
-    sys.path.insert(0, _mlib)
-_compat_records = []
-_nc = None
-try:
-    import nodecompat as _nc
-except Exception as _e:
-    print(f"[WARN] 兼容判定层不可用 ({_e}), 本次只用旧判定", file=sys.stderr)
-
-
-def _compat_one(node):
-    """跑一次判定并记成一条报告记录（判定只发生在 compat 内部一次）。"""
-    _r = _nc.judge(node)
-    return {
-        "name": node.get("name") if isinstance(node, dict)
-                else (str(node).split("#")[-1] or str(node)[:40]),
-        "type": node.get("type") if isinstance(node, dict) else "uri",
-        "verdict": _r["verdict"], "label": _r["label"],
-        "verdict_source": _r["verdict_source"],
-        "legacy": _r["legacy"]["status"],
-        "compat_status": (_r["compat"] or {}).get("status"),
-        "drop": _r["drop"], "reasons": _r["reasons"],
-        "downgrades": _r["downgrades"],
-        # ↓ 这四样必须随结果带出, 不许静默丢字段
-        "losses": (_r["compat"] or {}).get("losses") or [],
-        "unknowns": (_r["compat"] or {}).get("unknowns") or [],
-        "extensions": (_r["compat"] or {}).get("extensions") or [],
-        "raw_uri": (_r["compat"] or {}).get("raw_uri"),
-        "warnings": (_r["compat"] or {}).get("warnings") or [],
-        "reason_codes": (_r["compat"] or {}).get("reason_codes") or [],
-        "levels": (_r["compat"] or {}).get("levels") or {},
-        "rules_applied": (_r["compat"] or {}).get("rules_applied") or [],
-        "evidence": (_r["compat"] or {}).get("evidence") or [],
-        "diagnostics": (_r["compat"] or {}).get("diagnostics") or [],
-        "describe": _nc.describe(_r, limit=4),
-    }
-
-
-def _compat_report(tag):
-    """判定结果**随产物一起落盘**: losses / unknowns / extensions / raw_uri /
-    detected_features 全部带出。不写盘的话这些信息在导入那一刻之后就没了,
-    面板/事后排查都看不到 —— 那和"静默丢字段"是同一件事。"""
-    if _nc is None or not _compat_out:
-        return
-    try:
-        payload = {
-            "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
-            "source_kind": tag,          # proxies-yaml / uri-list
-            "engine": _nc.engine(),
-            "disabled_reason": _nc.reason_disabled(),
-            "target": _nc.kernel_target().to_dict(),
-            "registry": {"rules": len(_nc.registry().rules),
-                         "evidence": len(_nc.registry().evidence),
-                         "uri_rules": len(_nc.registry().uri_rules)},
-            "counts": {"total": len(_compat_records),
-                       "tightened": sum(1 for r in _compat_records
-                                        if r["verdict"] != r["legacy"]),
-                       "dropped": sum(1 for r in _compat_records if r["drop"]),
-                       "downgrades": sum(1 for r in _compat_records if r["downgrades"])},
-            "nodes": _compat_records,
-        }
-        _fd, _t = tempfile.mkstemp(dir=os.path.dirname(_compat_out), prefix=".c.")
-        os.close(_fd)
-        with open(_t, "w", encoding="utf-8") as _fh:
-            json.dump(payload, _fh, ensure_ascii=False, indent=1)
-        os.replace(_t, _compat_out)
-    except Exception as _e:                                # 判定报告失败不该拖垮导入
-        print(f"[WARN] 兼容判定报告写入失败: {_e}", file=sys.stderr)
-
-
-def _compat_summary():
-    """把"更严了哪些""保险丝有没有响"讲清楚 —— 支持! 必须能解释为什么。"""
-    if _nc is None or not _compat_records:
-        return
-    _tight = [r for r in _compat_records if r["verdict"] != r["legacy"]]
-    if _tight:
-        print(f"[兼容] 能力判定比旧判定更严 {len(_tight)}/{len(_compat_records)} 个:",
-              file=sys.stderr)
-        for r in _tight[:12]:
-            print(f"       - {r['name']}: {r['legacy']} → {r['label']}"
-                  + (f"  ({r['describe']})" if r["describe"] else ""), file=sys.stderr)
-        if len(_tight) > 12:
-            print(f"       ... 另外 {len(_tight) - 12} 个见 .compat.json", file=sys.stderr)
-    _bad = [r for r in _compat_records if r["downgrades"]]
-    if _bad:
-        print(f"[WARN] {len(_bad)} 个节点的 compat 判定比旧判定更宽, 已被保险丝挡下 "
-              "(这是 bug, 不是特性)", file=sys.stderr)
-    print(f"[兼容] 判定引擎: {_nc.engine()} (回滚: MH_COMPAT_ENGINE=legacy); "
-          f"目标内核: {_nc.kernel_target().to_dict()}", file=sys.stderr)
-
 
 # ---- 分享链接产物 (一行行 URI) 也是合法的订阅来源 (2026-10-10 新增) ----
 #
@@ -881,53 +785,21 @@ _lines = [l.strip() for l in
           open(src, encoding="utf-8").read().splitlines()]
 _lines = [l for l in _lines if l and not l.startswith("#")]
 if _lines and all(_is_uri(l) for l in _lines):
-    # 分享链接这一路也要过能力判定 —— 而且它走的是**保真最高**的入口:
-    # compat 的 parse_uri 直接吃原始字符串, 值一个字节都不重写 (不变式 I1)。
-    # 旧判定对这条路是"不表态"(见 nodecompat.legacy_verdict 的说明),
-    # 所以这里的结论**全部**来自 compat; 保险丝仍然在: compat 说不能用的
-    # 行会被剔掉, 而它永远不会把旧判定剔除的行捞回来。
-    _kept_uri, _dropped_uri = [], []
-    for _l in _lines:
-        if _nc is None:
-            _kept_uri.append(_l)
-            continue
-        _rec = _compat_one(_l)
-        _compat_records.append(_rec)
-        if _rec["drop"]:
-            _dropped_uri.append(_rec)
-        else:
-            _kept_uri.append(_l)
-    if _dropped_uri:
-        for _rec in _dropped_uri:
-            print(f"[过滤] {_rec['name']}: 内核能力判定为不支持, 已剔除"
-                  + (f" —— {_rec['reasons'][0]}" if _rec["reasons"] else ""),
-                  file=sys.stderr)
-    if not _kept_uri:
-        print("[ERR] 剔除后一个可用节点都不剩 —— 这份分享链接与 mihomo 不兼容",
-              file=sys.stderr)
-        sys.exit(1)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     _fd, _tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
     os.close(_fd)
     with open(_tmp, "w", encoding="utf-8") as _fh:
-        _fh.write("\n".join(_kept_uri) + "\n")
+        _fh.write("\n".join(_lines) + "\n")
     os.replace(_tmp, dst)
-    print(f"[OK] 已写入 {dst} ({len(_kept_uri)} 个节点, 分享链接由内核解析)",
+    print(f"[OK] 已写入 {dst} ({len(_lines)} 个节点, 分享链接由内核解析)",
           file=sys.stderr)
     print("[Info] 这是分享链接 (URI) 列表, 不是 proxies: YAML —— 交给 mihomo 自己的解析器",
           file=sys.stderr)
-    _compat_summary()
-    _compat_report("uri-list")
-    if _nc is not None and not _compat_records:
-        print(f"[兼容] 判定引擎: {_nc.engine()} —— {_nc.reason_disabled()}", file=sys.stderr)
     sys.exit(0)
 
 d = yaml.safe_load(open(src, encoding="utf-8"))
-
 if not isinstance(d, dict) or not isinstance(d.get("proxies"), list) or not d["proxies"]:
     print("[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)", file=sys.stderr)
-    print("      若这是单节点分享链接 (xxx://…), 请确认文件里每行都是一条链接;", file=sys.stderr)
-    print("      订阅地址请用面板「分享链接管理」给出的 http://…/share/<token>。", file=sys.stderr)
     sys.exit(1)
 
 # ---- 剔除 mihomo 核心不认识的节点 (2026-10-07 新增) ----
@@ -953,20 +825,6 @@ try:
 except Exception as _e:
     print(f"[WARN] 读不到内核协议表 ({_e}), 跳过协议过滤", file=sys.stderr)
 
-# ---- 内核能力判定 (proxy-node-compat, 2026-10-10 接入) ----
-#
-# 上面那段只回答一个问题: "type 在不在白名单里"。它**不知道**
-#   * 组合:  ws 分支的 TLSConfig 不含 Reality → 写了 reality 也静默不生效;
-#   * 语义:  network: kcp 在 mihomo 里没有实现 → 静默按 tcp 处理;
-#   * 运行期: 有 reality-opts 但缺 client-fingerprint → 配置校验通过、拨号才报错;
-#   * 版本:  xhttp / reality / ech / flow 是 v1.19.x 里逐版加进来的。
-# 这些都是"配了没反应"的静默失败, 正是本项目最主要的缺陷类型。
-#
-# 判定**只发生一次**: 全部结论来自 vendored 的 proxy_node_compat
-# (src/lib/proxy_node_compat/), 本处只消费结果。合并规则是机械的
-# "取更差者" —— compat 只能收紧, 不能放宽; 出现放宽会被挡下并记进 downgrades。
-# 一键回滚: MH_COMPAT_ENGINE=legacy (别名 XBD_COMPAT_ENGINE=legacy)。
-
 # ★ 原来这里是**硬失败**: 只要有任一节点缺 server/port 就整体退出。
 #   问题是外部订阅里混几个"根本不是代理"的东西太正常了 —— sing-box 的
 #   block/dns/selector 这类 outbound 本来就没有 server/port, 它们是配置
@@ -980,19 +838,9 @@ for p in d["proxies"]:
         continue
     t = str(p.get("type", "")).lower()
     if _mihomo_types and t not in _mihomo_types:
-        dropped.append((p.get("name", "?"), t, "mihomo 核心不支持该协议"))
-        continue
-    # ★ 能力判定: 旧判定已经放行的节点, 再过一道 compat。
-    #   注意方向 —— compat **只能收紧**: 它不能把上面刚剔掉的协议捞回来,
-    #   只可能在放行的节点里再剔除(UNSUPPORTED)或标出确定的能力损失。
-    if _nc is not None:
-        _rec = _compat_one(p)
-        _compat_records.append(_rec)
-        if _rec["drop"]:
-            dropped.append((p.get("name", "?"), t,
-                            "内核能力判定: " + (_rec["reasons"][0] if _rec["reasons"] else "不支持")))
-            continue
-    kept.append(p)
+        dropped.append((p.get("name", "?"), t))
+    else:
+        kept.append(p)
 
 if malformed:
     show = ", ".join(malformed[:5]) + (f" 等 {len(malformed)} 个" if len(malformed) > 5 else "")
@@ -1001,17 +849,15 @@ if malformed:
 if dropped:
     # 按类型汇总, 避免 30 个节点刷 30 行
     by_t = {}
-    for item in dropped:
-        nm, t = item[0], item[1]
+    for nm, t in dropped:
         by_t.setdefault(t, []).append(nm)
     for t, names in sorted(by_t.items()):
         show = ", ".join(names[:3]) + (f" 等 {len(names)} 个" if len(names) > 3 else "")
         print(f"[过滤] {t}: mihomo 核心不支持该协议, 已剔除 {len(names)} 个 —— {show}",
               file=sys.stderr)
-_compat_summary()
-if _nc is None:
-    print(f"[兼容] 判定引擎不可用 —— 本次只用旧判定", file=sys.stderr)
-
+if not kept:
+    print("[ERR] 剔除后一个可用节点都不剩 —— 这份订阅与 mihomo 不兼容", file=sys.stderr)
+    sys.exit(1)
 d["proxies"] = kept
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dst), prefix=".p.")
@@ -1033,66 +879,227 @@ with open(tmp, "w", encoding="utf-8") as fh:
     yaml.safe_dump({"proxies": _ps}, fh, sort_keys=False,
                    allow_unicode=True, default_flow_style=False)
 os.replace(tmp, dst)
-_compat_report("proxies-yaml")
 print(f"[OK] 已写入 {dst} ({len(d['proxies'])} 个节点"
       + (f", 已剔除 {len(dropped) + len(malformed)} 个不兼容" if (dropped or malformed) else "")
       + ")", file=sys.stderr)
 PYIMP
 }
 
-# =============================================================
-# 三家互通 · 订阅地址上的**内核声明** → 这次拉哪一份产品
-#
-# 设计: proxy-node-compat/docs/three-way-interop.md (参照实现: xray--core,
-# 真机验收: research/integration/three-way-interop-x.md)
-#
-#   同内核**同发行版** → 原生 (mihomo YAML, URI 装不下的字段不丢)
-#   跨内核 / 声明缺失 / 声明不认识 / 发行版不在清单 → 普通话 (URI 列表)
-#
-# 决策只看**地址本身**: 不额外发请求、不看 User-Agent、不做任何协商。
-# 服务端声明用的是查询串, 而公共分享服务的路由先剥查询串再分发 ——
-# 所以带声明的地址对第三方客户端零影响。
-#
-# 实现只有一份: src/lib/interop.py (服务端建声明、客户端读声明, 同一个文件)。
-# 抄成两份而字段名漂移的话, 表现是**静默全部走普通话**: 不报错, 只是原生
-# 永远拿不到 —— 所以不抄。
-# =============================================================
-_interop_py() {
-    local c
-    for c in "$CLI_LIB/interop.py" "$(dirname "$CLI_LIB")/lib/interop.py" \
-             "$CLI_LIB/share/interop.py"; do
-        [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+node_add() {
+    print_title "添加节点"
+    ensure_dirs
+    printf '\n输入分享链接或订阅地址 (http://...), 或本地文件路径:\n请输入: '
+    local src; read -r src
+    [[ -n "$src" ]] || { print_info "已取消"; return; }
+
+    local tmp; tmp=$(mktemp -d)
+    local body="$tmp/sub.yaml"
+
+    if [[ "$src" == http://* || "$src" == https://* ]]; then
+        # 走下载通道的 sub 作用域 —— 这正是"到服务器拉配置"那条路。
+        #
+        # 之前是裸 curl, 完全不走代理 —— 而「下载通道」菜单里明明有这个开关,
+        # 设了却没人读 (见 dl_route.sh 头部说明)。
+        local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
+        print_info "正在拉取...${_px:+ (经 $_px)}"
+        local code
+        code=$(dl_curl_code "$src" "$body" sub)
+        case "$code" in
+            200) ;;
+            404) print_error "链接不存在"; rm -rf "$tmp"; return 1 ;;
+            410) print_error "链接已失效 (用尽 / 过期 / 已禁用)"; rm -rf "$tmp"; return 1 ;;
+            503) print_error "服务端暂时不可用 (未消耗次数)"; rm -rf "$tmp"; return 1 ;;
+            000|"")
+                print_error "连不上订阅服务器${_px:+ (经 $_px)}"
+                print_info "去「13) 下载通道 → 3) 订阅拉取单独设置」换直连试试"
+                rm -rf "$tmp"; return 1 ;;
+            *)   print_error "拉取失败 HTTP $code"; rm -rf "$tmp"; return 1 ;;
+        esac
+    elif [[ -f "$src" ]]; then
+        cp -f "$src" "$body"
+    else
+        print_error "无法识别的来源"; rm -rf "$tmp"; return 1
+    fi
+
+    local name; name=$(printf '%s' "${src##*/}" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-40)
+    [[ -z "$name" || "$name" == "share" ]] && name="sub$(date +%H%M%S)"
+
+    # ⚠ 重名处理原先是**自动加 _1 / _2**, 用户根本不知道 sub_mixed_yaml 和
+    #   sub_mixed_yaml_1 分别是哪两台服务器 —— 这是在掩盖问题, 不是在解决问题
+    #   同理, 对标实现的注释里也是这个结论。两台服务器同名是**常态**, 不是异常。
+    # 现在让用户自己起名, 并把已有的组列出来当提示; 一路回车才退回自动名。
+    if [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; then
+        print_warn "已经有同名的组: $name"
+        printf '  现有组:\n' >&2
+        local _pf
+        for _pf in "$CLI_PROVIDERS"/*.yaml; do
+            [[ -f "$_pf" ]] || continue
+            printf '    - %s\n' "$(basename "$_pf" .yaml)" >&2
+        done
+        printf '  新组叫什么? (两台服务器同名时建议用地区/线路区分, 如 美国RN / 香港备用): ' >&2
+        local _nn; read -r _nn || _nn=""
+        _nn=${_nn// /}
+        if [[ -n "$_nn" ]] && ! printf '%s' "$_nn" | grep '[/\\:*?"<>|[:space:]]' >/dev/null; then
+            if [[ -f "$CLI_PROVIDERS/$_nn.yaml" ]]; then
+                print_error "已经有这个组了: $_nn"; rm -rf "$tmp"; return 1
+            fi
+            name="$_nn"
+        else
+            local _n=1 _base="$name"
+            # ★ 这里原来是 `name="${_base}_$n"` —— 变量名写错了一个下划线:
+            #   local 声明的是 _n, 引用的却是 $n。set -u 下直接
+            #   "n: unbound variable" 中断, 于是**重复导入同一个订阅**会失败,
+            #   而这段代码的本意正是"同名时自动改叫 xxx_1"。
+            while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$_n"; _n=$((_n+1)); done
+        fi
+        print_ok "新组名: $name"
+    fi
+
+    if ! _add_from_file "$body" "$name"; then rm -rf "$tmp"; return 1; fi
+
+    # ★ 文件里有几个 ≠ 内核认几个（移植自 4b09b7e，原接线点在互通版
+    #   `_sub_import_by_declaration` 里，回退后那个函数不存在，改接在这里）。
+    #   内核会因为**一条**坏条目整批拒绝 provider（实测 `obfs=none` → 组里 0 个），
+    #   而"文件有 N 行"照样是 N —— 用户看到的是"导入成功"加一个空组。
+    #   拿不到内核(-1)时不猜、也不假装验过。
+    local n_file="" loaded=""
+    n_file=$(m_provider_count "$CLI_PROVIDERS/$name.yaml" 2>/dev/null || echo 0)
+    loaded=$(_provider_load_count "$CLI_PROVIDERS/$name.yaml")
+    if [[ "$loaded" =~ ^[0-9]+$ ]] && (( ${n_file:-0} > 0 )) && (( loaded < ${n_file:-0} )); then
+        if (( loaded == 0 )); then
+            print_error "内核**一个都没加载**: 这份订阅里有被内核整批拒绝的条目 (文件里 $n_file 个)"
+        else
+            print_warn "内核只加载到 $loaded/${n_file} 个节点 —— 这份订阅里有内核整批拒绝的条目"
+        fi
+        print_info "一条坏条目就能让整组归零 (实测: hysteria2 写了 obfs 却没有 obfs-password)"
+        print_info "注意: 内核 -t **不加载 provider**, 它报 test is successful 不代表能用"
+        if (( loaded == 0 )); then rm -rf "$tmp"; return 1; fi
+    fi
+    printf '%s\n' "$src" > "$CLI_NODES/$name.txt"
+    if [[ "$src" == http://* || "$src" == https://* ]]; then
+        # 自动刷新必须在这里问清楚。
+        #
+        # 之前写死 kind="http-oneshot", 而配置生成侧 (client.sh:189) 只认
+        # "http-auto" —— 两边对不上, 结果是: 通过面板导入的订阅**永远不会**
+        # 走 type: http + interval 分支, 只能靠「更新配置」手动拉。
+        # 读侧的分支代码一直存在, 看上去像支持了, 实际永远到不了。
+        #
+        # 对照 SB: 它也是纯手动更新 (client.sh 的 update_node 遍历来源 URL
+        # 重拉), 没有 interval 自动刷新。所以自动刷新是 Mihomo 侧多出来的
+        # 能力, 得真正能用。
+        local kind="http-oneshot"
+        printf '\n是否让内核自动定时更新这个订阅?\n'
+        printf "    1) 自动更新 (每 10 分钟)\n"
+        printf "    2) 手动更新 (只在选「更新配置」时拉取, 推荐)\n"
+        printf "请选择 [2]: "
+        local a; read -r a
+        # 默认手动。自动更新每 10 分钟就发一次请求, 对一次性令牌是**直接把它
+        # 拉废** —— 额度用掉之后订阅里就再也拿不到新节点了, 而界面只显示一个
+        # 空的 provider, 没有任何地方提示是额度耗尽。
+        [[ "$a" == "1" ]] && kind="http-auto"
+
+        # 组名: 自动取的名字多半是 IP 或哈希, 订阅一多就分不清谁是谁
+        # (面板里显示成哈希前缀或一串地址就是这么来的)。先问一句, 回车才用
+        # 自动名 —— 多一次输入换一个长期能认出来的名字, 划算。
+        printf '\n这条订阅在面板里叫什么?\n'
+        printf '    (回车 = 按地址自动命名)\n'
+        printf '请输入: '
+        local want; read -r want
+        want=$(clean_input "${want:-}")
+        # 组名会直接进 YAML 的 name 字段, 冒号等字符会让 mihomo -t 失败;
+        # 引号和换行同样会让配置写坏。
+        want="${want//$'"'\n'"'/ }"
+        [[ "$want" == *:* ]] && want="${want//:/-}"
+        want="${want//\"/}"
+        want="${want//$'"'\\'"'/}"
+
+        # 组名取来源标识: 分享链接的 host、本地文件名, 或按序号兜底。
+        # 原来只存哈希前缀, 面板里那个组就显示成一串 45fe6c20..., 完全看不出
+        # 是哪条订阅 —— 分组再漂亮, 名字是乱码也没法用。
+        subs_put "$(python3 -c '
+import json,sys,datetime,urllib.parse,os
+prefix,url,kind=sys.argv[1],sys.argv[2],sys.argv[3]
+label=""
+if kind=="local" and url:
+    label=os.path.basename(url)
+else:
+    h=urllib.parse.urlparse(url).hostname
+    if h: label=h
+if not label or label==prefix: label="订阅-"+prefix[:6]
+print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
+ "imported_at":datetime.datetime.now().isoformat(timespec="seconds")},
+ ensure_ascii=False))' "$name" "$src" "$kind")"
+        # 用户起的名字优先于自动名
+        if [[ -n "$want" ]]; then
+            subs_set_name "$name" "$want"
+        fi
+        # 组名同步到组内节点名 —— 多台服务器的订阅拉进同一个客户端时,
+        # 否则两边节点名完全撞车, 面板和测速都分不清来源
+        local _t; _t=$(node_tag_from_name "${want:-$name}")
+        if [[ -n "$_t" ]]; then
+            local _c; _c=$(node_prefix_names "$CLI_PROVIDERS/$name.yaml" "$_t")
+            [[ "${_c:-0}" -gt 0 ]] && print_ok "已给 $_c 个节点加上前缀 [$_t-]"
+        fi
+        if [[ "$kind" == "http-auto" ]]; then
+            print_ok "已设为自动更新, 需重新生成配置后生效"
+        fi
+    fi
+    rm -rf "$tmp"
+    apply_change
+}
+
+node_list() {
+    print_title "已导入的节点"
+    local f found=0
+    for f in $(node_files); do
+        local name; name=$(basename "$f" .yaml)
+        # 节点数: YAML 与"一行行分享链接"两种 provider 都算得对 (见 m_provider_count)
+        local cnt; cnt=$(m_provider_count "$f")
+        local src=""; [[ -f "$CLI_NODES/$name.txt" ]] && src=$(head -1 "$CLI_NODES/$name.txt")
+        printf '  \033[1m%-20s\033[0m %s 个节点   来源: %s\n' "$name" "$cnt" "${src:-本地文件}"
+        found=1
     done
-    printf '%s' "$CLI_LIB/interop.py"
+    [[ $found -eq 0 ]] && print_info "还没有任何节点, 请先「添加节点」"
 }
 
-_sub_interop_decide() {   # <订阅地址> → 一行 JSON (拿不到打印空串)
-    local py; py=$(_interop_py)
-    [[ -f "$py" ]] || { printf ''; return 0; }
-    python3 "$py" decide "$1" 2>/dev/null || true
+# 终端里中文占 2 列, 但 bash 的 %-Ns 按**字节**算 —— printf "%-40s" "美国RN"
+# 实际只补了 36 个空格, 表会歪。宽度差 = (字节数 - 列数) / 2。
+_disp_pad() { # <文本> <目标列宽>
+    local t="$1" w="$2" bytes cols
+    bytes=${#t}
+    cols=$(printf '%s' "$t" | wc -m)
+    local pad=$(( w - cols ))
+    (( pad < 1 )) && pad=1
+    printf '%s%*s' "$t" "$pad" ''
 }
 
-_sub_interop_field() {    # <JSON> <字段>
-    printf '%s' "$1" | python3 -c 'import sys, json
-try: print((json.load(sys.stdin) or {}).get(sys.argv[1], "") or "")
-except Exception: print("")' "$2" 2>/dev/null || true
-}
-
-# 把"这次拉的是哪种"打到用户眼前 —— 不许静默: 用户要能一眼看出走的原生还是
-# 普通话, 以及为什么。
-_sub_report_choice() {    # <模式> <节点数> <说明>
-    case "${1:-}" in
-        native) print_ok "本次拉取: 原生 (mihomo YAML) —— ${3:-}" ;;
-        *)      print_info "本次拉取: 普通话 (URI 列表) —— ${3:-}" ;;
-    esac
-}
-
-# 自动更新(http-auto)的地址只能是一个固定 URL, 而**内核不读内核声明** ——
-# 所以这件事必须明确告诉用户, 不许悄悄把这次决策冻结成永久行为。
-_sub_auto_kind_note() {   # <本次决策的模式>
-    [[ "${1:-}" == "native" ]] || return 0
-    print_info "自动更新由内核自己拉取, 内核不读内核声明 → 存的是普通话(URI)地址"
-    print_info "(手动「更新订阅节点」才按声明走原生; 想一直用原生就选手动更新)"
+# 列出所有"订阅/组" (一个 provider 文件 = 一组节点)
+# provider 文件里的节点数 —— 两种形态都要认 (2026-10-10 新增):
+#   * proxies: YAML  (M 自己的订阅)
+#   * 一行行分享链接 (URI 列表, 内核自己解析; 也是 out/*_share-*.txt 的形态)
+# 只认 YAML 的话, URI 型 provider 会被显示成"0 个节点", 用户以为导入失败。
+m_provider_count() { # <provider 文件>
+    local f="${1:-}"
+    [[ -f "$f" ]] || { printf '0'; return 0; }
+    python3 - "$f" <<'PYC'
+import sys
+path = sys.argv[1]
+try:
+    raw = open(path, encoding="utf-8").read()
+except OSError:
+    print(0)
+    raise SystemExit(0)
+lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.strip().startswith("#")]
+if lines and all("://" in l for l in lines):
+    print(len(lines))                     # URI 列表: 一行一个节点
+    raise SystemExit(0)
+try:
+    import yaml
+    d = yaml.safe_load(raw) or {}
+    print(len(d.get("proxies") or []) if isinstance(d, dict) else 0)
+except Exception:
+    print(0)
+PYC
 }
 
 # 内核**真的**加载到几个节点 —— "文件写成功"不等于"内核能加载"。
@@ -1165,305 +1172,6 @@ try:
 finally:
     shutil.rmtree(w, ignore_errors=True)
 PYL
-}
-
-# 按声明拉产品并**落成 provider**。打印 "<模式>\t<节点数>\t<说明>";
-# 模式 = native / uri / error(此时第 2 列是 HTTP 码)。
-#
-# 永远返回 0: 调用方按内容判断 —— 本文件是 set -uo pipefail, helper 带非 0
-# 退出会在赋值处直接把整个命令打断 (X 侧同款教训)。
-#
-# 运行期回退链(设计 §3):
-#   取原生 → 成功且解析出 ≥1 个节点 → 用原生
-#          → 网络失败 / 非 2xx / 解析 0 个 → 退回主地址的 URI 列表
-#   回退**必须把原因打出来** —— "不许为了看起来能用而静默降级"。
-_sub_import_by_declaration() {  # <地址|本地文件> <组名>
-    local url="$1" name="$2"
-    # ★ 每个都要**显式赋值**。`local x`(不赋值) 在 bash 里留的是"未设置"而不是
-    #   空串, 于是 `set -u` 下引用它直接 `x: unbound variable` 把函数打断 ——
-    #   走**本地文件**那条分支时 `detail` 从来没被赋过值, 表现是: provider 明明
-    #   写好了、文件里有 N 行, 客户端却报 `[Error] 订阅里没有解析出节点`
-    #   (真机实测: `src/client.sh: line 1156: detail: unbound variable`)。
-    #   这类"函数半路死掉、调用方按空结果判断"的错最难查: 写成功却报失败。
-    local pick="" choice="" reason="" rurl="" detail="" body="" tmp="" code="" n=0 mode=uri
-    tmp=$(mktemp -d); body="$tmp/sub.yaml"
-    if [[ "$url" == http://* || "$url" == https://* ]]; then
-        pick=$(_sub_interop_decide "$url")
-        choice=$(_sub_interop_field "$pick" choice); [ -n "$choice" ] || choice=uri
-        rurl=$(_sub_interop_field "$pick" url)
-        detail=$(_sub_interop_field "$pick" detail)
-        if [[ "$choice" == "native" && -n "$rurl" ]]; then
-            mode=native
-            code=$(dl_curl_code "$rurl" "$body" sub)
-            if [[ "$code" != "200" ]]; then
-                detail="${detail}；原生取件失败(HTTP ${code:-000}) → 回退"
-                mode=uri
-            fi
-        fi
-        if [[ "$mode" == "uri" ]]; then
-            code=$(dl_curl_code "$url" "$body" sub)
-            if [[ "$code" != "200" ]]; then
-                rm -rf "$tmp"
-                printf 'error\t%s\t%s' "${code:-000}" "$detail"
-                return 0
-            fi
-        fi
-    elif [[ -f "$url" ]]; then
-        cp -f "$url" "$body"
-    else
-        rm -rf "$tmp"; printf 'error\t000\t无法识别的来源'; return 0
-    fi
-
-    _add_from_file "$body" "$name" >/dev/null || true
-    n=$(m_provider_count "$CLI_PROVIDERS/$name.yaml" 2>/dev/null || echo 0)
-
-    # ★ 文件里有几个 ≠ 内核认几个。内核会因为**一条**坏条目整批拒绝 provider
-    #   (实测 `obfs=none` → 组里 0 个节点), 而"文件有 N 行"照样是 N。
-    #   所以落盘之后再问内核一次真话; 对不上就以**内核的数字**为准并说清原因。
-    local loaded
-    loaded=$(_provider_load_count "$CLI_PROVIDERS/$name.yaml")
-    if [[ "$loaded" =~ ^[0-9]+$ ]] && (( ${n:-0} > 0 )) && (( loaded < ${n:-0} )); then
-        print_warn "内核只加载到 $loaded/${n} 个节点 —— 这份订阅里有内核**整批拒绝**的条目"
-        print_info "一条坏条目就能让整组归零 (实测: hysteria2 写了 obfs 却没有 obfs-password)"
-        print_info "注意: 内核 -t **不加载 provider**, 它报 test is successful 不代表能用"
-        n="$loaded"
-    fi
-
-    if [[ "$mode" == "native" ]] && (( ${n:-0} == 0 )); then
-        # 声明说原生在那边, 但那边解析不出节点 → 回到最通用的普通话
-        detail="${detail}；原生解析出 0 个节点 → 回退"
-        mode=uri
-        if [[ "$url" == http://* || "$url" == https://* ]]; then
-            code=$(dl_curl_code "$url" "$body" sub)
-            if [[ "$code" == "200" ]]; then
-                _add_from_file "$body" "$name" >/dev/null || true
-                n=$(m_provider_count "$CLI_PROVIDERS/$name.yaml" 2>/dev/null || echo 0)
-            else
-                detail="${detail}(普通话也拉不到: HTTP ${code:-000})"
-            fi
-        fi
-    fi
-    rm -rf "$tmp"
-    printf '%s\t%s\t%s' "$mode" "${n:-0}" "$detail"
-    return 0
-}
-
-node_add() {
-    print_title "添加节点"
-    ensure_dirs
-    printf '\n输入分享链接或订阅地址 (http://...), 或本地文件路径:\n请输入: '
-    local src; read -r src
-    [[ -n "$src" ]] || { print_info "已取消"; return; }
-
-    # 走下载通道的 sub 作用域 —— 这正是"到服务器拉配置"那条路。
-    #
-    # 之前是裸 curl, 完全不走代理 —— 而「下载通道」菜单里明明有这个开关,
-    # 设了却没人读 (见 dl_route.sh 头部说明)。
-    local _px; _px=$(dl_route_resolve sub "$(dl_mixed_port)")
-    if [[ "$src" == http://* || "$src" == https://* ]]; then
-        print_info "正在拉取...${_px:+ (经 $_px)}"
-    fi
-
-    local name; name=$(printf '%s' "${src##*/}" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-40)
-    [[ -z "$name" || "$name" == "share" ]] && name="sub$(date +%H%M%S)"
-
-    # ⚠ 重名处理原先是**自动加 _1 / _2**, 用户根本不知道 sub_mixed_yaml 和
-    #   sub_mixed_yaml_1 分别是哪两台服务器 —— 这是在掩盖问题, 不是在解决问题
-    #   同理, 对标实现的注释里也是这个结论。两台服务器同名是**常态**, 不是异常。
-    # 现在让用户自己起名, 并把已有的组列出来当提示; 一路回车才退回自动名。
-    if [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; then
-        print_warn "已经有同名的组: $name"
-        printf '  现有组:\n' >&2
-        local _pf
-        for _pf in "$CLI_PROVIDERS"/*.yaml; do
-            [[ -f "$_pf" ]] || continue
-            printf '    - %s\n' "$(basename "$_pf" .yaml)" >&2
-        done
-        printf '  新组叫什么? (两台服务器同名时建议用地区/线路区分, 如 美国RN / 香港备用): ' >&2
-        local _nn; read -r _nn || _nn=""
-        _nn=${_nn// /}
-        if [[ -n "$_nn" ]] && ! printf '%s' "$_nn" | grep '[/\\:*?"<>|[:space:]]' >/dev/null; then
-            if [[ -f "$CLI_PROVIDERS/$_nn.yaml" ]]; then
-                print_error "已经有这个组了: $_nn"; rm -rf "$tmp"; return 1
-            fi
-            name="$_nn"
-        else
-            local _n=1 _base="$name"
-            # ★ 这里原来是 `name="${_base}_$n"` —— 变量名写错了一个下划线:
-            #   local 声明的是 _n, 引用的却是 $n。set -u 下直接
-            #   "n: unbound variable" 中断, 于是**重复导入同一个订阅**会失败,
-            #   而这段代码的本意正是"同名时自动改叫 xxx_1"。
-            while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$_n"; _n=$((_n+1)); done
-        fi
-        print_ok "新组名: $name"
-    fi
-
-    # ★ 按地址上的**内核声明**决定拉原生还是普通话; 原生取不到/解析不出节点
-    #   时回退普通话, 并把原因打出来(不静默降级)。
-    local line mode n detail
-    line=$(_sub_import_by_declaration "$src" "$name")
-    mode=$(printf '%s' "$line" | cut -f1)
-    n=$(printf '%s' "$line" | cut -f2)
-    detail=$(printf '%s' "$line" | cut -f3)
-    if [[ "$mode" == "error" ]]; then
-        case "$n" in
-            404) print_error "链接不存在" ;;
-            410) print_error "链接已失效 (用尽 / 过期 / 已禁用)" ;;
-            503) print_error "服务端暂时不可用 (未消耗次数)" ;;
-            000|"") print_error "连不上订阅服务器${_px:+ (经 $_px)}"
-                    print_info "去「13) 下载通道 → 3) 订阅拉取单独设置」换直连试试" ;;
-            *)   print_error "拉取失败 HTTP $n" ;;
-        esac
-        return 1
-    fi
-    [[ "${n:-0}" -gt 0 ]] 2>/dev/null || { print_error "订阅里没有解析出节点"; return 1; }
-    _sub_report_choice "$mode" "$n" "$detail"
-    printf '%s\n' "$src" > "$CLI_NODES/$name.txt"
-    if [[ "$src" == http://* || "$src" == https://* ]]; then
-        # 自动刷新必须在这里问清楚。
-        #
-        # 之前写死 kind="http-oneshot", 而配置生成侧 (client.sh:189) 只认
-        # "http-auto" —— 两边对不上, 结果是: 通过面板导入的订阅**永远不会**
-        # 走 type: http + interval 分支, 只能靠「更新配置」手动拉。
-        # 读侧的分支代码一直存在, 看上去像支持了, 实际永远到不了。
-        #
-        # 对照 SB: 它也是纯手动更新 (client.sh 的 update_node 遍历来源 URL
-        # 重拉), 没有 interval 自动刷新。所以自动刷新是 Mihomo 侧多出来的
-        # 能力, 得真正能用。
-        local kind="http-oneshot"
-        printf '\n是否让内核自动定时更新这个订阅?\n'
-        printf "    1) 自动更新 (每 10 分钟)\n"
-        printf "    2) 手动更新 (只在选「更新配置」时拉取, 推荐)\n"
-        printf "请选择 [2]: "
-        local a; read -r a
-        # 默认手动。自动更新每 10 分钟就发一次请求, 对一次性令牌是**直接把它
-        # 拉废** —— 额度用掉之后订阅里就再也拿不到新节点了, 而界面只显示一个
-        # 空的 provider, 没有任何地方提示是额度耗尽。
-        [[ "$a" == "1" ]] && kind="http-auto"
-        [[ "$kind" == "http-auto" ]] && _sub_auto_kind_note "$mode"
-
-        # 组名: 自动取的名字多半是 IP 或哈希, 订阅一多就分不清谁是谁
-        # (面板里显示成哈希前缀或一串地址就是这么来的)。先问一句, 回车才用
-        # 自动名 —— 多一次输入换一个长期能认出来的名字, 划算。
-        printf '\n这条订阅在面板里叫什么?\n'
-        printf '    (回车 = 按地址自动命名)\n'
-        printf '请输入: '
-        local want; read -r want
-        want=$(clean_input "${want:-}")
-        # 组名会直接进 YAML 的 name 字段, 冒号等字符会让 mihomo -t 失败;
-        # 引号和换行同样会让配置写坏。
-        want="${want//$'"'\n'"'/ }"
-        [[ "$want" == *:* ]] && want="${want//:/-}"
-        want="${want//\"/}"
-        want="${want//$'"'\\'"'/}"
-
-        # 组名取来源标识: 分享链接的 host、本地文件名, 或按序号兜底。
-        # 原来只存哈希前缀, 面板里那个组就显示成一串 45fe6c20..., 完全看不出
-        # 是哪条订阅 —— 分组再漂亮, 名字是乱码也没法用。
-        subs_put "$(python3 -c '
-import json,sys,datetime,urllib.parse,os
-prefix,url,kind=sys.argv[1],sys.argv[2],sys.argv[3]
-label=""
-if kind=="local" and url:
-    label=os.path.basename(url)
-else:
-    h=urllib.parse.urlparse(url).hostname
-    if h: label=h
-if not label or label==prefix: label="订阅-"+prefix[:6]
-print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
- "imported_at":datetime.datetime.now().isoformat(timespec="seconds")},
- ensure_ascii=False))' "$name" "$src" "$kind")"
-        # 用户起的名字优先于自动名
-        if [[ -n "$want" ]]; then
-            subs_set_name "$name" "$want"
-        fi
-        # 组名同步到组内节点名 —— 多台服务器的订阅拉进同一个客户端时,
-        # 否则两边节点名完全撞车, 面板和测速都分不清来源
-        local _t; _t=$(node_tag_from_name "${want:-$name}")
-        if [[ -n "$_t" ]]; then
-            local _c; _c=$(node_prefix_names "$CLI_PROVIDERS/$name.yaml" "$_t")
-            [[ "${_c:-0}" -gt 0 ]] && print_ok "已给 $_c 个节点加上前缀 [$_t-]"
-        fi
-        if [[ "$kind" == "http-auto" ]]; then
-            print_ok "已设为自动更新, 需重新生成配置后生效"
-        fi
-    fi
-    rm -rf "$tmp"
-    apply_change
-}
-
-node_list() {
-    print_title "已导入的节点"
-    local f found=0
-    for f in $(node_files); do
-        local name; name=$(basename "$f" .yaml)
-        # 节点数: YAML 与"一行行分享链接"两种 provider 都算得对 (见 m_provider_count)
-        local cnt; cnt=$(m_provider_count "$f")
-        local src=""; [[ -f "$CLI_NODES/$name.txt" ]] && src=$(head -1 "$CLI_NODES/$name.txt")
-        printf '  \033[1m%-20s\033[0m %s 个节点   来源: %s\n' "$name" "$cnt" "${src:-本地文件}"
-        # 兼容判定摘要 —— 判定结果在导入时就落盘了 (见 _add_from_file),
-        # 这里只是把它显示出来, 不重算 (判定只发生一次)。
-        if [[ -f "$CLI_NODES/$name.compat.json" ]]; then
-            python3 - "$CLI_NODES/$name.compat.json" <<'PYSUM'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1], encoding="utf-8"))
-except Exception:
-    raise SystemExit(0)
-n = d.get("nodes") or []
-cnt = {}
-for r in n:
-    cnt[r.get("label") or r.get("verdict")] = cnt.get(r.get("label") or r.get("verdict"), 0) + 1
-parts = "  ".join(f"{k} {v}" for k, v in sorted(cnt.items(), key=lambda kv: -kv[1]))
-tgt = (d.get("target") or {})
-print(f"      兼容: {parts}   内核 {tgt.get('version') or '?'} · 引擎 {d.get('engine')}")
-if d.get("counts", {}).get("downgrades"):
-    print("      ⚠ 有判定放宽被保险丝挡下 —— 请上报")
-PYSUM
-        fi
-        found=1
-    done
-    [[ $found -eq 0 ]] && print_info "还没有任何节点, 请先「添加节点」"
-}
-
-# 终端里中文占 2 列, 但 bash 的 %-Ns 按**字节**算 —— printf "%-40s" "美国RN"
-# 实际只补了 36 个空格, 表会歪。宽度差 = (字节数 - 列数) / 2。
-_disp_pad() { # <文本> <目标列宽>
-    local t="$1" w="$2" bytes cols
-    bytes=${#t}
-    cols=$(printf '%s' "$t" | wc -m)
-    local pad=$(( w - cols ))
-    (( pad < 1 )) && pad=1
-    printf '%s%*s' "$t" "$pad" ''
-}
-
-# 列出所有"订阅/组" (一个 provider 文件 = 一组节点)
-# provider 文件里的节点数 —— 两种形态都要认 (2026-10-10 新增):
-#   * proxies: YAML  (M 自己的订阅)
-#   * 一行行分享链接 (URI 列表, 内核自己解析; 也是 out/*_share-*.txt 的形态)
-# 只认 YAML 的话, URI 型 provider 会被显示成"0 个节点", 用户以为导入失败。
-m_provider_count() { # <provider 文件>
-    local f="${1:-}"
-    [[ -f "$f" ]] || { printf '0'; return 0; }
-    python3 - "$f" <<'PYC'
-import sys
-path = sys.argv[1]
-try:
-    raw = open(path, encoding="utf-8").read()
-except OSError:
-    print(0)
-    raise SystemExit(0)
-lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.strip().startswith("#")]
-if lines and all("://" in l for l in lines):
-    print(len(lines))                     # URI 列表: 一行一个节点
-    raise SystemExit(0)
-try:
-    import yaml
-    d = yaml.safe_load(raw) or {}
-    print(len(d.get("proxies") or []) if isinstance(d, dict) else 0)
-except Exception:
-    print(0)
-PYC
 }
 
 _sub_groups() {
@@ -1584,26 +1292,19 @@ node_update() {
         [[ -z "$pre" ]] && continue
         print_info "更新 $pre ...${_px:+ (经 $_px)}"
         # 先备份, 拉取成功才替换 —— 一次性链接失败时不能把现有节点弄丢
-        local bak=""; [[ -f "$CLI_PROVIDERS/$pre.yaml" ]] && bak=$(mktemp) && cp -f "$CLI_PROVIDERS/$pre.yaml" "$bak"
-        # ★ 与「添加节点」走**同一套**声明决策与回退链 (同一个 helper) ——
-        #   两处各写一遍的表现是"导入时走原生、刷新时走普通话"(或反过来),
-        #   而两边都不报错。
-        local line mode n detail
-        line=$(_sub_import_by_declaration "$url" "$pre")
-        mode=$(printf '%s' "$line" | cut -f1)
-        n=$(printf '%s' "$line" | cut -f2)
-        detail=$(printf '%s' "$line" | cut -f3)
-        if [[ "$mode" == "error" ]]; then
-            if [[ "$n" == "000" || -z "$n" ]]; then
+        local tmp; tmp=$(mktemp -d)
+        local code
+        code=$(dl_curl_code "$url" "$tmp/sub.yaml" sub)
+        if [[ "$code" != "200" ]]; then
+            if [[ "$code" == "000" || -z "$code" ]]; then
                 print_warn "  跳过 $pre (连不上订阅服务器${_px:+ 经 $_px}), 保留原有节点"
             else
-                print_warn "  跳过 $pre (HTTP $n), 保留原有节点"
+                print_warn "  跳过 $pre (HTTP $code), 保留原有节点"
             fi
-            [[ -n "$bak" ]] && rm -f "$bak"
-            continue
+            rm -rf "$tmp"; continue
         fi
-        _sub_report_choice "$mode" "$n" "$detail"
-        if [[ "${n:-0}" -gt 0 ]] 2>/dev/null; then
+        local bak=""; [[ -f "$CLI_PROVIDERS/$pre.yaml" ]] && bak=$(mktemp) && cp -f "$CLI_PROVIDERS/$pre.yaml" "$bak"
+        if _add_from_file "$tmp/sub.yaml" "$pre"; then
             # 重新下载会覆盖掉之前加的前缀, 所以每次更新后都要重新应用。
             # 不补的话, 更新一次订阅就会让这组的节点名退回和别台机器撞车的状态
             # —— 而用户刚更新完, 不会再去怀疑名字又变了。
@@ -1618,6 +1319,7 @@ except Exception: print("")' 2>/dev/null)")
             print_warn "  $pre 更新失败, 已还原"
             [[ -n "$bak" ]] && cp -f "$bak" "$CLI_PROVIDERS/$pre.yaml" && rm -f "$bak"
         fi
+        rm -rf "$tmp"
     done < <(python3 -c "
 import json,sys
 try: d=json.load(open(sys.argv[1]))
@@ -2386,58 +2088,6 @@ set_bind() {
 }
 
 # =============================================================
-# 非交互入口: node-sub <订阅地址> [组名]
-#
-# 为什么要有: 面板那条路要人肉走菜单, 而"客户端这次到底拉了哪一份产品"
-# 是三家互通里最需要**机械可重复**的事 —— 门禁与真机验收都要能一键复现
-# (X 侧对应的是 `xbd node sub <url>`)。
-#
-# 走的是**与面板完全相同**的代码路径: _sub_import_by_declaration (决策 +
-# 回退链 + 落 provider)。不另写一套 —— 那样验的就不是用户走的那条路。
-# =============================================================
-cmd_node_sub() {
-    local url="${1:-}" want="${2:-}"
-    [[ -n "$url" ]] || { print_error "用法: client.sh node-sub <订阅地址> [组名]"; return 1; }
-    ensure_dirs
-    subs_file_init
-    local name
-    if [[ -n "$want" ]]; then
-        name="$want"
-    else
-        name=$(printf '%s' "${url%%\?*}" | sed 's|.*/||' | tr -c 'A-Za-z0-9_-' '_' | cut -c1-32)
-        [[ -z "$name" ]] && name="sub$(date +%H%M%S)"
-    fi
-    if [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; then
-        local _n=1 _base="$name"
-        while [[ -f "$CLI_PROVIDERS/$name.yaml" ]]; do name="${_base}_$_n"; _n=$((_n+1)); done
-    fi
-    local line mode n detail
-    line=$(_sub_import_by_declaration "$url" "$name")
-    mode=$(printf '%s' "$line" | cut -f1)
-    n=$(printf '%s' "$line" | cut -f2)
-    detail=$(printf '%s' "$line" | cut -f3)
-    if [[ "$mode" == "error" ]]; then
-        print_error "拉取失败 (HTTP ${n:-000}) ${detail:+—— $detail}"
-        return 1
-    fi
-    [[ "${n:-0}" -gt 0 ]] 2>/dev/null || { print_error "订阅里没有解析出节点"; return 1; }
-    _sub_report_choice "$mode" "$n" "$detail"
-    print_ok "解析出 $n 个节点 (组名 $name)"
-    printf '%s\n' "$url" > "$CLI_NODES/$name.txt"
-    subs_put "$(python3 -c '
-import json,sys,datetime,urllib.parse,os
-prefix,url,kind=sys.argv[1],sys.argv[2],sys.argv[3]
-label=""
-h=urllib.parse.urlparse(url).hostname
-if h: label=h
-if not label or label==prefix: label="订阅-"+prefix[:6]
-print(json.dumps({"prefix":prefix,"url":url,"kind":kind,"name":label,
- "imported_at":datetime.datetime.now().isoformat(timespec="seconds")},
- ensure_ascii=False))' "$name" "$url" "http-oneshot")"
-    return 0
-}
-
-# =============================================================
 # 入口 / 子命令
 #
 # 与服务端同理: core_menu (src/lib/core_mgmt.sh) 一直用
@@ -2457,9 +2107,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             exit 0 ;;
         uninstall)
             cli_uninstall ;;
-        node-sub)
-            shift
-            cmd_node_sub "$@" ;;
         *)
             client_menu ;;
     esac

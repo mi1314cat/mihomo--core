@@ -174,136 +174,6 @@ _share_expiry_str() {
     date -d "@$exp" '+%Y-%m-%d %H:%M' 2>/dev/null || printf "?"
 }
 
-# =============================================================
-# 三家互通 · 两个产品 + 内核声明
-#
-# 设计: proxy-node-compat/docs/three-way-interop.md (参照实现: xray--core,
-# 真机验收: research/integration/three-way-interop-x.md)
-#
-#   普通话 (URI 列表)  = 主记录, 任何客户端都能读 (xbd / sb-client / mihomo / 第三方)
-#   原生   (mihomo YAML) = 附带记录, 只有 mihomo 内核读
-#
-# 为什么 M 也要这么发: M 的原生产品是 `proxies:` YAML, 跨内核客户端 (Xray 的
-#   xbd) 读不了 —— 实测对 mihomo YAML 解析出 19 个空壳、导入 **0/19**。这不是
-#   谁的 bug, 是跨生态格式边界; 解法不是让 xbd 学 YAML, 而是 M 也产出普通话。
-#
-# 声明写在**地址的查询串**里: 公共服务的路由先剥查询串再分发, 所以带声明的
-#   地址对第三方客户端零影响(拿到的仍是原来那份载荷)。放响应头/独立 /meta
-#   端点两条路都被冻结的公共服务堵死了(设计文档 §1)。
-#
-# ★ 一条分享 = **两条记录**: 停用 / 撤销 / 删除 / 重建 token 必须成对处理 ——
-#   只动主记录会留下一条还活着的原生记录: 用户以为停了/撤了, 带声明的地址却
-#   依然能拉到同一批节点。这个错误是静默的(面板上主记录显示"已停用")。
-# =============================================================
-INTEROP_PY="${INTEROP_PY:-${SH_SHARE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/../lib/interop.py}"
-BUILD_URI="${BUILD_URI:-${SH_SHARE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/build_uri.py}"
-
-# 本机内核事实(真探测: mihomo -v)。探测不到发行版 → **不产出原生、不声明原生**:
-# 不猜一个默认值(声明里的标签必须和 compat 判能力用的标签是同一个字符串)。
-_share_self_facts() { python3 "$INTEROP_PY" self 2>/dev/null; }
-_share_fact() { # <facts json> <字段名>
-    printf '%s' "$1" | python3 -c 'import sys, json
-try: print((json.load(sys.stdin) or {}).get(sys.argv[1], "") or "")
-except Exception: print("")' "$2" 2>/dev/null
-}
-
-# 普通话产品正文 → 打印文件路径(失败返回 1)。与 _share_make_content 同形。
-_share_make_uri_content() { # <tag> <输出文件>
-    local tag="$1" out="$2"
-    if [[ -n "${SHARE_PROVIDERS_DIR:-}" && -d "${SHARE_PROVIDERS_DIR:-}" ]]; then
-        python3 "$BUILD_URI" --out-dir "$SRV_OUT" \
-            --providers-dir "$SHARE_PROVIDERS_DIR" --tag "$tag" -o "$out" \
-            >/dev/null 2>"$out.loss" || return 1
-    else
-        python3 "$BUILD_URI" --out-dir "$SRV_OUT" --conf-dir "$SRV_CONF" \
-            --tag "$tag" -o "$out" >/dev/null 2>"$out.loss" || return 1
-    fi
-    # 一条链接都做不出来 = 空产品, 不许当成成功发出去
-    grep -qE '^[a-z0-9+.-]+://' "$out" 2>/dev/null || return 1
-    return 0
-}
-
-# 把声明并进订阅地址 —— 声明只有 interop.py 一处实现(客户端读的是同一份定义)
-#
-# ★ 两处收束 (2026-10-11, 用户拍板"链接太长, 该收束的收束"):
-#   1) **不再产出 `version`**。版本没有丢: 原生产品的 record meta 里自描述
-#      `{"interop":1,"kernel":…,"distribution":…,"version":…}` (见 _share_create_records)。
-#      解析侧**仍然接受** version(第三方可能写), 只是它不参与决策。
-#   2) 原生产品**同源时写相对路径** `/share/<token>`, 异源才写绝对地址。
-#      解析侧按主地址的 `scheme://netloc` 拼回 (src/lib/interop.py:_resolve_native_ref);
-#      旧实现看到相对路径判 `bad-native-url` → 回退普通话(**安全且可见**),
-#      所以不需要 bump schema。
-_share_declare_url() { # <主地址> <发行版> [原生地址(绝对)]
-    local url="$1" dist="$2" native="${3:-}"
-    local -a extra=()
-    [[ -n "$native" && -n "$dist" ]] \
-        && extra=(--url-"$dist" "$(_share_native_ref "$url" "$native")")
-    python3 "$INTEROP_PY" declare --kernel mihomo --distribution "$dist" \
-        --url "$url" "${extra[@]}" 2>/dev/null
-}
-
-# 原生取件地址的形态: **同源 → 相对路径, 异源 → 绝对地址**。
-#
-# "同源" 严格按 (scheme, host:port) 相等判 —— 只比 host 不比端口的话, 同一台机器
-# 上不同端口的分享服务会被误判成同源, 拼出来的相对路径会指向**另一个服务**。
-_share_native_ref() { # <主地址> <原生绝对地址>
-    python3 - "$1" "$2" <<'PYN'
-import sys, urllib.parse
-main = urllib.parse.urlsplit(sys.argv[1])
-nat = urllib.parse.urlsplit(sys.argv[2])
-if (main.scheme, main.netloc) == (nat.scheme, nat.netloc) and nat.path:
-    print(urllib.parse.urlunsplit(("", "", nat.path, nat.query, nat.fragment)))
-else:
-    print(sys.argv[2])
-PYN
-}
-
-# 一条分享记录 meta 里的字段(点分路径)。取不到打印空串 —— 调用方一律按
-# "空 = 旧记录 / 没有原生产物"处理, 不许猜。
-_share_meta_field() { # <token> <点分路径>
-    local rec
-    rec=$(_share_api get --token "$1" 2>/dev/null) || return 0
-    [[ -n "$rec" ]] || return 0
-    printf '%s' "$rec" | python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: raise SystemExit
-for k in sys.argv[1].split("."):
-    d = d.get(k) if isinstance(d, dict) else None
-print(d if isinstance(d, str) else ("" if d is None else d))' "$2" 2>/dev/null
-}
-
-# 一条分享记录的原生产物 token(没有则空)
-_share_native_of() { _share_meta_field "$1" meta.native_token; }
-
-# 一条记录的角色(primary / native / 空=旧记录)
-_share_role_of() { _share_meta_field "$1" meta.role; }
-
-# 用户选中的 token 若是**原生产物**, 换成它的主记录 —— 两个方向都要能处理:
-# 列表里点的那条可能是任意一条, 而"停用/撤销"必须成对生效。
-_share_primary_of() {
-    local tok="$1" role parent
-    role=$(_share_role_of "$tok")
-    [[ "$role" == "native" ]] || { printf '%s' "$tok"; return 0; }
-    parent=$(_share_meta_field "$tok" meta.parent)
-    printf '%s' "${parent:-$tok}"
-}
-
-# 一条主记录 → 它自己 + 它的原生记录(每行一个 token; 不存在的行不打印)
-_share_pair_of() {
-    local tok="$1" role ntok
-    role=$(_share_role_of "$tok")
-    if [[ "$role" == "native" ]]; then
-        tok=$(_share_primary_of "$tok")
-        role=$(_share_role_of "$tok")
-    fi
-    printf '%s\n' "$tok"
-    ntok=$(_share_native_of "$tok")
-    [[ -n "$ntok" ]] && printf '%s\n' "$ntok"
-    return 0
-}
-
-
 # ---------- 生成 ----------
 share_create() {
     print_title "生成分享链接"
@@ -395,25 +265,26 @@ share_create() {
     fi
 
     # 内容由 M 生成 (公共服务不解析它), 交给公共服务保存并管理生命周期
-    local ttl_s
+    local content_file tok ttl_s
+    content_file=$(mktemp)
+    if ! _share_make_content "$TAG" "$content_file"; then
+        rm -f "$content_file"
+        print_error "生成分享内容失败 (没有可分享的节点?)"
+        return 1
+    fi
     ttl_s=0; [[ "$hours" -gt 0 ]] && ttl_s=$((hours * 3600))
-    local recrec
-    if ! recrec=$(_share_create_records "$TAG" "$mu" "$ttl_s" "$addr"); then
+    local rec
+    rec=$(_share_api create --type node --content-file "$content_file"             --ttl "$ttl_s" --max-uses "$mu" --meta "{\"tag\":\"$TAG\"}" 2>/dev/null)
+    rm -f "$content_file"
+    tok=$(printf '%s' "$rec" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
+    if [[ -z "$tok" ]]; then
         print_error "公共服务创建分享失败 —— 服务是否在运行? (面板选项 7 可检查)"
         return 1
     fi
-    local tok ntok declared
-    tok=$(printf '%s' "$recrec" | awk -F'\t' '{print $1}')
-    ntok=$(printf '%s' "$recrec" | awk -F'\t' '{print $2}')
-    declared=$(printf '%s' "$recrec" | awk -F'\t' '{print $3}')
-    local rec
-    rec=$(_share_api get --token "$tok" 2>/dev/null)
     token="$tok"
 
     printf '%s' "$addr" > "$SRV_OUT/share_addr.txt"
-    # ★ 落盘的是**带声明的地址** —— 用户从这里复制才带内核声明; 复制裸地址的话
-    #   客户端永远只能走普通话(声明缺失), 且没有任何报错。
-    printf '%s\n' "$declared" > "$SRV_OUT/share_tag-$TAG.txt"
+    printf 'http://%s:%s/share/%s\n' "$(_share_host "$addr")" "$(_share_port)" "$token" > "$SRV_OUT/share_tag-$TAG.txt"
 
     print_ok "已生成分享链接"
     printf '  地址    : %s\n' "$addr"
@@ -429,20 +300,7 @@ share_create() {
     else
         printf '  有效期至: %s\n' "$(date -d "@$exp_s" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
     fi
-    # ★ 打印**带声明的地址**(客户端据此决定拉原生还是普通话), 以及"这次发了
-    #   哪几种格式" —— 用户要能一眼看出这条链接发的是什么。
-    printf '\n  链接 (带内核声明, 客户端据此选格式):\n    \033[1m%s\033[0m\n\n' "$declared"
-    if [[ -n "$ntok" ]]; then
-        print_info "格式: 普通话(URI 列表) + 原生(mihomo YAML —— 同内核同发行版自动拉原生, 其余走普通话)"
-    else
-        print_info "格式: 仅普通话(URI 列表) —— 地址上仍带声明, 客户端据此走通用格式"
-    fi
-    # ★ 主地址从 YAML 换成了 URI 列表, 这对**客户端**有一个前提: 它得认得
-    #   一行行分享链接。仓库自 2026-10-10 23:32 (60fb4c5) 起支持; 更早的构建
-    #   对主地址会报"[ERR] 不是合法的 Mihomo 订阅 (需要顶层 proxies: 列表)"
-    #   (真机实测: CC 上那份 2026-10-10 12:22 的构建就是这样)。
-    #   已发出的旧链接内容不变、照旧可用 —— 受影响的只有**新建**的分享。
-    print_info "提示: 客户端需认得 URI 列表 (仓库 2026-10-10 23:32 起); 更早的构建请先更新客户端"
+    printf '\n  链接:\n    \033[1mhttp://%s:%s/share/%s\033[0m\n\n' "$(_share_host "$addr")" "$(_share_port)" "$token"
 
     # ★ 链接打印出来了, 但**没人保证它真的能访问**。
     #   安装分享服务是**另一个菜单项** (share_service_install), 用户完全可以
@@ -514,20 +372,9 @@ for r in recs:
         scope = "[配置] 完整配置"
     else:
         scope = "[节点] " + (str(m.get("tag") or "-"))
-    role = m.get("role") or ""
-    fmts = m.get("formats") or []
-    if isinstance(fmts, str): fmts = [fmts]
-    if role == "native":
-        kind = "原生"
-    elif fmts:
-        kind = "普通话+" + ",".join(x for x in fmts if x != "uri")
-    elif role == "primary":
-        kind = "普通话"
-    else:
-        kind = "旧记录(YAML)"
-    print("%s\t%s\t%s\t%s\t%s\t%s\t%s" % (
+    print("%s\t%s\t%s\t%s\t%s\t%s" % (
         t, scope, r.get("token", ""), r.get("state", ""),
-        int(r.get("used_count", 0)), int(r.get("max_uses", 0)), kind))
+        int(r.get("used_count", 0)), int(r.get("max_uses", 0))))
 ' 2>/dev/null
 }
 
@@ -540,24 +387,22 @@ share_list() {
         return
     fi
 
-    printf '\n%-4s %-22s %-34s %-8s %-11s %-16s %s\n' "编号" "类型 / 范围" "Token" "状态" "已用/上限" "过期时间" "格式"
-    printf '%s\n' "──────────────────────────────────────────────────────────────────────────────────────────────────────────────"
-    local i=1 t scope tok st used maxu kind rec
-    while IFS=$'\t' read -r t scope tok st used maxu kind; do
+    printf '\n%-4s %-22s %-34s %-8s %-11s %-16s\n' "编号" "类型 / 范围" "Token" "状态" "已用/上限" "过期时间"
+    printf '%s\n' "──────────────────────────────────────────────────────────────────────────────────────────────"
+    local i=1 t scope tok st used maxu rec
+    while IFS=$'\t' read -r t scope tok st used maxu; do
         [[ -n "$tok" ]] || continue
         rec=$(_share_api get --token "$tok" 2>/dev/null)
         local st_cn
         st_cn=$(_share_status "$rec")
         [[ "$st_cn" == "可用" ]] && st_cn="${GREEN}可用${RESET}" || st_cn="${YELLOW}${st_cn}${RESET}"
-        printf '%-4s %-22s %-34s %-18b %-11s %-16s %s\n' \
+        printf '%-4s %-22s %-34s %-18b %-11s %-16s\n' \
             "$i" "$scope" "$tok" "$st_cn" \
             "$used/$([[ "$maxu" == "0" ]] && echo ∞ || echo "$maxu")" \
-            "$(_share_expiry_str "$rec")" "${kind:-}"
+            "$(_share_expiry_str "$rec")"
         i=$((i+1))
     done <<< "$rows"
     printf '\n'
-    # 「原生」是主记录的附带产物: 说清楚它是什么, 否则用户会以为那是第二条分享
-    print_info "「原生」= 主记录的附带产物 (同内核同发行版才拉它); 撤销/停用成对生效"
     _share_legacy_hint
 }
 
@@ -625,7 +470,6 @@ share_pick() {
 share_revoke_all() {
     _SHARE_REVOKED_N=0
     local toks
-    # ★ 原生记录也在这份清单里(它就是一条普通记录) —— 所以"全部禁用"天然成对。
     toks=$(_share_api_list | python3 -c '
 import sys, json
 try: recs = json.load(sys.stdin)
@@ -665,8 +509,6 @@ for r in recs:
     ok = (t == tag) if mode == "exact" else (t == tag or t.startswith(tag + "_"))
     if ok: print(r.get("token", ""))
 ' "$tag" "$mode" 2>/dev/null)
-    # 原生记录与主记录**同一个 tag**, 所以上面这份清单已经同时覆盖两条 ——
-    # 这正是"吊销成对"能成立的原因(只动主记录会留下一条还活着的原生分享)。
 
     local tok
     for tok in $toks; do
@@ -713,28 +555,17 @@ print(sum(1 for r in recs if r.get("type")=="node" and str((r.get("meta") or {})
 share_delete() {
     print_title "删除分享链接"
     share_pick || return
-    # ★ 一条分享有两条记录(普通话主 + 原生附带): 只删主记录的话, 原生产物
-    #   **还活着** —— 带声明的地址依然能拉到同一批节点, 而用户以为已经删了。
-    local tok; tok=$(_share_primary_of "$_SHARE_PICKED")
-    local -a pair=()
-    while IFS= read -r _t; do [[ -n "$_t" ]] && pair+=("$_t"); done < <(_share_pair_of "$tok")
-    local t
-    for t in "${pair[@]}"; do
-        if ! _share_api delete --token "$t" >/dev/null 2>&1; then
-            print_error "删除失败 (公共服务拒绝或不可用)"
-            return 1
-        fi
-        # 回读确认, 否则服务端静默失败时仍会报"已删除" (旧实现踩过同款假成功)
-        if _share_api get --token "$t" >/dev/null 2>&1; then
-            print_error "删除失败, 记录仍在: ${t:0:12}..."
-            return 1
-        fi
-    done
-    if (( ${#pair[@]} > 1 )); then
-        print_ok "已删除分享链接 (主 ${tok:0:12}... + 原生附带记录, 共 ${#pair[@]} 条)"
-    else
-        print_ok "已删除分享链接 (token ${tok:0:12}...)"
+    local tok="$_SHARE_PICKED"
+    if ! _share_api delete --token "$tok" >/dev/null 2>&1; then
+        print_error "删除失败 (公共服务拒绝或不可用)"
+        return 1
     fi
+    # 回读确认, 否则服务端静默失败时仍会报"已删除" (旧实现踩过同款假成功)
+    if _share_api get --token "$tok" >/dev/null 2>&1; then
+        print_error "删除失败, 记录仍在: ${tok:0:12}..."
+        return 1
+    fi
+    print_ok "已删除分享链接 (token ${tok:0:12}...)"
 }
 
 
@@ -742,27 +573,19 @@ share_delete() {
 share_toggle() {
     print_title "启用 / 禁用分享链接"
     share_pick || return
-    # ★ 成对: 只禁用主记录的话, 原生产物**还活着** —— 带声明的地址依然能拉到
-    #   同一批节点, 而面板上主记录显示"已禁用"。这个错误是静默的。
-    local tok; tok=$(_share_primary_of "$_SHARE_PICKED")
+    local tok="$_SHARE_PICKED"
     local cur want
     cur=$(printf '%s' "$_SHARE_PICKED_REC" | python3 -c 'import sys,json;print("true" if json.load(sys.stdin).get("enabled",True) else "false")' 2>/dev/null)
     [[ "$cur" == "true" ]] && want="false" || want="true"
-    local -a pair=(); local t
-    while IFS= read -r _t; do [[ -n "$_t" ]] && pair+=("$_t"); done < <(_share_pair_of "$tok")
-    local bad=0
-    for t in "${pair[@]}"; do
-        local out now
-        out=$(_share_api update --token "$t" --enabled "$want" 2>/dev/null)
-        now=$(printf '%s' "$out" | python3 -c 'import sys,json;print("true" if json.load(sys.stdin).get("enabled",False) else "false")' 2>/dev/null)
-        [[ "$now" == "$want" ]] || bad=1
-    done
-    if (( bad == 1 )); then
+    local out
+    out=$(_share_api update --token "$tok" --enabled "$want" 2>/dev/null)
+    local now
+    now=$(printf '%s' "$out" | python3 -c 'import sys,json;print("true" if json.load(sys.stdin).get("enabled",False) else "false")' 2>/dev/null)
+    if [[ "$now" != "$want" ]]; then
         print_error "切换失败 (公共服务未生效)"
         return 1
     fi
-    if [[ "$want" == "true" ]]; then print_ok "已启用"; else print_ok "已禁用"; fi
-    (( ${#pair[@]} > 1 )) && print_info "主记录与原生附带记录已一起切换 (共 ${#pair[@]} 条)"
+    [[ "$want" == "true" ]] && print_ok "已启用" || print_ok "已禁用"
 }
 
 
@@ -802,82 +625,14 @@ sys.stdout.write(r.get("content", ""))
     [[ -n "$new" ]] || { print_error "创建新 token 失败"; return 1; }
     # 把使用次数带过去 —— 与旧实现 (mv 保留计数) 行为一致
     (( used > 0 )) && _share_api update --token "$new" --used-count "$used" >/dev/null 2>&1
-
-    # ★ 一条分享两条记录: 主记录换了 token, 原生产物必须一起重建 ——
-    #   否则新地址上的声明会指向**旧的原生 token**(那个还活着, 但已经和这条
-    #   新分享脱钩), 而旧的原生记录也没有被回收。
-    local ntok oldnat newnat decl
-    oldnat=$(_share_native_of "$old")
-    if [[ -n "$oldnat" ]]; then
-        local nrec
-        nrec=$(_share_api get --token "$oldnat" 2>/dev/null)
-        local nfile; nfile=$(mktemp)
-        printf '%s' "$nrec" | python3 -c '
-import sys, json
-try: sys.stdout.write((json.load(sys.stdin) or {}).get("content", ""))
-except Exception: pass' > "$nfile"
-        newnat=$(_share_api create --type node --content-type "text/yaml; charset=utf-8" \
-                    --content-file "$nfile" --ttl "$ttl" --max-uses "$maxu" \
-                    --meta "$(printf '%s' "$nrec" | python3 -c '
-import sys, json
-try:
-    m = (json.load(sys.stdin) or {}).get("meta") or {}
-except Exception:
-    m = {}
-m.pop("parent", None)
-print(json.dumps(m, ensure_ascii=False))' | python3 -c '
-import sys, json
-m = json.load(sys.stdin)
-m["parent"] = sys.argv[1]
-print(json.dumps(m, ensure_ascii=False))' "$new")" 2>/dev/null \
-                  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
-        rm -f "$nfile"
-        _share_api delete --token "$oldnat" >/dev/null 2>&1
-        if [[ -z "$newnat" ]]; then
-            print_warn "原生产物没能重建 —— 新地址上的声明会退回只有普通话"
-        fi
-    fi
-
     _share_api delete --token "$old" >/dev/null 2>&1 || {
         print_warn "旧 token 删除失败, 新旧两条同时存在"; }
 
     local got
     got=$(_share_api get --token "$new" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
     [[ "$got" == "$new" ]] || { print_error "新 token 未生效"; return 1; }
-
-    # 主记录的 meta 里要写上新的原生 token 与声明口径
-    local dist ver
-    dist=$(python3 -c 'import sys,json
-try: print((json.loads(sys.argv[1]) or {}).get("distribution",""))
-except Exception: print("")' "$meta" 2>/dev/null)
-    ver=$(python3 -c 'import sys,json
-try: print((json.loads(sys.argv[1]) or {}).get("kernel_version",""))
-except Exception: print("")' "$meta" 2>/dev/null)
-    local addr
-    addr=$(cat "$SRV_OUT/share_addr.txt" 2>/dev/null)
-    [[ -n "$addr" ]] || addr=$(_share_addr)
-    local nurl=""
-    [[ -n "$newnat" ]] && nurl="http://$(_share_host "$addr"):$(_share_port)/share/$newnat"
-    local newmeta
-    newmeta=$(TAG="$(printf '%s' "$meta" | python3 -c 'import sys,json
-try: print((json.loads(sys.stdin.read()) or {}).get("tag","all"))
-except Exception: print("all")')" DIST="$dist" VER="$ver" NTOK="$newnat" python3 -c '
-import json, os
-fmts = ["uri"] + ([os.environ["DIST"]] if os.environ["NTOK"] else [])
-print(json.dumps({"tag": os.environ["TAG"], "interop": 1, "role": "primary",
-                  "kernel": "mihomo", "distribution": os.environ["DIST"],
-                  "kernel_version": os.environ["VER"], "formats": fmts,
-                  "native_token": os.environ["NTOK"]}, ensure_ascii=False))')
-    _share_api update --token "$new" --meta "$newmeta" >/dev/null 2>&1
-    decl=$(_share_declare_url "http://$(_share_host "$addr"):$(_share_port)/share/$new" \
-             "$dist" "$nurl")
-    [[ -n "$decl" ]] && printf '%s\n' "$decl" > "$SRV_OUT/share_tag-$(printf '%s' "$meta" | python3 -c 'import sys,json
-try: print((json.loads(sys.stdin.read()) or {}).get("tag","all"))
-except Exception: print("all")').txt" 2>/dev/null
-
     print_ok "已重新生成"
     printf '  旧: %s\n  新: %s\n' "$old" "$new"
-    [[ -n "$newnat" ]] && printf '  原生附带记录也已重建 (%s)\n' "${newnat:0:12}..."
 }
 
 
@@ -885,34 +640,15 @@ except Exception: print("all")').txt" 2>/dev/null
 share_show_url() {
     print_title "查看分享链接"
     share_pick || return
-    # 选中的可能是附带记录 (原生) —— 展示的永远是主记录 + 它的声明
-    local tok; tok=$(_share_primary_of "$_SHARE_PICKED")
+    local tok="$_SHARE_PICKED"
     local addr
     addr=$(_share_addr)
     printf '\n  自动探测地址: %s\n' "$addr"
     printf '若不对请输入正确地址, 回车使用上面: '
     local a2; read -r a2
     [[ -n "$a2" ]] && addr="$a2"
-    # ★ 现算带**内核声明**的地址(不落盘读): 客户端靠声明决定拉原生还是普通话。
-    #   复制裸地址的话客户端只能走普通话, 而且没有任何报错指向这一点。
-    local dist ver ntok nurl decl
-    dist=$(_share_meta_field "$tok" meta.distribution)
-    ver=$(_share_meta_field "$tok" meta.kernel_version)
-    ntok=$(_share_native_of "$tok")
-    [[ -n "$ntok" ]] && nurl="http://$(_share_host "$addr"):$(_share_port)/share/$ntok"
-    decl=$(_share_declare_url "http://$(_share_host "$addr"):$(_share_port)/share/$tok" \
-             "$dist" "$nurl")
-    [[ -n "$decl" ]] || decl="http://$(_share_host "$addr"):$(_share_port)/share/$tok"
-    printf '\n  %s\n\n' "$decl"
-    if [[ -n "$ntok" ]]; then
-        printf '  格式: 普通话(URI 列表) + 原生(%s 的 YAML)\n' "${dist:-?}"
-    else
-        local f0 ver0
-        f0=$(_share_self_facts); ver0=$(_share_fact "$f0" version)
-        printf '  格式: 仅普通话(URI 列表); 地址上仍带内核声明\n'
-        [[ -z "$dist" ]] && printf '        (内核发行版探测不到, 所以没有原生: %s)\n' "$(_share_fact "$f0" note)"
-    fi
-    printf '  客户端: 把这整行填进「添加节点 → 分享链接」即可\n\n'
+    printf '\n  http://%s:%s/share/%s\n\n' "$(_share_host "$addr")" "$(_share_port)" "$tok"
+    printf '  客户端: 把这行填进「添加节点 → 分享链接」即可\n\n'
 }
 
 
@@ -920,104 +656,6 @@ share_show_url() {
 # ---------------------------------------------------------------- 内容生成
 #
 # 内容由 **M** 生成 —— 公共服务只负责保存和返回, 它不认识 Mihomo 的格式。
-
-# 一条分享的**两条记录** + 带声明的地址。
-#
-# 打印(一行, TAB 分隔): <主token>\t<原生token或空>\t<带声明的地址>; 失败返回 1。
-#
-#   主记录   = 普通话 (URI 列表)  —— content_type text/plain
-#   附带记录 = 原生   (mihomo YAML) —— content_type text/yaml
-#
-# 为什么**普通话是主记录**(而不是把 YAML 继续当主):
-#   声明里 `uri` 的地址就是主 URL 本身(设计 §2: 不重复写), 而跨内核客户端
-#   (xbd) 走普通话时拉的就是主 URL —— 主 URL 必须是普通话, 否则"跨内核 → 拉
-#   URI"这条链在服务端就断了。原生则挂在自己的地址上 (url-<发行版>)。
-#
-# 两条记录的 TTL 与次数上限**同源**: 一条永久一条 24 小时会让用户以为原生
-# "自己坏了"。
-_share_create_records() { # <tag> <max_uses> <ttl_s> <addr>
-    local tag="$1" mu="$2" ttl_s="$3" addr="$4"
-    local uri_file nat_file
-    uri_file=$(mktemp) || return 1
-    if ! _share_make_uri_content "$tag" "$uri_file"; then
-        rm -f "$uri_file" "$uri_file.loss"
-        return 1
-    fi
-    # 普通话这一份的损失报告要给人看见(不静默降级)
-    if [[ -s "$uri_file.loss" ]]; then
-        sed 's/^/       /' "$uri_file.loss" >&2
-    fi
-
-    local facts dist ver
-    facts=$(_share_self_facts)
-    dist=$(_share_fact "$facts" distribution)
-    ver=$(_share_fact "$facts" version)
-
-    local pri_meta pri_tok nat_tok="" nat_meta rec
-    pri_meta=$(TAG="$tag" DIST="$dist" VER="$ver" python3 -c '
-import json, os
-print(json.dumps({"tag": os.environ["TAG"], "interop": 1, "role": "primary",
-                  "kernel": "mihomo", "distribution": os.environ["DIST"],
-                  "kernel_version": os.environ["VER"]}, ensure_ascii=False))')
-    rec=$(_share_api create --type node --content-type "text/plain; charset=utf-8" \
-              --content-file "$uri_file" --ttl "$ttl_s" --max-uses "$mu" \
-              --meta "$pri_meta" 2>/dev/null)
-    rm -f "$uri_file" "$uri_file.loss"
-    pri_tok=$(printf '%s' "$rec" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
-    [[ -n "$pri_tok" ]] || return 1
-
-    # ---- 原生产品 (只有 mihomo 内核读) ----
-    if [[ -z "$dist" ]]; then
-        print_warn "内核发行版探测不到 ($(_share_fact "$facts" note)) —— 不产出原生, 只发普通话" >&2
-    else
-        nat_file=$(mktemp) || nat_file=""
-        if [[ -n "$nat_file" ]] && _share_make_content "$tag" "$nat_file"; then
-            nat_meta=$(TAG="$tag" DIST="$dist" VER="$ver" PRI="$pri_tok" python3 -c '
-import json, os
-print(json.dumps({"tag": os.environ["TAG"], "interop": 1, "role": "native",
-                  "kernel": "mihomo", "distribution": os.environ["DIST"],
-                  "kernel_version": os.environ["VER"],
-                  "parent": os.environ["PRI"]}, ensure_ascii=False))')
-            rec=$(_share_api create --type node --content-type "text/yaml; charset=utf-8" \
-                      --content-file "$nat_file" --ttl "$ttl_s" --max-uses "$mu" \
-                      --meta "$nat_meta" 2>/dev/null)
-            nat_tok=$(printf '%s' "$rec" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
-        fi
-        [[ -n "$nat_file" ]] && rm -f "$nat_file"
-        if [[ -z "$nat_tok" ]]; then
-            # 原生产物没发出去也要**说清楚**: 地址上仍会声明"只有普通话",
-            # 客户端据此走通用格式, 而不是先试原生再失败一次。
-            print_warn "原生产品没生成/没建起来 —— 这条分享只发普通话(URI)" >&2
-        fi
-    fi
-
-    # ---- 地址上的声明 ----
-    local url nat_url declared
-    url="http://$(_share_host "$addr"):$(_share_port)/share/$pri_tok"
-    if [[ -n "$nat_tok" ]]; then
-        nat_url="http://$(_share_host "$addr"):$(_share_port)/share/$nat_tok"
-        declared=$(_share_declare_url "$url" "$dist" "$nat_url")
-    else
-        declared=$(_share_declare_url "$url" "")
-    fi
-    [[ -n "$declared" ]] || declared="$url"
-
-    # 把"原生在哪 / 声明口径"记进主记录 meta —— 列表、刷新、吊销都靠它。
-    # meta 是**整体替换**, 所以上面写过的字段必须一起带上。
-    pri_meta=$(TAG="$tag" DIST="$dist" VER="$ver" NTOK="$nat_tok" python3 -c '
-import json, os
-fmts = ["uri"] + ([os.environ["DIST"]] if os.environ["NTOK"] else [])
-print(json.dumps({"tag": os.environ["TAG"], "interop": 1, "role": "primary",
-                  "kernel": "mihomo", "distribution": os.environ["DIST"],
-                  "kernel_version": os.environ["VER"], "formats": fmts,
-                  "native_token": os.environ["NTOK"]}, ensure_ascii=False))')
-    _share_api update --token "$pri_tok" --meta "$pri_meta" >/dev/null 2>&1 \
-        || print_warn "声明没写进 meta (分享本身可用, 但列表里看不到原生地址)" >&2
-
-    printf '%s\t%s\t%s\n' "$pri_tok" "$nat_tok" "$declared"
-    return 0
-}
-
 _share_make_content() { # <tag> <输出文件>
     local tag="$1" out="$2"
     if [[ -n "${SHARE_PROVIDERS_DIR:-}" && -d "${SHARE_PROVIDERS_DIR:-}" ]]; then
@@ -1041,20 +679,12 @@ _share_make_content() { # <tag> <输出文件>
 share_refresh_all() {
     local recs; recs=$(_share_api_list 2>/dev/null)
     [[ -z "$recs" || "$recs" == "[]" ]] && return 0
-    local n=0 tok tag want wanttype role cur_hash new_hash tmp
-    while IFS=$'\t' read -r tok tag wanttype role; do
+    local n=0 tok tag want wanttype cur_hash new_hash tmp
+    while IFS=$'\t' read -r tok tag wanttype; do
         [[ -n "$tok" ]] || continue
         [[ "$wanttype" == "node" ]] || continue      # 只刷新节点类; 配置类由调用方决定
         tmp=$(mktemp)
-        # ★ 按**角色**分派产品: 普通话记录刷 URI 列表, 原生记录刷 YAML。
-        #   不分派的话, 原生记录会被改写成一份 URI 列表 —— 而地址上仍然声明
-        #   "原生在那边", 客户端拉过去解析出 0 个节点(或格式不符), 全程无报错。
-        #   role 缺失 = 2026-10-10 之前的旧记录, 内容一直是 YAML → 按 YAML 刷。
-        case "$role" in
-            primary) _share_make_uri_content "$tag" "$tmp" || { rm -f "$tmp"; continue; } ;;
-            native)  _share_make_content "$tag" "$tmp"     || { rm -f "$tmp"; continue; } ;;
-            *)       _share_make_content "$tag" "$tmp"     || { rm -f "$tmp"; continue; } ;;
-        esac
+        if ! _share_make_content "$tag" "$tmp"; then rm -f "$tmp"; continue; fi
         new_hash=$(sha256sum "$tmp" | awk '{print $1}')
         cur_hash=$(_share_api get --token "$tok" 2>/dev/null \
                    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("content_sha256",""))' 2>/dev/null)
@@ -1067,8 +697,7 @@ import sys, json
 try: recs = json.load(sys.stdin)
 except Exception: recs = []
 for r in recs:
-    print("%s\t%s\t%s\t%s" % (r.get("token",""), (r.get("meta") or {}).get("tag","all"),
-                              r.get("type",""), (r.get("meta") or {}).get("role","")))
+    print("%s\t%s\t%s" % (r.get("token",""), (r.get("meta") or {}).get("tag","all"), r.get("type","")))
 ' 2>/dev/null)
     (( n > 0 )) && print_info "已刷新 ${n} 条分享链接的内容 (token 与地址未变)"
     return 0
@@ -1271,26 +900,24 @@ share_gen_tag_auto() {
         printf '0'; return 1
     fi
 
-    # ★ 与面板「生成分享链接」走**同一条**创建路径 (两条记录 + 声明)。
-    #   分开写的话, 这一条会只发普通话, 而用户看到的地址上仍然带着声明 ——
-    #   同内核客户端反而拿不到原生(且没有任何报错)。
-    local ttl_s recrec token ntok declared
-    ttl_s=$((HOURS * 3600))
-    if ! recrec=$(_share_create_records "$TAG" "$MU" "$ttl_s" "$addr"); then
-        printf '0'; return 1
+    local tmp ttl_s; tmp=$(mktemp)
+    if ! _share_make_content "$TAG" "$tmp"; then
+        rm -f "$tmp"; printf '0'; return 1
     fi
-    token=$(printf '%s' "$recrec" | awk -F'\t' '{print $1}')
-    ntok=$(printf '%s' "$recrec" | awk -F'\t' '{print $2}')
-    declared=$(printf '%s' "$recrec" | awk -F'\t' '{print $3}')
+    ttl_s=$((HOURS * 3600))
+    local token
+    token=$(_share_api create --type node --content-file "$tmp" --ttl "$ttl_s" \
+                --max-uses "$MU" --meta "{\"tag\":\"$TAG\"}" 2>/dev/null \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
+    rm -f "$tmp"
     [[ -n "$token" ]] || { printf '0'; return 1; }
 
     printf '%s' "$addr" > "$SRV_OUT/share_addr.txt"
-    printf '%s\n' "$declared" > "$SRV_OUT/share_tag-$TAG.txt"
+    printf 'http://%s:%s/share/%s\n' "$(_share_host "$addr")" "$p" "$token" > "$SRV_OUT/share_tag-$TAG.txt"
 
-    local link; link="$declared"
+    local link; link="http://$(_share_host "$addr"):$p/share/$token"
     printf '\n  %s一次性分享链接%s  %s用 %s 次 · %s 小时后过期%s\n' \
         "$GREEN" "$RESET" "$DIM" "$MU" "$([[ "$HOURS" -gt 0 ]] && echo "$HOURS" || echo "永久")" "$RESET"
-    [[ -n "$ntok" ]] && printf '  %s(带内核声明: 同内核同发行版拉原生, 其余走普通话)%s\n' "$DIM" "$RESET"
     printf '  %s%s%s\n' "$BOLD" "$link" "$RESET"
     printf '  %s地址探测自本机; 若客户端拉不到, 面板「生成分享链接」里可改地址重发%s\n' "$DIM" "$RESET"
     return 0
