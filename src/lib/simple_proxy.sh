@@ -100,6 +100,18 @@ simple_add_menu() {
     # 注意落地位置: 客户端只认 conf/providers/*.yaml (gen_config 扫这个目录),
     # conf/config.d/ 是**服务端**的结构 (由 merge.py 合并), 客户端从来不读 ——
     # 早先版本写在那里, 于是面板报"[OK] 节点已添加"而内核/Web UI 里什么都没有。
+    # 旧版本 (≤2026-10-13) 把节点写在 conf/config.d/simple-*.yaml —— 客户端没人
+    # 读它, 但"局域网配置分发"会把 config.d/ 一起合并发出去: 于是别的设备拿到的
+    # 是旧定义, 或者和这里的同名节点撞车。顺手挪到 backup/ 里。
+    local _old
+    for _old in "$CLI_CONF/config.d/"simple-*.yaml; do
+        [[ -f "$_old" ]] || continue
+        mkdir -p "$CLI_ROOT/backup"
+        if mv -f "$_old" "$CLI_ROOT/backup/$(basename "$_old").dead-$(date +%Y%m%d-%H%M%S)"; then
+            print_info "已清理旧版本留下的片段: $(basename "$_old")"
+        fi
+    done
+
     local prov="$CLI_PROVIDERS/其他.yaml"
     local added
     added=$(python3 - "$prov" "$type" "$host" "$port" "${user:-}" "${pass:-}" <<'PYADD'

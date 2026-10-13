@@ -112,14 +112,28 @@ def collect_fragments(confdir: str) -> tuple[str, dict]:
       而本机 mihomo 读的是 `conf/config.yaml`，**从来不看这两份片段**，
       所以发送端一切正常 —— 又一个"本地绿、发出去坏"。
 
-    做法: `proxies:` 这个头**只留一个**，各片段的**条目原文**依次接在后面
-    （不动缩进/引号/注释，与"保留原文"的既有取舍一致）；
-    确实不是纯 proxies 文档的片段才原样透传，并在 stderr 说明 ——
-    宁可让人看见，也不要再产出第二份 `proxies:`。
+    ★★ 2026-10-13 线上第二次复现，这次坏在**缩进风格不一致**:
+      `config.d/` 排在 `providers/` 前面 (FRAGMENT_GLOBS 的顺序)，而两边写法不同 ——
+      config.d 片段是向导写的 `  - name: "x"` (缩进 2)，provider 片段是
+      `- name: x` (缩进 0)。原文拼接后序列的缩进由**第一条**定死，后面来个
+      0 缩进的 `-` 就成了非法 YAML:
+          yaml: line 3: did not find expected key
+      接收端导入直接失败 —— 用户看到的是"拉取不了了 / 配置有问题"。
+
+      所以这里不再拼**原文**，改成**结构化合并**:
+        · 各片段的 proxies 解析出来 → 按名字去重 (同名只留第一个，并在 stderr 说明)
+        · 用一个 `proxies:` 头重新 dump —— 缩进/引号/重名都不可能再撞车
+      注释与原始排版会丢，但**正确性优先**: 这是发给别人导入的东西，
+      而片段本身都是脚本生成的产物，没有需要保留的手写排版。
+
+      解析不了 / 缺 PyYAML 时退回原来的原文拼接（至少不会比现在更差），
+      并在 stderr 说明。
     """
-    items: list[str] = []          # 各片段 `proxies:` 下的条目（原文）
+    entries: list = []             # 解析后的 proxies 条目 (保序)
+    raw_items: list[str] = []      # 原文条目 —— 结构化失败时退回
     passthrough: list[str] = []    # 非纯 proxies 文档的片段（原样保留）
     provider_nodes: dict[str, list] = {}
+    at: dict = {}                  # 节点名 -> entries 下标
     for pat in FRAGMENT_GLOBS:
         for f in sorted(glob.glob(os.path.join(confdir, pat))):
             try:
@@ -135,14 +149,30 @@ def collect_fragments(confdir: str) -> tuple[str, dict]:
             except yaml.YAMLError:
                 doc = None
             if isinstance(doc, dict) and set(doc) == {"proxies"}:
-                # 只摘掉 `proxies:` 那一行，其余原文照搬
+                # 只摘掉 `proxies:` 那一行，其余原文照搬（退回路径用）
                 lines = body.splitlines()
                 head = next((i for i, ln in enumerate(lines)
                              if ln.rstrip() == "proxies:"), None)
                 if head is None:
                     passthrough.append(body)
                 else:
-                    items.extend(lines[head + 1:])
+                    raw_items.extend(lines[head + 1:])
+                    for p in (doc.get("proxies") or []):
+                        nm = p.get("name") if isinstance(p, dict) else None
+                        if nm and nm in at:
+                            # 同名: **后出现的定义覆盖**先前那份, 位置不变。
+                            # FRAGMENT_GLOBS 把 config.d 排在 providers 前面, 而
+                            # 旧版本 (≤2026-10-13) 正是往 config.d 写节点的 ——
+                            # 那些遗留片段可能是几小时前的旧定义 (类型/端口都不同),
+                            # 让它赢就会把"当前在用的那份"顶掉。
+                            sys.stderr.write(
+                                f"提示 {os.path.basename(f)}: 节点重名, "
+                                f"以这份的定义为准: {nm}\n")
+                            entries[at[nm]] = p
+                            continue
+                        if nm:
+                            at[nm] = len(entries)
+                        entries.append(p)
             else:
                 # 例如将来出现带 rules 的片段。**不静默**: 说清它被原样透传,
                 # 以及它可能再带一个 `proxies:` 键。
@@ -161,8 +191,16 @@ def collect_fragments(confdir: str) -> tuple[str, dict]:
                 provider_nodes[stem] = names
 
     out = ""
-    if items:
-        out = "proxies:\n" + "\n".join(items).strip("\n") + "\n"
+    if entries and yaml is not None:
+        try:
+            out = yaml.safe_dump({"proxies": entries}, allow_unicode=True,
+                                 sort_keys=False, default_flow_style=False,
+                                 width=4096)
+        except yaml.YAMLError as e:                       # pragma: no cover
+            sys.stderr.write(f"结构化合并失败({e}), 退回原文拼接\n")
+            out = ""
+    if not out and raw_items:
+        out = "proxies:\n" + "\n".join(raw_items).strip("\n") + "\n"
     for body in passthrough:
         out += body + "\n"
     return out, provider_nodes
@@ -382,6 +420,45 @@ rules:
            f"两个 provider 片段合并后顶层 `proxies:` 只有一个 (实测 {len(_tops)} 个)")
         ck(len(NODE_RE.findall(_merged)) == 2, "两个片段的节点都保留下来了")
         ck(sorted(_pn) == ["aaa", "bbb"], "provider → 节点名映射两个都在")
+
+    # ---- ★ 混合缩进: config.d 的 `  - name:` 与 providers 的 `- name:` ----
+    #
+    # 2026-10-13 线上事故: 两边缩进不一致, 原文拼接后
+    #   `yaml: line 3: did not find expected key`, 接收端导入直接失败。
+    with _tf.TemporaryDirectory() as _d:
+        os.makedirs(os.path.join(_d, "config.d"), exist_ok=True)
+        os.makedirs(os.path.join(_d, "providers"), exist_ok=True)
+        with open(os.path.join(_d, "config.d", "simple-2080.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write('proxies:\n  - name: "LAN-1.2.3.4-2080"\n    type: socks5\n')
+        with open(os.path.join(_d, "providers", "sub.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("proxies:\n- name: n1\n  type: vless\n")
+        _m2, _pn2 = collect_fragments(_d)
+        try:
+            _doc3 = yaml.safe_load(_m2)
+            _ok = isinstance(_doc3, dict) and len(_doc3.get("proxies") or []) == 2
+            _err = ""
+        except yaml.YAMLError as _e:                      # pragma: no cover
+            _ok, _err = False, str(_e)
+        ck(_ok, "混合缩进的片段合并后是合法 YAML 且两个节点都在 " + _err)
+        ck(len([ln for ln in _m2.splitlines() if ln.rstrip() == "proxies:"]) == 1,
+           "混合缩进下顶层 proxies: 仍只有一个")
+
+    # ---- ★ 重名: 同名节点只保留一个 (mihomo 会因重名拒绝整份配置) ----
+    with _tf.TemporaryDirectory() as _d:
+        os.makedirs(os.path.join(_d, "config.d"), exist_ok=True)
+        os.makedirs(os.path.join(_d, "providers"), exist_ok=True)
+        for sub, ind, typ in (("config.d", "  ", "http"), ("providers", "", "socks5")):
+            with open(os.path.join(_d, sub, "dup.yaml"), "w", encoding="utf-8") as fh:
+                fh.write("proxies:\n%s- name: same\n%s  type: %s\n"
+                         % (ind, ind, typ))
+        _m3, _pn3 = collect_fragments(_d)
+        _d3 = yaml.safe_load(_m3)
+        _ps3 = _d3.get("proxies") or []
+        ck(len(_ps3) == 1, "同名节点被去重成 1 个")
+        ck(_ps3 and _ps3[0].get("type") == "socks5",
+           "去重后保留的是**后出现**的那份定义 (遗留的 config.d 旧定义不会顶掉它)")
 
     # ---- 组改写: use: [provider] → 具体节点名 ----
     # 剥掉 proxy-providers 之后, 组里 use 指向的 provider 在接收设备上不存在
