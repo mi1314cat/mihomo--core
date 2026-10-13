@@ -53,7 +53,7 @@ scan_proxy() {
     for host in 127.0.0.1 localhost; do
         for port in 7890 7891 7897 10808 10809 8080 8118 1080 1081 20171 33211 9444; do
             (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null || continue
-            exec 3<&- 2>/dev/null; exec 3>&- 2>/dev/null
+            { exec 3<&-; exec 3>&-; } 2>/dev/null
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 \
                    --proxy "http://$host:$port" https://api.github.com/ 2>/dev/null)
             # 1xx~4xx 都算可用 (GitHub 会 3xx 重定向 / 403 限流); 000 才是不可用
