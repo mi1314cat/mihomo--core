@@ -24,9 +24,7 @@
 # $1=host $2=port
 simple_proxy_probe() {
     local h="$1" p="$2"
-    timeout 4 bash -c "
-        exec 3<>/dev/tcp/$h/$p" 2>/dev/null || return 1
-    exec 3<&- 2>/dev/null
+    timeout 4 bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null
     return 0
 }
 
