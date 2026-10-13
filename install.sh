@@ -151,7 +151,7 @@ _scan_ports() {
     for host in 127.0.0.1 localhost; do
         for port in 7890 7891 7897 10808 10809 8080 8118 1080 1081 20171 33211 9444; do
             (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null || continue
-            exec 3<&- 2>/dev/null; exec 3>&- 2>/dev/null
+            { exec 3<&-; exec 3>&-; } 2>/dev/null
             _proxy_works "http://$host:$port" && printf '%s\n' "http://$host:$port"
         done
     done
