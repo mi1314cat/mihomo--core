@@ -90,51 +90,61 @@ simple_add_menu() {
     printf "  ${CYAN}密码${RESET} (留空=无认证): " >&2
     read -r pass; pass=$(clean_input "$pass")
 
-    # 生成名字
-    local name="LAN-${host}-${port}"
-    local n=1
-    while grep -qE "name:\s*\"?${name}\"?" "$CLI_ROOT/conf/config.d/"*.yaml 2>/dev/null; do
-        name="LAN-${host}-${port}-${n}"; n=$((n + 1))
-    done
+    # 自定义节点统一进「其他」组。
+    #
+    # 一个 provider 文件 = 一个组 (组名取文件名), 所以把手工填的 HTTP/SOCKS
+    # 全都追加进 providers/其他.yaml, 面板/Web UI 里就是一个叫「其他」的组。
+    # 之前是每个节点单独一个 lan-<port>.yaml —— 加几个就多几个组, 而这些节点
+    # 本来是一类东西 (自己手工填的出口), 堆在菜单里越来越长。
+    #
+    # 注意落地位置: 客户端只认 conf/providers/*.yaml (gen_config 扫这个目录),
+    # conf/config.d/ 是**服务端**的结构 (由 merge.py 合并), 客户端从来不读 ——
+    # 早先版本写在那里, 于是面板报"[OK] 节点已添加"而内核/Web UI 里什么都没有。
+    local prov="$CLI_PROVIDERS/其他.yaml"
+    local added
+    added=$(python3 - "$prov" "$type" "$host" "$port" "${user:-}" "${pass:-}" <<'PYADD'
+import os, sys, yaml
 
-    cat > "$CLI_ROOT/conf/config.d/simple-${port}.yaml" <<EOF
-# 简易 HTTP/SOCKS 节点 —— 接本机或局域网的其它内核
-proxies:
-  - name: "${name}"
-    type: ${type}
-    server: ${host}
-    port: ${port}
-EOF
-    if [[ -n "$user" ]]; then
-        cat >> "$CLI_ROOT/conf/config.d/simple-${port}.yaml" <<EOF
-    username: "${user}"
-    password: "${pass}"
-EOF
-    fi
+path, ptype, server, port, user, password = sys.argv[1:7]
+name = "LAN-%s-%s" % (server, port)
 
-    # 加进代理组, 否则规则里引用不到
-    python3 - "$CLI_ROOT/conf/config.yaml" "$name" <<'PY'
-import sys, re
-path, name = sys.argv[1], sys.argv[2]
-txt = open(path, encoding="utf-8").read()
-# 往所有 use: [xxx] 的组里加 —— 简易节点应当和普通节点一样可用
-def add(m):
-    inner = m.group(1)
-    if name in inner:
-        return m.group(0)
-    return "use: [" + inner.rstrip() + f", {name}]"
-new = re.sub(r'use:\s*\[([^\]]*)\]', add, txt)
-if new != txt:
-    open(path, "w", encoding="utf-8").write(new)
-PY
+data = {"proxies": []}
+if os.path.isfile(path):
+    try:
+        d = yaml.safe_load(open(path, encoding="utf-8")) or {}
+    except Exception as exc:                       # noqa: BLE001
+        print("读不了 %s (%s)" % (path, exc), file=sys.stderr)
+        raise SystemExit(1)
+    if not (isinstance(d, dict) and isinstance(d.get("proxies"), list)):
+        print("%s 里没有 proxies: 列表, 不敢动它" % path, file=sys.stderr)
+        raise SystemExit(1)
+    data = d
 
-    print_ok "节点已添加: $name ($type $host:$port)"
+ps = [x for x in data["proxies"] if isinstance(x, dict)]
+base, i = name, 2
+while any(x.get("name") == name for x in ps):      # 同名不覆盖, 顺延
+    name = "%s-%d" % (base, i); i += 1
+
+entry = {"name": name, "type": ptype, "server": server, "port": int(port)}
+if user:
+    entry["username"] = user
+    entry["password"] = password
+data["proxies"] = ps + [entry]
+
+tmp = path + ".tmp"                                # 临时文件 + 原子改名
+with open(tmp, "w", encoding="utf-8") as fh:
+    yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False,
+                   default_flow_style=False)
+os.replace(tmp, path)
+print(name)
+PYADD
+    ) || { print_error "写入 providers/其他.yaml 失败 (见上方报错)"; return 1; }
+
+    print_ok "节点已添加: $added ($type $host:$port) → 组「其他」"
+    ui_tip "自定义节点都放在「其他」组里; 组名可用「7) 重命名节点组」改"
     ui_tip "在「域名分流」里可以把这个节点设为分流目标"
 
-    if _rules_reload 2>/dev/null; then
-        print_ok "服务已重启, 生效"
-    else
-        print_warn "服务未自动重启, 请到面板重启"
-    fi
+    # 校验 + 重启 + 失败回滚, 统一交给 apply_change (不再自己调 _rules_reload)
+    apply_change
     return 0
 }
