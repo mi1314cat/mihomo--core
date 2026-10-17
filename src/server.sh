@@ -1508,6 +1508,7 @@ main_menu() {
     # 它只在"本机确实在用 Let's Encrypt 证书"且"定时器缺失或指向旧路径"时
     # 才动手, 其余情况一个字都不输出。
     cert_sync_ensure_timer
+    ui_banner "catmi.mihomo-core"        # 进入面板打一次, 不跟每轮重画
     local c
     while true; do
         ui_rule

@@ -28,6 +28,17 @@ REPO_MIRRORS=(
     "https://fastly.jsdelivr.net/gh/mi1314cat/mihomo--core@main"
 )
 
+# 整包 (tar.gz) 下载源 —— 逐个 raw 拉 40+ 个文件实测 7.7 秒, 一个整包 1 秒。
+# 这是"从 GitHub 进面板时卡一下"的主要来源。
+TAR_SOURCES=(
+    "https://codeload.github.com/mi1314cat/mihomo--core/tar.gz/refs/heads/main"
+    "https://ghproxy.net/https://github.com/mi1314cat/mihomo--core/archive/refs/heads/main.tar.gz"
+    "https://gh-proxy.com/https://github.com/mi1314cat/mihomo--core/archive/refs/heads/main.tar.gz"
+)
+
+# 上次选中的下载源 —— 每次都从主站重新探测, 网络差时要白等几十秒。
+SRC_CACHE="${SRC_CACHE_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/mihomo-core.src}"
+
 SRV_ROOT="${SRV_ROOT:-/root/catmi/mihomo}"
 CLI_ROOT="${CLI_ROOT:-/root/catmi/mihomo-client}"
 
@@ -210,6 +221,15 @@ _cargs() { [[ -n "$_PROXY" ]] && printf '%s' "--proxy $_PROXY"; }
 _pick_source() {
     [[ -n "$_SRC" ]] && return 0
     local base probe="$1" i
+    # 上次用通的源先用**很短**的超时验一遍: 还通就直接用, 不再逐个探测。
+    if [[ -r "$SRC_CACHE" ]]; then
+        local cached; cached=$(head -1 "$SRC_CACHE" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$cached" ]] && curl -fsSL --connect-timeout 3 --max-time 6 $(_cargs) \
+                "$cached/$probe" -o /dev/null 2>/dev/null; then
+            _SRC="$cached"
+            return 0
+        fi
+    fi
     # 第一轮: 直连 / 镜像
     for base in "$REPO_RAW" "${REPO_MIRRORS[@]}"; do
         # 探测给 25 秒而不是 12 秒, 且每个源试两次。
@@ -218,9 +238,13 @@ _pick_source() {
         # 12 秒的探测窗口会把本来能用的镜像也判成"不通", 结果整条链全废、
         # 安装直接卡死。而 cdn.jsdelivr.net / ghproxy.net 实际都能通,
         # 只是首包慢 —— 给够时间 + 重试一次就下来了。
+        # 探测: 连接 3 秒、总计 8 秒。原来是 25 秒 × 2 次 —— 主站被墙时
+        # 光探测就要等 50 秒, 用户看到的是"面板卡死"。连接建不起来就是不通。
         for i in 1 2; do
-            if curl -fsSL --max-time 25 $(_cargs) "$base/$probe" -o /dev/null 2>/dev/null; then
+            if curl -fsSL --connect-timeout 3 --max-time 8 $(_cargs) "$base/$probe" -o /dev/null 2>/dev/null; then
                 _SRC="$base"
+                mkdir -p "$(dirname "$SRC_CACHE")" 2>/dev/null
+                printf '%s\n' "$base" > "$SRC_CACHE" 2>/dev/null || true
                 [[ "$base" == "$REPO_RAW" ]] || say "主站不通, 已选用镜像: $(echo "$base" | cut -d/ -f3)"
                 return 0
             fi
@@ -267,6 +291,31 @@ fetch() {  # fetch <远端相对路径> <本地路径>
     return 1
 }
 
+# 整包下载: 一次 tar.gz 拿全部 src/, 替代"逐个 raw 下 40+ 个文件"。
+fetch_tarball() { # <目标根目录>
+    local dst="$1" url tmp ex top
+    for url in "${TAR_SOURCES[@]}"; do
+        tmp=$(mktemp) || continue
+        if curl -fsSL --connect-timeout 5 --max-time 60 $(_cargs) "$url" -o "$tmp" 2>/dev/null \
+           && tar -tzf "$tmp" >/dev/null 2>&1; then
+            ex=$(mktemp -d) || { rm -f "$tmp"; continue; }
+            if tar -xzf "$tmp" -C "$ex" 2>/dev/null; then
+                top=$(find "$ex" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+                if [[ -n "$top" && -f "$top/src/manifest.txt" ]]; then
+                    mkdir -p "$dst"
+                    cp -rf "$top/src/." "$dst/src/" 2>/dev/null
+                    rm -rf "$ex" "$tmp"
+                    return 0
+                fi
+            fi
+            rm -rf "$ex" "$tmp"
+            continue
+        fi
+        rm -f "$tmp"
+    done
+    return 1
+}
+
 # 兜底清单 —— 只在连 src/manifest.txt 都拉不下来时使用。
 #
 # 为什么不把清单直接写死在这里: 原先就是写死的, 后来新增了 cert.sh /
@@ -294,6 +343,15 @@ fetch_repo() {  # 把面板需要的文件拉到本地
     local base="$1"
     local files=()
     local mf="$base/src/manifest.txt"
+
+    # 快路径: 一个整包拿全 (实测 1 秒 vs 逐个 7.7 秒)。
+    if fetch_tarball "$base"; then
+        chmod +x "$base/src/core_install.sh" 2>/dev/null
+        [[ -f "$base/src/server.sh" ]] && chmod +x "$base/src/server.sh" 2>/dev/null
+        [[ -f "$base/src/client.sh" ]] && chmod +x "$base/src/client.sh" 2>/dev/null
+        ok "面板文件已就绪 ($base/src, 整包下载)"
+        return 0
+    fi
 
     # 清单优先走仓库 —— 它是唯一真源
     local tmp; tmp="$(mktemp)"
@@ -432,6 +490,11 @@ fetch_soft() {
     local tmp; tmp="$(mktemp -d)" || return 2
     local f n=0
     local mf="$tmp/manifest.txt"
+    # 快路径同 fetch_repo: 整包比逐个文件快一个数量级。
+    if fetch_tarball "$tmp" && [[ -f "$tmp/src/manifest.txt" ]]; then
+        printf '%s\n' "$tmp"
+        return 0
+    fi
     if ! fetch "src/manifest.txt" "$mf" 2>/dev/null; then
         rm -rf "$tmp"; return 2
     fi

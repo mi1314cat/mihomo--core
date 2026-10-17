@@ -1543,6 +1543,7 @@ client_dns_menu() {
 
 client_menu() {
     local c
+    ui_banner "catmi.mihomo-core"        # 进入面板打一次, 不跟每轮重画
     while true; do
         ui_rule
         printf "  ${CYAN}${BOLD}Mihomo 客户端${RESET}\n" >&2
