@@ -420,7 +420,7 @@ m_fetch_tarball() {  # <目标目录>  (成功返回 0, 解出 <dst>/src/...)
            && tar -tzf "$tmp" >/dev/null 2>&1; then
             ex=$(mktemp -d) || { rm -f "$tmp"; continue; }
             if tar -xzf "$tmp" -C "$ex" 2>/dev/null; then
-                top=$(find "$ex" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+                top=$(find "$ex" -maxdepth 1 -mindepth 1 -type d -print -quit 2>/dev/null)
                 if [[ -n "$top" && -f "$top/src/manifest.txt" ]]; then
                     mkdir -p "$dst"
                     cp -rf "$top/src/." "$dst/src/" 2>/dev/null

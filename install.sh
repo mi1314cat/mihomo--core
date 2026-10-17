@@ -300,7 +300,7 @@ fetch_tarball() { # <目标根目录>
            && tar -tzf "$tmp" >/dev/null 2>&1; then
             ex=$(mktemp -d) || { rm -f "$tmp"; continue; }
             if tar -xzf "$tmp" -C "$ex" 2>/dev/null; then
-                top=$(find "$ex" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+                top=$(find "$ex" -maxdepth 1 -mindepth 1 -type d -print -quit 2>/dev/null)
                 if [[ -n "$top" && -f "$top/src/manifest.txt" ]]; then
                     mkdir -p "$dst"
                     cp -rf "$top/src/." "$dst/src/" 2>/dev/null
@@ -491,7 +491,11 @@ fetch_soft() {
     local f n=0
     local mf="$tmp/manifest.txt"
     # 快路径同 fetch_repo: 整包比逐个文件快一个数量级。
+    # ★ 必须把 manifest 也放到 $tmp/manifest.txt —— auto_update 后面是用
+    #   `done < "$tmp/manifest.txt"` 逐个比对的; 少了这个文件循环一次都不跑,
+    #   于是"内容有差异"被误判成"已是最新", 更新静默失效。
     if fetch_tarball "$tmp" && [[ -f "$tmp/src/manifest.txt" ]]; then
+        cp -f "$tmp/src/manifest.txt" "$tmp/manifest.txt"
         printf '%s\n' "$tmp"
         return 0
     fi
